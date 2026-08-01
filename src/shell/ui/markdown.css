@@ -1,0 +1,134 @@
+.markdown-pre .hljs {
+  display: block;
+  padding: 0;
+  color: inherit;
+  background: transparent;
+}
+
+:root:not(.dark) .markdown-pre .hljs-comment,
+:root:not(.dark) .markdown-pre .hljs-quote {
+  color: #8a91a5;
+  font-style: italic;
+}
+
+:root:not(.dark) .markdown-pre .hljs-keyword,
+:root:not(.dark) .markdown-pre .hljs-selector-tag,
+:root:not(.dark) .markdown-pre .hljs-meta,
+:root:not(.dark) .markdown-pre .hljs-doctag {
+  color: #c0269a;
+}
+
+:root:not(.dark) .markdown-pre .hljs-built_in,
+:root:not(.dark) .markdown-pre .hljs-type,
+:root:not(.dark) .markdown-pre .hljs-title.class_,
+:root:not(.dark) .markdown-pre .hljs-attribute {
+  color: #b55a13;
+}
+
+:root:not(.dark) .markdown-pre .hljs-string,
+:root:not(.dark) .markdown-pre .hljs-regexp,
+:root:not(.dark) .markdown-pre .hljs-addition {
+  color: #238636;
+}
+
+:root:not(.dark) .markdown-pre .hljs-number,
+:root:not(.dark) .markdown-pre .hljs-literal,
+:root:not(.dark) .markdown-pre .hljs-symbol,
+:root:not(.dark) .markdown-pre .hljs-bullet {
+  color: #4966dc;
+}
+
+:root:not(.dark) .markdown-pre .hljs-title,
+:root:not(.dark) .markdown-pre .hljs-section,
+:root:not(.dark) .markdown-pre .hljs-function .hljs-title {
+  color: #7146c7;
+}
+
+:root:not(.dark) .markdown-pre .hljs-deletion,
+:root:not(.dark) .markdown-pre .hljs-variable,
+:root:not(.dark) .markdown-pre .hljs-template-variable {
+  color: #c43d55;
+}
+
+.dark .markdown-pre .hljs-comment,
+.dark .markdown-pre .hljs-quote {
+  color: #74788c;
+  font-style: italic;
+}
+
+.dark .markdown-pre .hljs-keyword,
+.dark .markdown-pre .hljs-selector-tag,
+.dark .markdown-pre .hljs-meta,
+.dark .markdown-pre .hljs-doctag {
+  color: #f08bd7;
+}
+
+.dark .markdown-pre .hljs-built_in,
+.dark .markdown-pre .hljs-type,
+.dark .markdown-pre .hljs-title.class_,
+.dark .markdown-pre .hljs-attribute {
+  color: #e7aa69;
+}
+
+.dark .markdown-pre .hljs-string,
+.dark .markdown-pre .hljs-regexp,
+.dark .markdown-pre .hljs-addition {
+  color: #7ccf8d;
+}
+
+.dark .markdown-pre .hljs-number,
+.dark .markdown-pre .hljs-literal,
+.dark .markdown-pre .hljs-symbol,
+.dark .markdown-pre .hljs-bullet {
+  color: #8fa7ff;
+}
+
+.dark .markdown-pre .hljs-title,
+.dark .markdown-pre .hljs-section,
+.dark .markdown-pre .hljs-function .hljs-title {
+  color: #bca4ff;
+}
+
+.dark .markdown-pre .hljs-deletion,
+.dark .markdown-pre .hljs-variable,
+.dark .markdown-pre .hljs-template-variable {
+  color: #f08c9a;
+}
+
+:root:not(.dark) .markdown-body .katex-display,
+:root:not(.dark) .katex-block {
+  max-width: 100%;
+  margin: 0.8em 0;
+  padding: 12px 16px;
+  overflow-x: auto;
+  overflow-y: hidden;
+  color: #303650;
+  background: #eef0f6;
+  border: 1px solid #dce0e9;
+  border-radius: 10px;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.72);
+}
+
+.dark .markdown-body .katex-display,
+.dark .katex-block {
+  max-width: 100%;
+  margin: 0.8em 0;
+  padding: 12px 16px;
+  overflow-x: auto;
+  overflow-y: hidden;
+  color: var(--text-primary);
+  background: var(--surface-1);
+  border: 1px solid var(--border-default);
+  border-radius: 10px;
+  box-shadow: inset 0 1px 0 var(--precision-surface-highlight);
+}
+
+.katex-block > .katex-display {
+  margin: 0;
+  padding: 0;
+  overflow: visible;
+  background: transparent;
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+}

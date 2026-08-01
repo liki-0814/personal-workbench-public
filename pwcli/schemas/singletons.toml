@@ -1,0 +1,23 @@
+# ─── 番茄钟设置 ───
+[pomodoro_settings]
+storage_key = "pomodoro_settings"
+collection = false
+description = "番茄钟时长设置"
+
+# ─── 番茄钟运行状态 ───
+[pomodoro]
+storage_key = "pomodoro"
+collection = false
+description = "番茄钟运行状态"
+
+# ─── 主题 ───
+[theme]
+storage_key = "theme"
+collection = false
+description = "主题配色"
+
+# ─── 任务自动排序 ───
+[todo_auto_sort]
+storage_key = "todo_auto_sort"
+collection = false
+description = "任务自动排序开关"

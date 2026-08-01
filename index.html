@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="icon" type="image/svg+xml" href="/pwcli.svg" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>personal-workbench</title>
+    <script>
+      // Apply theme before first paint to avoid a light flash.
+      // New users (no saved theme) default to dark.
+      (function () {
+        try {
+          var raw = localStorage.getItem('pwb_theme');
+          var mode = raw ? JSON.parse(raw).mode : 'dark';
+          if (mode !== 'light') document.documentElement.classList.add('dark');
+        } catch (e) {
+          document.documentElement.classList.add('dark');
+        }
+      })();
+    </script>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

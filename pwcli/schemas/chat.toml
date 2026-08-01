@@ -1,0 +1,27 @@
+# ─── AI 对话会话 ───
+[chat_session]
+storage_key = "chat_sessions"
+collection = true
+catalog = false
+display_field = "title"
+description = "AI 对话会话"
+
+[chat_session.fields.title]
+type = "string"
+required = true
+
+[chat_session.fields.messages]
+type = "array"
+default = []
+
+[chat_session.fields.model]
+type = "string"
+default = ""
+
+[chat_session.fields.createdAt]
+type = "datetime"
+auto = "now"
+
+[chat_session.fields.updatedAt]
+type = "datetime"
+auto = "now"

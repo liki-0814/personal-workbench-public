@@ -1,0 +1,15 @@
+# ─── 对话文件夹 ───
+[chat_folder]
+storage_key = "chat_folders"
+collection = true
+catalog = true
+display_field = "name"
+description = "对话文件夹"
+
+[chat_folder.fields.name]
+type = "string"
+required = true
+
+[chat_folder.fields.createdAt]
+type = "datetime"
+auto = "now"

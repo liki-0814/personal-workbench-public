@@ -1,0 +1,7 @@
+.chat-document-card { display: grid; width: min(100%, 600px); grid-template-columns: 38px minmax(0, 1fr) auto auto; align-items: center; gap: 11px; margin-top: 10px; padding: 11px 12px; text-align: left; border: 1px solid var(--border-subtle); border-radius: 15px; background: var(--surface-1); box-shadow: 0 7px 22px color-mix(in srgb, var(--text-primary) 5%, transparent); }
+.chat-document-card:hover { border-color: color-mix(in srgb, var(--semantic-primary) 38%, var(--border-subtle)); background: var(--surface-hover); }
+.chat-document-icon { display: grid; width: 36px; height: 36px; place-items: center; color: var(--semantic-primary); border-radius: 11px; background: color-mix(in srgb, var(--semantic-primary) 10%, transparent); }
+.chat-document-card > span:nth-child(2) { display: grid; min-width: 0; gap: 2px; }
+.chat-document-card small, .chat-document-card em { color: var(--text-tertiary); font-size: 8px; font-style: normal; }
+.chat-document-card strong { overflow: hidden; color: var(--text-primary); font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
+.chat-document-warning { color: var(--semantic-warning); }

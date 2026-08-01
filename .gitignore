@@ -1,0 +1,71 @@
+# Logs
+logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+node_modules
+dist
+dist-ssr
+*.local
+
+# Environment variables
+.env
+
+# Server database
+server/data.db
+server/data.db-wal
+server/data.db-shm
+server/backups/
+server/config/env-backups/
+server/data/images/
+
+# Editor directories and files
+.vscode/*
+!.vscode/extensions.json
+.idea
+.DS_Store
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+# Claude worktrees
+.claude/
+.worktrees/
+
+
+# pwcli embedding model cache (downloaded on first /memory reindex)
+pwcli/.fastembed_cache/
+
+# Test results
+test-results/
+
+# E2E tests
+e2e/
+
+# Generated assets
+tools/screenshots/
+coverage/
+dist/
+
+/.traces/
+
+# Staging directory for packaging artifacts
+/.pkg-staging/
+/.release/
+/.env.bak
+/.env.bak.20260604
+/temp_dir/
+
+# Downloaded report/slide evaluation corpus (manifests stay in Git)
+/pwcli/evals/document-corpus/.local/
+/pwcli/evals/document-harness-workspace/
+
+# Setup migration backups
+.env.h6-backup
+.env.*.bak

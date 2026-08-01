@@ -1,0 +1,223 @@
+# ─── 待办任务 ───
+[todo]
+storage_key = "todos"
+collection = true
+catalog = true
+display_field = "title"
+description = "待办任务"
+
+[todo.fields.title]
+type = "string"
+required = true
+
+[todo.fields.type]
+type = "enum"
+values = ["today", "week", "longterm"]
+default = "today"
+
+[todo.fields.completed]
+type = "bool"
+default = false
+
+[todo.fields.status]
+type = "enum"
+values = ["todo", "in_progress", "done"]
+default = "todo"
+
+[todo.fields.progress]
+type = "number"
+default = 0
+
+[todo.fields.priority]
+type = "enum"
+values = ["low", "medium", "high"]
+default = "medium"
+
+[todo.fields.dueDate]
+type = "date"
+
+[todo.fields.notes]
+type = "string"
+default = ""
+
+[todo.fields.subTasks]
+type = "array"
+default = []
+
+[todo.fields.order]
+type = "number"
+default = 0
+
+[todo.fields.createdAt]
+type = "datetime"
+auto = "now"
+
+[todo.fields.completedAt]
+type = "datetime"
+
+[todo.fields.linkedChatSessionIds]
+type = "array"
+default = []
+
+[todo.fields.repeat]
+type = "enum"
+values = ["none", "daily", "weekly", "monthly"]
+default = "none"
+
+[todo.fields.estimatedMinutes]
+type = "number"
+
+[todo.fields.focusTimerMode]
+type = "enum"
+values = ["countdown", "countup"]
+
+[todo.fields.focusMinutes]
+type = "number"
+
+[todo.fields.learningIntent]
+type = "bool"
+
+[todo.fields.deliverableUrl]
+type = "string"
+
+[todo.fields.goalId]
+type = "string"
+
+[todo.fields.keyResultId]
+type = "string"
+
+[todo.fields.executionWorkspace]
+type = "object"
+
+# ─── 长期目标 ───
+[goal]
+storage_key = "goals"
+collection = true
+catalog = true
+display_field = "title"
+description = "长期目标（方向锚点，任务可关联）"
+
+[goal.fields.title]
+type = "string"
+required = true
+
+[goal.fields.emoji]
+type = "string"
+default = "🎯"
+
+[goal.fields.description]
+type = "string"
+default = ""
+
+[goal.fields.deadline]
+type = "string"
+
+[goal.fields.periodStart]
+type = "date"
+
+[goal.fields.periodEnd]
+type = "date"
+
+[goal.fields.keyResults]
+type = "array"
+default = []
+
+[goal.fields.status]
+type = "enum"
+values = ["active", "achieved", "abandoned"]
+default = "active"
+
+[goal.fields.createdAt]
+type = "datetime"
+auto = "now"
+
+[goal.fields.updatedAt]
+type = "datetime"
+auto = "now"
+
+# ─── 习惯追踪 ───
+[habit]
+storage_key = "habits"
+collection = true
+catalog = true
+display_field = "title"
+description = "习惯打卡追踪"
+
+[habit.fields.title]
+type = "string"
+required = true
+
+[habit.fields.emoji]
+type = "string"
+default = "✅"
+
+[habit.fields.frequency]
+type = "object"
+default = { type = "daily" }
+
+[habit.fields.records]
+type = "array"
+default = []
+
+[habit.fields.archived]
+type = "bool"
+default = false
+
+[habit.fields.createdAt]
+type = "datetime"
+auto = "now"
+
+[habit.fields.updatedAt]
+type = "datetime"
+auto = "now"
+
+# ─── 剪贴板 ───
+[clipboard]
+storage_key = "clipboard"
+collection = true
+catalog = false
+display_field = "content"
+description = "剪贴板历史（50 条）"
+
+[clipboard.fields.type]
+type = "string"
+required = true
+
+[clipboard.fields.content]
+type = "string"
+default = ""
+
+[clipboard.fields.timestamp]
+type = "datetime"
+auto = "now"
+
+# ─── 番茄钟记录 ───
+[pomodoro_record]
+storage_key = "pomodoro_records"
+collection = true
+catalog = false
+display_field = "todoTitle"
+description = "番茄钟完成记录"
+
+[pomodoro_record.fields.todoId]
+type = "string"
+
+[pomodoro_record.fields.todoTitle]
+type = "string"
+
+[pomodoro_record.fields.mode]
+type = "enum"
+values = ["work", "shortBreak", "longBreak"]
+required = true
+
+[pomodoro_record.fields.duration]
+type = "number"
+required = true
+
+[pomodoro_record.fields.startTime]
+type = "datetime"
+required = true
+
+[pomodoro_record.fields.endTime]
+type = "datetime"
+required = true

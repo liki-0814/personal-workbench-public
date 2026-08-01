@@ -1,0 +1,4 @@
+/target
+*.log
+settings.local.json
+__pycache__/
