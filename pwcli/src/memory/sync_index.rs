@@ -95,7 +95,6 @@ pub fn best_effort_reindex(store: &MemoryStore) -> Option<usize> {
     index.rebuild_from_store(store, &embedder).ok()
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;

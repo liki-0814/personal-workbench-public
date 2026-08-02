@@ -46,6 +46,8 @@ fn dummy_llm(base_url: String) -> LlmClient {
         protocol: "openai".to_string(),
         model: "gpt-4o".to_string(),
         models: Vec::new(),
+        use_proxy: None,
+        compat_profile: None,
     };
     LlmClient::with_provider(provider, base_url)
 }

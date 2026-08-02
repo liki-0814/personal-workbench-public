@@ -813,8 +813,13 @@ impl AgentGraph {
                         &tool_call.function.name,
                         &tool_call.function.arguments,
                     );
-                    ctx.sink
-                        .on_tool_result(&tool_call.id, &tool_call.function.name, message, true, None);
+                    ctx.sink.on_tool_result(
+                        &tool_call.id,
+                        &tool_call.function.name,
+                        message,
+                        true,
+                        None,
+                    );
                     self.push_tool_result(state, ctx, &tool_call.id, message, true, None)
                         .await;
                 }
@@ -828,8 +833,13 @@ impl AgentGraph {
                     &tool_call.function.name,
                     &tool_call.function.arguments,
                 );
-                ctx.sink
-                    .on_tool_result(&tool_call.id, &tool_call.function.name, message, true, None);
+                ctx.sink.on_tool_result(
+                    &tool_call.id,
+                    &tool_call.function.name,
+                    message,
+                    true,
+                    None,
+                );
                 self.push_tool_result(state, ctx, &tool_call.id, message, true, None)
                     .await;
             }
@@ -901,8 +911,13 @@ impl AgentGraph {
                             PermissionDecision::Deny => {
                                 let deny_msg = "用户拒绝了工具执行".to_string();
                                 ctx.sink.on_permission_denied(&tc.function.name);
-                                ctx.sink
-                                    .on_tool_result(&tc.id, &tc.function.name, &deny_msg, true, None);
+                                ctx.sink.on_tool_result(
+                                    &tc.id,
+                                    &tc.function.name,
+                                    &deny_msg,
+                                    true,
+                                    None,
+                                );
                                 self.push_tool_result(state, ctx, &tc.id, &deny_msg, true, None)
                                     .await;
                                 all_terminate = false;
@@ -910,8 +925,13 @@ impl AgentGraph {
                             }
                             PermissionDecision::DenyWithReason(reason) => {
                                 ctx.sink.on_permission_denied(&tc.function.name);
-                                ctx.sink
-                                    .on_tool_result(&tc.id, &tc.function.name, &reason, true, None);
+                                ctx.sink.on_tool_result(
+                                    &tc.id,
+                                    &tc.function.name,
+                                    &reason,
+                                    true,
+                                    None,
+                                );
                                 self.push_tool_result(state, ctx, &tc.id, &reason, true, None)
                                     .await;
                                 all_terminate = false;
@@ -963,7 +983,8 @@ impl AgentGraph {
                             warn!(tool = %tool_name, error = %e, "后台任务创建失败");
                             self.push_tool_result(state, ctx, &tc.id, &err_msg, true, None)
                                 .await;
-                            ctx.sink.on_tool_result(&tc.id, &tool_name, &err_msg, true, None);
+                            ctx.sink
+                                .on_tool_result(&tc.id, &tool_name, &err_msg, true, None);
                             all_terminate = false;
                         }
                     }
@@ -997,9 +1018,7 @@ impl AgentGraph {
             let bg_eligible = is_configured_background_tool(ctx.config, &tc.function.name);
 
             let retry_policy = tool_retry_policy(&tc.function.name);
-            let unified_recovery = crate::config::local_config::get()
-                .features
-                .unified_recovery;
+            let unified_recovery = crate::config::local_config::get().features.unified_recovery;
             let mut attempt = 0u32;
             let (result_str, is_err, terminate, failure) = loop {
                 let (result_str, is_err, terminate) = if bg_eligible {
@@ -1064,7 +1083,11 @@ impl AgentGraph {
                                     }
                                     Err(e) => {
                                         warn!(tool = %tc.function.name, error = %e, "转后台失败");
-                                        ("Error: 后台队列已满且工具执行超时".to_string(), true, false)
+                                        (
+                                            "Error: 后台队列已满且工具执行超时".to_string(),
+                                            true,
+                                            false,
+                                        )
                                     }
                                 }
                             }
@@ -1134,9 +1157,7 @@ impl AgentGraph {
                     retry_policy.max_attempts,
                 )
                 .with_correlation_id(tc.id.clone());
-                if unified_recovery
-                    && failure.can_auto_retry(retry_policy)
-                {
+                if unified_recovery && failure.can_auto_retry(retry_policy) {
                     let retry_after = crate::reliability::parse_retry_after_secs(&result_str);
                     let delay = crate::reliability::retry_delay(attempt, retry_after);
                     let next_retry_at = (chrono::Utc::now()
@@ -1265,7 +1286,15 @@ impl AgentGraph {
         tool_calls: Vec<ToolCall>,
     ) -> Result<Transition> {
         let batch_size = tool_calls.len();
-        let mut outcomes: Vec<Option<(ToolCall, String, bool, bool, Option<crate::reliability::FailureEnvelope>)>> = vec![None; batch_size];
+        let mut outcomes: Vec<
+            Option<(
+                ToolCall,
+                String,
+                bool,
+                bool,
+                Option<crate::reliability::FailureEnvelope>,
+            )>,
+        > = vec![None; batch_size];
         let mut prepared = Vec::new();
 
         for (index, tool_call) in tool_calls.into_iter().enumerate() {
@@ -1820,7 +1849,6 @@ impl AgentGraph {
         session.add_message(msg);
     }
 }
-
 
 fn tool_retry_policy(tool_name: &str) -> crate::reliability::ToolRetryPolicy {
     crate::reliability::ToolRetryPolicy {

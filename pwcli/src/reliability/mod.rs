@@ -182,9 +182,9 @@ impl FailureEnvelope {
             {
                 FailureDisposition::UserActionRequired
             }
-            FailureClass::Transient
-            | FailureClass::Validation
-            | FailureClass::Permanent => FailureDisposition::Terminal,
+            FailureClass::Transient | FailureClass::Validation | FailureClass::Permanent => {
+                FailureDisposition::Terminal
+            }
         };
         self.next_retry_at = None;
         self.actions = self.default_actions();
@@ -404,10 +404,7 @@ pub fn parse_retry_after_secs(message: &str) -> Option<u64> {
     let marker = "retry-after:";
     let idx = lower.find(marker)?;
     let rest = message[idx + marker.len()..].trim_start();
-    let digits: String = rest
-        .chars()
-        .take_while(|ch| ch.is_ascii_digit())
-        .collect();
+    let digits: String = rest.chars().take_while(|ch| ch.is_ascii_digit()).collect();
     digits
         .parse::<u64>()
         .ok()
@@ -581,13 +578,8 @@ mod tests {
 
     #[test]
     fn auto_retry_only_for_idempotent_transient_tools() {
-        let failure = classify_tool_failure(
-            "web_query",
-            "HTTP 503",
-            FailureSource::ForegroundTool,
-            0,
-            2,
-        );
+        let failure =
+            classify_tool_failure("web_query", "HTTP 503", FailureSource::ForegroundTool, 0, 2);
         assert!(failure.can_auto_retry(ToolRetryPolicy {
             allow_auto_retry: true,
             max_attempts: 2,
@@ -628,13 +620,8 @@ mod tests {
 
     #[test]
     fn classified_failures_do_not_claim_auto_retry_until_scheduled() {
-        let transient = classify_tool_failure(
-            "web_query",
-            "HTTP 503",
-            FailureSource::ForegroundTool,
-            0,
-            2,
-        );
+        let transient =
+            classify_tool_failure("web_query", "HTTP 503", FailureSource::ForegroundTool, 0, 2);
         assert_eq!(transient.disposition, FailureDisposition::Terminal);
         assert!(transient.can_auto_retry(ToolRetryPolicy {
             allow_auto_retry: true,

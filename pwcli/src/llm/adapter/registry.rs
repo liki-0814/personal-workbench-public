@@ -31,11 +31,9 @@ pub fn create_adapter(
     })?;
 
     Ok(match protocol {
-        ProviderProtocol::OpenAiChat => Box::new(OpenAiChatAdapter::new(
-            provider,
-            backend_url,
-            session_id,
-        )),
+        ProviderProtocol::OpenAiChat => {
+            Box::new(OpenAiChatAdapter::new(provider, backend_url, session_id))
+        }
         ProviderProtocol::AnthropicMessages => {
             Box::new(AnthropicMessagesAdapter::new(provider, backend_url))
         }
@@ -87,10 +85,7 @@ mod tests {
             Ok(_) => panic!("expected unsupported protocol error"),
             Err(error) => {
                 let message = error.to_string();
-                assert!(
-                    message.contains("unsupported protocol"),
-                    "{message}"
-                );
+                assert!(message.contains("unsupported protocol"), "{message}");
             }
         }
     }

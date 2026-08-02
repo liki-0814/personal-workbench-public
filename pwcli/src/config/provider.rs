@@ -67,7 +67,11 @@ pub struct ProviderConfig {
     #[serde(default, skip_serializing_if = "Option::is_none", rename = "useProxy")]
     pub use_proxy: Option<bool>,
     /// Deprecated: ignored by adapters. Kept only so old configs still deserialize.
-    #[serde(default, skip_serializing_if = "Option::is_none", rename = "compatProfile")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        rename = "compatProfile"
+    )]
     pub compat_profile: Option<String>,
 }
 
@@ -93,7 +97,9 @@ impl ProviderConfig {
             "openai" | "openai_chat" | "openai_compatible" => "openai_chat",
             "openai_responses" | "responses" => "openai_responses",
             "anthropic" | "anthropic_messages" => "anthropic_messages",
-            "google" | "gemini" | "google_generative" | "generative_language" => "google_generative",
+            "google" | "gemini" | "google_generative" | "generative_language" => {
+                "google_generative"
+            }
             other if !other.is_empty() => other,
             _ => "openai_chat",
         };
@@ -191,7 +197,10 @@ mod tests {
         assert_eq!(cfg.protocol, "openai_chat");
         // Proxy is never inferred from URL/name; only explicit useProxy counts.
         assert_eq!(cfg.use_proxy, None);
-        assert_eq!(cfg.models[0].deferred_tools_mode.as_deref(), Some("enabled"));
+        assert_eq!(
+            cfg.models[0].deferred_tools_mode.as_deref(),
+            Some("enabled")
+        );
         // compatProfile remains for deserialize compatibility but is unused.
         assert_eq!(cfg.compat_profile.as_deref(), Some("old-label"));
     }

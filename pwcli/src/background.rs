@@ -291,7 +291,11 @@ impl BackgroundTaskManager {
                 &background_task_id,
                 &tool_name,
                 &description,
-                if replayable { Some(arguments.clone()) } else { None },
+                if replayable {
+                    Some(arguments.clone())
+                } else {
+                    None
+                },
                 crate::config::local_config::get().tools.fs_base.as_str(),
             ) {
                 Ok(record) => Some(record.id),
@@ -706,7 +710,8 @@ impl BackgroundTaskManager {
                 task.status = TaskStatus::Cancelled;
                 if let Some(runtime_task_id) = task.runtime_task_id.as_deref() {
                     if let Some(broker) = self.task_broker.as_ref() {
-                        let _ = broker.cancel_background_tool(runtime_task_id, "会话关闭，任务已取消");
+                        let _ =
+                            broker.cancel_background_tool(runtime_task_id, "会话关闭，任务已取消");
                     }
                 }
                 let _ = self.event_tx.send(TaskEvent::Cancelled(TaskResult {
@@ -786,7 +791,10 @@ impl BackgroundTaskManager {
                     summary: r.map(|r| r.summary.clone()),
                     log_file: r.and_then(|r| r.log_file.clone()),
                     replayable: t.replay.is_some(),
-                    runtime_task_id: t.runtime_task_id.clone().or_else(|| r.and_then(|r| r.runtime_task_id.clone())),
+                    runtime_task_id: t
+                        .runtime_task_id
+                        .clone()
+                        .or_else(|| r.and_then(|r| r.runtime_task_id.clone())),
                     failure: r.and_then(|r| r.failure.clone()),
                 }
             })
@@ -836,7 +844,8 @@ async fn finalize_background_result(
 ) -> TaskResult {
     if let Some(runtime_task_id) = result.runtime_task_id.as_deref() {
         if let Some(broker) = broker {
-            match broker.complete_background_tool(runtime_task_id, result.success, &result.summary) {
+            match broker.complete_background_tool(runtime_task_id, result.success, &result.summary)
+            {
                 Ok(record) => {
                     result.failure = record.failure;
                 }

@@ -329,34 +329,35 @@ fn apply_provider_options(
         "temperature",
     ];
 
-    let merge_params = |payload: &mut Value, params: &serde_json::Map<String, Value>, source: &str| {
-        if let Some(object) = payload.as_object_mut() {
-            for (key, value) in params {
-                if RESERVED.contains(&key.as_str()) {
-                    debug!(
-                        protocol = "openai_chat",
-                        source,
-                        key = %key,
-                        "ignored reserved request knob"
-                    );
-                    continue;
+    let merge_params =
+        |payload: &mut Value, params: &serde_json::Map<String, Value>, source: &str| {
+            if let Some(object) = payload.as_object_mut() {
+                for (key, value) in params {
+                    if RESERVED.contains(&key.as_str()) {
+                        debug!(
+                            protocol = "openai_chat",
+                            source,
+                            key = %key,
+                            "ignored reserved request knob"
+                        );
+                        continue;
+                    }
+                    // Soft guidance only: these keys are commonly from other protocols.
+                    if matches!(
+                        key.as_str(),
+                        "budget_tokens" | "anthropic-version" | "user-agent" | "generationConfig"
+                    ) {
+                        debug!(
+                            protocol = "openai_chat",
+                            source,
+                            key = %key,
+                            "request knob is unusual for openai_chat and may be ignored upstream"
+                        );
+                    }
+                    object.insert(key.clone(), value.clone());
                 }
-                // Soft guidance only: these keys are commonly from other protocols.
-                if matches!(
-                    key.as_str(),
-                    "budget_tokens" | "anthropic-version" | "user-agent" | "generationConfig"
-                ) {
-                    debug!(
-                        protocol = "openai_chat",
-                        source,
-                        key = %key,
-                        "request knob is unusual for openai_chat and may be ignored upstream"
-                    );
-                }
-                object.insert(key.clone(), value.clone());
             }
-        }
-    };
+        };
 
     let model_entry = provider.current_model_entry();
     if let Some(params) = model_entry.and_then(|model| model.request_params.as_ref()) {

@@ -26,7 +26,6 @@ pub mod worktree;
 
 pub use attention::RuntimeAttention;
 
-
 fn failure_from_status_and_error(
     status: &str,
     error: Option<&str>,
@@ -73,8 +72,12 @@ fn enrich_attention_detail(kind: &str, title: &str, detail: Value) -> Value {
     detail
 }
 
-fn payload_with_failure(payload: &str, failure: Option<&crate::reliability::FailureEnvelope>) -> Result<String> {
-    let mut value = serde_json::from_str::<Value>(payload).unwrap_or_else(|_| serde_json::json!({}));
+fn payload_with_failure(
+    payload: &str,
+    failure: Option<&crate::reliability::FailureEnvelope>,
+) -> Result<String> {
+    let mut value =
+        serde_json::from_str::<Value>(payload).unwrap_or_else(|_| serde_json::json!({}));
     if !value.is_object() {
         value = serde_json::json!({});
     }
@@ -129,15 +132,8 @@ fn derive_failure_from_row(
     }
     if !matches!(
         status,
-        "failed"
-            | "recovery_required"
-            | "waiting_user"
-            | "waiting_configuration"
-            | "cancelled"
-    ) && metadata
-        .get("outputStatus")
-        .and_then(Value::as_str)
-        != Some("failed")
+        "failed" | "recovery_required" | "waiting_user" | "waiting_configuration" | "cancelled"
+    ) && metadata.get("outputStatus").and_then(Value::as_str) != Some("failed")
     {
         return None;
     }
@@ -152,7 +148,6 @@ fn derive_failure_from_row(
         attempt.max(1),
     ))
 }
-
 
 const MAX_BATCH_TASKS: usize = 16;
 const MAX_DEPTH: u32 = 4;
@@ -2340,7 +2335,8 @@ impl TaskBroker {
         )?;
         transaction.commit()?;
         self.emit_persisted_event(&format!("{task_id}:background-started"))?;
-        self.task(&task_id)?.context("background RuntimeTask disappeared")
+        self.task(&task_id)?
+            .context("background RuntimeTask disappeared")
     }
 
     pub fn complete_background_tool(
@@ -2357,10 +2353,16 @@ impl TaskBroker {
                 |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
             )
             .context("background RuntimeTask not found")?;
-        if matches!(current_status.as_str(), "succeeded" | "failed" | "cancelled") {
-            return self.task(task_id)?.context("background RuntimeTask not found");
+        if matches!(
+            current_status.as_str(),
+            "succeeded" | "failed" | "cancelled"
+        ) {
+            return self
+                .task(task_id)?
+                .context("background RuntimeTask not found");
         }
-        let mut payload = serde_json::from_str::<Value>(&raw_payload).unwrap_or(serde_json::json!({}));
+        let mut payload =
+            serde_json::from_str::<Value>(&raw_payload).unwrap_or(serde_json::json!({}));
         let now = Utc::now().to_rfc3339();
         let transaction = connection.transaction()?;
         if success {
@@ -2397,7 +2399,11 @@ impl TaskBroker {
             attention::resolve_task_tx(
                 &transaction,
                 task_id,
-                Some(&["background_failure", "background_interrupted", "task_failed"]),
+                Some(&[
+                    "background_failure",
+                    "background_interrupted",
+                    "task_failed",
+                ]),
             )?;
             transaction.commit()?;
             self.emit_persisted_event(&format!("{task_id}:background-succeeded"))?;
@@ -2467,7 +2473,8 @@ impl TaskBroker {
             transaction.commit()?;
             self.emit_persisted_event(&format!("{task_id}:background-failed"))?;
         }
-        self.task(task_id)?.context("background RuntimeTask not found")
+        self.task(task_id)?
+            .context("background RuntimeTask not found")
     }
 
     pub fn interrupt_background_tool(
@@ -2483,11 +2490,18 @@ impl TaskBroker {
                 |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
             )
             .context("background RuntimeTask not found")?;
-        if matches!(current_status.as_str(), "succeeded" | "failed" | "cancelled" | "recovery_required") {
-            return self.task(task_id)?.context("background RuntimeTask not found");
+        if matches!(
+            current_status.as_str(),
+            "succeeded" | "failed" | "cancelled" | "recovery_required"
+        ) {
+            return self
+                .task(task_id)?
+                .context("background RuntimeTask not found");
         }
-        let mut payload = serde_json::from_str::<Value>(&raw_payload).unwrap_or(serde_json::json!({}));
-        let envelope = failure_from_status_and_error("recovery_required", Some(reason), attempt.max(1));
+        let mut payload =
+            serde_json::from_str::<Value>(&raw_payload).unwrap_or(serde_json::json!({}));
+        let envelope =
+            failure_from_status_and_error("recovery_required", Some(reason), attempt.max(1));
         if let Value::Object(object) = &mut payload {
             object.insert("failure".into(), serde_json::to_value(&envelope)?);
         }
@@ -2517,14 +2531,11 @@ impl TaskBroker {
         )?;
         transaction.commit()?;
         self.emit_persisted_event(&format!("{task_id}:background-interrupted"))?;
-        self.task(task_id)?.context("background RuntimeTask not found")
+        self.task(task_id)?
+            .context("background RuntimeTask not found")
     }
 
-    pub fn cancel_background_tool(
-        &self,
-        task_id: &str,
-        reason: &str,
-    ) -> Result<RuntimeTaskRecord> {
+    pub fn cancel_background_tool(&self, task_id: &str, reason: &str) -> Result<RuntimeTaskRecord> {
         let mut connection = self.connection()?;
         let (raw_payload, current_status): (String, String) = connection
             .query_row(
@@ -2533,10 +2544,16 @@ impl TaskBroker {
                 |row| Ok((row.get(0)?, row.get(1)?)),
             )
             .context("background RuntimeTask not found")?;
-        if matches!(current_status.as_str(), "succeeded" | "failed" | "cancelled") {
-            return self.task(task_id)?.context("background RuntimeTask not found");
+        if matches!(
+            current_status.as_str(),
+            "succeeded" | "failed" | "cancelled"
+        ) {
+            return self
+                .task(task_id)?
+                .context("background RuntimeTask not found");
         }
-        let mut payload = serde_json::from_str::<Value>(&raw_payload).unwrap_or(serde_json::json!({}));
+        let mut payload =
+            serde_json::from_str::<Value>(&raw_payload).unwrap_or(serde_json::json!({}));
         if let Value::Object(object) = &mut payload {
             object.remove("failure");
             object.insert("outputStatus".into(), Value::String("failed".into()));
@@ -2559,11 +2576,16 @@ impl TaskBroker {
         attention::resolve_task_tx(
             &transaction,
             task_id,
-            Some(&["background_failure", "background_interrupted", "task_failed"]),
+            Some(&[
+                "background_failure",
+                "background_interrupted",
+                "task_failed",
+            ]),
         )?;
         transaction.commit()?;
         self.emit_persisted_event(&format!("{task_id}:background-cancelled"))?;
-        self.task(task_id)?.context("background RuntimeTask not found")
+        self.task(task_id)?
+            .context("background RuntimeTask not found")
     }
 
     pub fn recover_running_background_tools(&self) -> Result<usize> {
@@ -3762,11 +3784,7 @@ impl TaskBroker {
                     "nativeSessionId": native_session_id,
                 }),
             )?;
-            let envelope = failure_from_status_and_error(
-                "waiting_user",
-                Some(&question),
-                1,
-            );
+            let envelope = failure_from_status_and_error("waiting_user", Some(&question), 1);
             create_attention_with_failure_tx(
                 &transaction,
                 &identity.0,
@@ -4379,10 +4397,7 @@ impl TaskBroker {
         transaction.commit()?;
         // Background tool projections never use worker leases. Safe replay is
         // handled by the BackgroundTaskManager after this state transition.
-        if payload
-            .get("mode")
-            .and_then(Value::as_str)
-            == Some("background_tool")
+        if payload.get("mode").and_then(Value::as_str) == Some("background_tool")
             || payload.get("kind").and_then(Value::as_str) == Some("background_tool")
         {
             // Background projections are advanced by BackgroundTaskManager.
@@ -4864,11 +4879,8 @@ impl TaskBroker {
             serde_json::to_value(&response)?,
         )?;
         if review_status == "merge_required" {
-            let envelope = failure_from_status_and_error(
-                "merge_required",
-                response.reason.as_deref(),
-                1,
-            );
+            let envelope =
+                failure_from_status_and_error("merge_required", response.reason.as_deref(), 1);
             create_attention_with_failure_tx(
                 &transaction,
                 task_id,
@@ -5174,11 +5186,8 @@ impl TaskBroker {
                     |row| row.get(0),
                 )
                 .unwrap_or(1);
-            let envelope = failure_from_status_and_error(
-                next_task_status,
-                Some(message),
-                attempt.max(1),
-            );
+            let envelope =
+                failure_from_status_and_error(next_task_status, Some(message), attempt.max(1));
             let payload = payload_with_failure(&raw_payload, Some(&envelope))?;
             let transaction = connection.transaction()?;
             transaction.execute(
@@ -8635,7 +8644,6 @@ mod tests {
         assert_eq!(attention[0].kind, "background_failure");
         assert!(attention[0].detail.get("failure").is_some());
     }
-
 
     #[test]
     fn legacy_attention_backfill_is_idempotent_and_never_reopens_resolved_work() {

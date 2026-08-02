@@ -182,8 +182,7 @@ impl GoogleGenerativeAdapter {
                     }
                 }
             } else {
-                payload["generationConfig"]["thinkingConfig"] =
-                    json!({"includeThoughts": true});
+                payload["generationConfig"]["thinkingConfig"] = json!({"includeThoughts": true});
             }
         }
         if let Some(params) = self
@@ -210,7 +209,11 @@ impl GoogleGenerativeAdapter {
             .unwrap_or_default();
         for (index, part) in parts.iter().enumerate() {
             if let Some(text) = part.get("text").and_then(Value::as_str) {
-                if part.get("thought").and_then(Value::as_bool).unwrap_or(false) {
+                if part
+                    .get("thought")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false)
+                {
                     continue;
                 }
                 content.push_str(text);
@@ -438,7 +441,6 @@ impl LlmAdapter for GoogleGenerativeAdapter {
         })
     }
 }
-
 
 #[cfg(test)]
 mod tests {

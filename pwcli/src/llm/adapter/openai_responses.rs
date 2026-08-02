@@ -104,12 +104,8 @@ impl OpenAiResponsesAdapter {
                             })
                             .collect();
                         if !calls.is_empty() {
-                            item["content"] = Value::Array(
-                                content
-                                    .into_iter()
-                                    .chain(calls)
-                                    .collect::<Vec<_>>(),
-                            );
+                            item["content"] =
+                                Value::Array(content.into_iter().chain(calls).collect::<Vec<_>>());
                         }
                     }
                     input.push(item);
@@ -481,7 +477,6 @@ impl LlmAdapter for OpenAiResponsesAdapter {
         })
     }
 }
-
 
 #[cfg(test)]
 mod tests {
