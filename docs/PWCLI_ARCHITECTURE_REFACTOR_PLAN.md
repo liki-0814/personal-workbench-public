@@ -1,7 +1,7 @@
 # PWCLI 四层架构改造计划
 
-> 状态：Draft  
-> 目标架构：`pwcli-app → pw-runtime → pw-agent-core → pw-ai`  
+> 状态：Draft
+> 目标架构：`pwcli-app → pw-runtime → pw-agent-core → pw-ai`
 > 原则：先建立逻辑边界，再拆分 Cargo crate；保持现有功能、配置和数据兼容。
 
 ## 1. 背景
