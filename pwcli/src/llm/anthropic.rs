@@ -63,15 +63,65 @@ pub(crate) fn claude_code_user_agent() -> String {
     format!("claude-cli/{} (external, cli)", version)
 }
 
-fn apply_thinking(payload: &mut Value, _provider: &ProviderConfig, enabled: bool) {
+fn apply_thinking(payload: &mut Value, provider: &ProviderConfig, enabled: bool) {
     if !enabled {
         return;
     }
-    payload["thinking"] = serde_json::json!({ "type": "enabled", "budget_tokens": 2048 });
+    if let Some(params) = provider
+        .current_model_entry()
+        .and_then(|model| model.thinking_params.as_ref())
+    {
+        for key in params.keys() {
+            if matches!(
+                key.as_str(),
+                "enable_thinking" | "reasoning_effort" | "reasoning" | "generationConfig"
+            ) {
+                debug!(
+                    protocol = "anthropic_messages",
+                    key = %key,
+                    "thinkingParams key is unusual for anthropic_messages and may be ignored upstream"
+                );
+            }
+        }
+        // Allow full override via thinkingParams, but keep a sane default shape
+        // when only budget_tokens is provided.
+        if params.contains_key("thinking") {
+            if let Some(value) = params.get("thinking") {
+                payload["thinking"] = value.clone();
+            }
+        } else {
+            let budget = params
+                .get("budget_tokens")
+                .and_then(Value::as_u64)
+                .unwrap_or(2048);
+            payload["thinking"] = serde_json::json!({
+                "type": "enabled",
+                "budget_tokens": budget
+            });
+            for (key, value) in params {
+                if key != "budget_tokens" {
+                    payload[key] = value.clone();
+                }
+            }
+        }
+    } else {
+        payload["thinking"] = serde_json::json!({ "type": "enabled", "budget_tokens": 2048 });
+    }
+    // Optional anthropic-version / user-agent overrides via requestParams happen
+    // at request construction time.
 }
 
 fn effective_temperature(_provider: &ProviderConfig, requested: Option<f32>) -> Option<f32> {
     requested
+}
+
+fn provider_request_param(provider: &ProviderConfig, key: &str) -> Option<String> {
+    provider
+        .current_model_entry()
+        .and_then(|model| model.request_params.as_ref())
+        .and_then(|params| params.get(key))
+        .and_then(Value::as_str)
+        .map(str::to_string)
 }
 
 /// 构造 Anthropic Messages API 的 messages 数组。
@@ -222,7 +272,7 @@ impl AnthropicClient {
     }
 
     pub async fn chat(&self, request: &LlmRequest) -> Result<AiResponse> {
-        let use_proxy = needs_proxy(&self.provider.base_url);
+        let use_proxy = needs_proxy(&self.provider);
         let (url, headers) = if use_proxy {
             let url = format!("{}/api/proxy/anthropic", self.backend_url);
             let mut headers = reqwest::header::HeaderMap::new();
@@ -235,8 +285,12 @@ impl AnthropicClient {
             let mut headers = reqwest::header::HeaderMap::new();
             headers.insert("Content-Type", "application/json".parse()?);
             headers.insert("x-api-key", self.provider.api_key.parse()?);
-            headers.insert("anthropic-version", "2023-06-01".parse()?);
-            headers.insert("User-Agent", claude_code_user_agent().parse()?);
+            let anthropic_version = provider_request_param(&self.provider, "anthropic-version")
+                .unwrap_or_else(|| "2023-06-01".into());
+            let user_agent = provider_request_param(&self.provider, "user-agent")
+                .unwrap_or_else(claude_code_user_agent);
+            headers.insert("anthropic-version", anthropic_version.parse()?);
+            headers.insert("User-Agent", user_agent.parse()?);
             (url, headers)
         };
 
@@ -377,9 +431,8 @@ fn anthropic_input_tokens(usage: &Value) -> u32 {
     })
 }
 
-fn needs_proxy(base_url: &str) -> bool {
-    let _ = base_url;
-    false
+fn needs_proxy(provider: &ProviderConfig) -> bool {
+    provider.uses_proxy()
 }
 
 impl AnthropicClient {
@@ -395,7 +448,7 @@ impl AnthropicClient {
 
         let s = async_stream::stream! {
             // ---- 构造请求（与 chat() 保持一致） ----
-            let use_proxy = needs_proxy(&provider.base_url);
+            let use_proxy = needs_proxy(&provider);
             let (url, headers) = if use_proxy {
                 let url = format!("{}/api/proxy/anthropic", backend_url);
                 let mut h = reqwest::header::HeaderMap::new();
@@ -635,6 +688,8 @@ mod tests {
             protocol: "anthropic".into(),
             model: "claude-sonnet".into(),
             models: Vec::new(),
+            use_proxy: None,
+            compat_profile: None,
         };
         let mut payload = serde_json::json!({ "max_tokens": 64000 });
 
@@ -655,6 +710,8 @@ mod tests {
             protocol: "anthropic".into(),
             model: "claude-sonnet".into(),
             models: Vec::new(),
+            use_proxy: None,
+            compat_profile: None,
         };
         assert_eq!(effective_temperature(&provider, Some(0.2)), Some(0.2));
         assert_eq!(effective_temperature(&provider, None), None);
@@ -827,6 +884,8 @@ mod tests {
                 protocol: "anthropic".to_string(),
                 model: "claude-sonnet".to_string(),
                 models: Vec::new(),
+                use_proxy: None,
+                compat_profile: None,
             },
             server.url(),
         );
@@ -884,6 +943,8 @@ mod tests {
                 protocol: "anthropic".to_string(),
                 model: "claude-sonnet".to_string(),
                 models: Vec::new(),
+                use_proxy: None,
+                compat_profile: None,
             },
             server.url(),
         );

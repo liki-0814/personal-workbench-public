@@ -96,6 +96,11 @@ fn parse_providers_json(value: &serde_json::Value) -> Vec<ProviderConfig> {
             .get("protocol")
             .and_then(|v| v.as_str())
             .unwrap_or("openai");
+        let use_proxy = item.get("useProxy").and_then(|v| v.as_bool());
+        let compat_profile = item
+            .get("compatProfile")
+            .and_then(|v| v.as_str())
+            .map(str::to_string);
         if name.is_empty() || base_url.is_empty() || api_key.is_empty() {
             continue;
         }
@@ -155,14 +160,18 @@ fn parse_providers_json(value: &serde_json::Value) -> Vec<ProviderConfig> {
                     .collect()
             })
             .unwrap_or_default();
-        out.push(ProviderConfig {
+        let mut provider = ProviderConfig {
             name: name.to_string(),
             base_url: base_url.to_string(),
             api_key: api_key.to_string(),
             protocol: protocol.to_string(),
             model: String::new(),
             models,
-        });
+            use_proxy,
+            compat_profile,
+        };
+        let _ = provider.normalize_in_place();
+        out.push(provider);
     }
     out
 }

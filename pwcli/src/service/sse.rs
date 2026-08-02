@@ -41,12 +41,26 @@ pub fn stream_event_to_sse(event: StreamEvent) -> Event {
             name,
             result,
             is_error,
+            failure,
         } => Event::default().event("tool_result").data(format!(
-            r#"{{"id":{},"name":{},"result":{},"is_error":{}}}"#,
+            r#"{{"id":{},"name":{},"result":{},"is_error":{},"failure":{}}}"#,
             serde_json::json!(id),
             serde_json::json!(name),
             serde_json::json!(result),
-            is_error
+            is_error,
+            serde_json::to_string(&failure).unwrap_or_else(|_| "null".into())
+        )),
+        StreamEvent::ToolRecovery {
+            id,
+            name,
+            failure,
+            phase,
+        } => Event::default().event("tool_recovery").data(format!(
+            r#"{{"id":{},"name":{},"phase":{},"failure":{}}}"#,
+            serde_json::json!(id),
+            serde_json::json!(name),
+            serde_json::json!(phase),
+            serde_json::to_string(&failure).unwrap_or_else(|_| "null".into())
         )),
         StreamEvent::ToolProgress { id, line } => {
             Event::default().event("tool_progress").data(format!(

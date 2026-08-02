@@ -12,11 +12,7 @@ pub struct LlmStreamOptions {
     pub temperature: Option<f32>,
 }
 
-/// 兼容层：LlmClient 内部委托到 OpenAiClient / AnthropicClient
-///
-/// 保留此结构体以兼容现有调用方（main.rs、commands.rs）。
-/// 新代码应直接使用 `crate::llm::openai::OpenAiClient` 或
-/// `crate::llm::anthropic::AnthropicClient`。
+/// 兼容层：LlmClient 负责 provider 选择与 fallback，协议细节交给 adapter。
 ///
 /// `chat()` 自动按 (primary, ...fallbacks) 顺序重试：第一个成功的 provider
 /// 返回结果。`chat_stream()` 仅在当前 provider 尚未产生文本、思考或工具调用时
@@ -81,16 +77,12 @@ impl LlmClient {
         provider: &ProviderConfig,
         request: &LlmRequest,
     ) -> Result<AiResponse> {
-        if provider.protocol == "anthropic" {
-            let client =
-                super::anthropic::AnthropicClient::new(provider.clone(), self.backend_url.clone());
-            client.chat(request).await
-        } else {
-            let client =
-                super::openai::OpenAiClient::new(provider.clone(), self.backend_url.clone())
-                    .with_session_id(self.session_id.clone());
-            client.chat(request).await
-        }
+        let adapter = super::adapter::create_adapter(
+            provider.clone(),
+            self.backend_url.clone(),
+            self.session_id.clone(),
+        )?;
+        adapter.chat(request).await
     }
 
     pub async fn chat(
@@ -261,29 +253,17 @@ impl LlmClient {
                 let selected_request = request.clone();
                 let selected_backend_url = backend_url.clone();
                 let selected_session_id = session_id.clone();
-                let mut inner: BoxStream<'static, StreamEvent> = if selected_provider.protocol == "anthropic" {
-                    Box::pin(async_stream::stream! {
-                        let client = super::anthropic::AnthropicClient::new(
-                            selected_provider,
-                            selected_backend_url,
-                        );
-                        let mut nested = client.chat_stream(&selected_request);
-                        while let Some(event) = nested.next().await {
-                            yield event;
-                        }
-                    })
-                } else {
-                    Box::pin(async_stream::stream! {
-                        let client = super::openai::OpenAiClient::new(
-                            selected_provider,
-                            selected_backend_url,
-                        )
-                        .with_session_id(selected_session_id);
-                        let mut nested = client.chat_stream(&selected_request);
-                        while let Some(event) = nested.next().await {
-                            yield event;
-                        }
-                    })
+                let mut inner: BoxStream<'static, StreamEvent> = {
+                    match super::adapter::create_adapter(
+                        selected_provider,
+                        selected_backend_url,
+                        selected_session_id,
+                    ) {
+                        Ok(adapter) => adapter.chat_stream(selected_request),
+                        Err(error) => Box::pin(async_stream::stream! {
+                            yield StreamEvent::Error(error.to_string());
+                        }),
+                    }
                 };
                 let has_fallback = index + 1 < providers.len();
                 let mut emitted_output = false;
@@ -405,6 +385,8 @@ mod tests {
                 protocol: "openai".to_string(),
                 model: "gpt-4".to_string(),
                 models: Vec::new(),
+                use_proxy: None,
+                compat_profile: None,
             },
             backend_url: server.url(),
             fallbacks: Vec::new(),
@@ -455,6 +437,8 @@ mod tests {
                 protocol: "anthropic".to_string(),
                 model: "claude-sonnet".to_string(),
                 models: Vec::new(),
+                use_proxy: None,
+                compat_profile: None,
             },
             backend_url: server.url(),
             fallbacks: Vec::new(),
@@ -504,6 +488,8 @@ mod tests {
                 protocol: "anthropic".to_string(),
                 model: "claude-sonnet".to_string(),
                 models: Vec::new(),
+                use_proxy: None,
+                compat_profile: None,
             },
             backend_url: server.url(),
             fallbacks: Vec::new(),
@@ -574,6 +560,8 @@ mod tests {
             protocol: "openai".into(),
             model: name.into(),
             models: Vec::new(),
+            use_proxy: None,
+            compat_profile: None,
         };
         let client = LlmClient {
             provider: provider("peach", primary_server.url()),
@@ -641,6 +629,8 @@ mod tests {
             protocol: protocol.into(),
             model: name.into(),
             models: Vec::new(),
+            use_proxy: None,
+            compat_profile: None,
         };
         let client = LlmClient {
             provider: provider("peach", "openai", primary_server.url()),

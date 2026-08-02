@@ -203,6 +203,14 @@ pub enum StreamEvent {
         name: String,
         result: String,
         is_error: bool,
+        failure: Option<crate::reliability::FailureEnvelope>,
+    },
+    /// Structured recovery progress for a tool call (auto-retry / final outcome).
+    ToolRecovery {
+        id: String,
+        name: String,
+        failure: crate::reliability::FailureEnvelope,
+        phase: String,
     },
     /// 工具执行期进度行（仅长跑工具如 code_agent 发出，
     /// 前端在对应 trace chip 内追加显示。每行已格式化好可直接渲染）
@@ -281,19 +289,45 @@ pub struct LlmRequest {
     pub temperature: Option<f32>,
 }
 
-/// Provider 协议枚举
-#[derive(Debug, Clone, Copy, PartialEq)]
+/// Provider 协议枚举（wire name 使用 snake/kebab 兼容写法）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ProviderProtocol {
-    OpenAI,
-    Anthropic,
+    OpenAiChat,
+    OpenAiResponses,
+    AnthropicMessages,
+    GoogleGenerative,
 }
 
 impl ProviderProtocol {
-    pub fn from_name(s: &str) -> Self {
-        match s.to_lowercase().as_str() {
-            "anthropic" => Self::Anthropic,
-            _ => Self::OpenAI,
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::OpenAiChat => "openai_chat",
+            Self::OpenAiResponses => "openai_responses",
+            Self::AnthropicMessages => "anthropic_messages",
+            Self::GoogleGenerative => "google_generative",
         }
+    }
+
+    /// Parse a configured protocol name. Unknown values return an error instead
+    /// of silently falling back to OpenAI.
+    pub fn parse(s: &str) -> Result<Self, String> {
+        let normalized = s.trim().to_ascii_lowercase().replace('-', "_");
+        match normalized.as_str() {
+            // New canonical names
+            "openai_chat" | "openai" | "openai_compatible" => Ok(Self::OpenAiChat),
+            "openai_responses" | "responses" => Ok(Self::OpenAiResponses),
+            "anthropic_messages" | "anthropic" => Ok(Self::AnthropicMessages),
+            "google_generative" | "google" | "gemini" | "generative_language" => {
+                Ok(Self::GoogleGenerative)
+            }
+            other if other.is_empty() => Err("protocol is required".into()),
+            other => Err(format!("unsupported protocol '{other}'")),
+        }
+    }
+
+    /// Legacy helper used by older call sites. Prefer `parse`.
+    pub fn from_name(s: &str) -> Self {
+        Self::parse(s).unwrap_or(Self::OpenAiChat)
     }
 }
 
@@ -321,17 +355,26 @@ mod tests {
     #[test]
     fn test_provider_protocol_from_name() {
         assert_eq!(
-            ProviderProtocol::from_name("openai"),
-            ProviderProtocol::OpenAI
+            ProviderProtocol::parse("openai").unwrap(),
+            ProviderProtocol::OpenAiChat
         );
         assert_eq!(
-            ProviderProtocol::from_name("anthropic"),
-            ProviderProtocol::Anthropic
+            ProviderProtocol::parse("openai-chat").unwrap(),
+            ProviderProtocol::OpenAiChat
         );
         assert_eq!(
-            ProviderProtocol::from_name("Anthropic"),
-            ProviderProtocol::Anthropic
+            ProviderProtocol::parse("anthropic").unwrap(),
+            ProviderProtocol::AnthropicMessages
         );
+        assert_eq!(
+            ProviderProtocol::parse("openai_responses").unwrap(),
+            ProviderProtocol::OpenAiResponses
+        );
+        assert_eq!(
+            ProviderProtocol::parse("google-generative").unwrap(),
+            ProviderProtocol::GoogleGenerative
+        );
+        assert!(ProviderProtocol::parse("bedrock").is_err());
     }
 
     #[test]
@@ -351,6 +394,8 @@ mod tests {
             protocol: "openai".to_string(),
             model: "gpt-4".to_string(),
             models: Vec::new(),
+            use_proxy: None,
+            compat_profile: None,
         };
         let json = serde_json::to_string(&cfg).unwrap();
         let decoded: ProviderConfig = serde_json::from_str(&json).unwrap();

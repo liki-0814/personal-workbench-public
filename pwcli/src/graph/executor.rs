@@ -792,8 +792,8 @@ impl AgentGraph {
                     tc.function.name
                 );
                 ctx.sink
-                    .on_tool_result(&tc.id, &tc.function.name, &message, true);
-                self.push_tool_result(state, ctx, &tc.id, &message, true)
+                    .on_tool_result(&tc.id, &tc.function.name, &message, true, None);
+                self.push_tool_result(state, ctx, &tc.id, &message, true, None)
                     .await;
             }
             return Ok(Transition::Goto(NodeId::Agent));
@@ -814,8 +814,8 @@ impl AgentGraph {
                         &tool_call.function.arguments,
                     );
                     ctx.sink
-                        .on_tool_result(&tool_call.id, &tool_call.function.name, message, true);
-                    self.push_tool_result(state, ctx, &tool_call.id, message, true)
+                        .on_tool_result(&tool_call.id, &tool_call.function.name, message, true, None);
+                    self.push_tool_result(state, ctx, &tool_call.id, message, true, None)
                         .await;
                 }
                 return Ok(Transition::Goto(NodeId::Agent));
@@ -829,8 +829,8 @@ impl AgentGraph {
                     &tool_call.function.arguments,
                 );
                 ctx.sink
-                    .on_tool_result(&tool_call.id, &tool_call.function.name, message, true);
-                self.push_tool_result(state, ctx, &tool_call.id, message, true)
+                    .on_tool_result(&tool_call.id, &tool_call.function.name, message, true, None);
+                self.push_tool_result(state, ctx, &tool_call.id, message, true, None)
                     .await;
             }
             state.clarification_gate_resolved = true;
@@ -867,8 +867,8 @@ impl AgentGraph {
                 let deny_msg = "工具不在当前会话的允许列表中".to_string();
                 ctx.sink.on_permission_denied(&tc.function.name);
                 ctx.sink
-                    .on_tool_result(&tc.id, &tc.function.name, &deny_msg, true);
-                self.push_tool_result(state, ctx, &tc.id, &deny_msg, true)
+                    .on_tool_result(&tc.id, &tc.function.name, &deny_msg, true, None);
+                self.push_tool_result(state, ctx, &tc.id, &deny_msg, true, None)
                     .await;
                 all_terminate = false;
                 continue;
@@ -888,8 +888,8 @@ impl AgentGraph {
                         let deny_msg = "工具被策略拒绝执行".to_string();
                         ctx.sink.on_permission_denied(&tc.function.name);
                         ctx.sink
-                            .on_tool_result(&tc.id, &tc.function.name, &deny_msg, true);
-                        self.push_tool_result(state, ctx, &tc.id, &deny_msg, true)
+                            .on_tool_result(&tc.id, &tc.function.name, &deny_msg, true, None);
+                        self.push_tool_result(state, ctx, &tc.id, &deny_msg, true, None)
                             .await;
                         all_terminate = false;
                         continue;
@@ -902,8 +902,8 @@ impl AgentGraph {
                                 let deny_msg = "用户拒绝了工具执行".to_string();
                                 ctx.sink.on_permission_denied(&tc.function.name);
                                 ctx.sink
-                                    .on_tool_result(&tc.id, &tc.function.name, &deny_msg, true);
-                                self.push_tool_result(state, ctx, &tc.id, &deny_msg, true)
+                                    .on_tool_result(&tc.id, &tc.function.name, &deny_msg, true, None);
+                                self.push_tool_result(state, ctx, &tc.id, &deny_msg, true, None)
                                     .await;
                                 all_terminate = false;
                                 continue;
@@ -911,8 +911,8 @@ impl AgentGraph {
                             PermissionDecision::DenyWithReason(reason) => {
                                 ctx.sink.on_permission_denied(&tc.function.name);
                                 ctx.sink
-                                    .on_tool_result(&tc.id, &tc.function.name, &reason, true);
-                                self.push_tool_result(state, ctx, &tc.id, &reason, true)
+                                    .on_tool_result(&tc.id, &tc.function.name, &reason, true, None);
+                                self.push_tool_result(state, ctx, &tc.id, &reason, true, None)
                                     .await;
                                 all_terminate = false;
                                 continue;
@@ -951,19 +951,19 @@ impl AgentGraph {
                                 "⏳ 已安排后台任务 #{} — 工具 {} 将在后台执行，完成后自动通知。",
                                 task_id, tool_name
                             );
-                            self.push_tool_result(state, ctx, &tc.id, &placeholder, false)
+                            self.push_tool_result(state, ctx, &tc.id, &placeholder, false, None)
                                 .await;
                             ctx.sink
-                                .on_tool_result(&tc.id, &tool_name, &placeholder, false);
+                                .on_tool_result(&tc.id, &tool_name, &placeholder, false, None);
                             has_background_task = true;
                             all_terminate = false;
                         }
                         Err(e) => {
                             let err_msg = format!("后台任务创建失败: {}，将同步执行", e);
                             warn!(tool = %tool_name, error = %e, "后台任务创建失败");
-                            self.push_tool_result(state, ctx, &tc.id, &err_msg, true)
+                            self.push_tool_result(state, ctx, &tc.id, &err_msg, true, None)
                                 .await;
-                            ctx.sink.on_tool_result(&tc.id, &tool_name, &err_msg, true);
+                            ctx.sink.on_tool_result(&tc.id, &tool_name, &err_msg, true, None);
                             all_terminate = false;
                         }
                     }
@@ -996,130 +996,175 @@ impl AgentGraph {
             // === Execute tool (with auto-background for eligible tools) ===
             let bg_eligible = is_configured_background_tool(ctx.config, &tc.function.name);
 
-            let (result_str, is_err, terminate) = if bg_eligible {
-                if let (Some(bg_mgr), Some(_sid), Some(reg_arc)) =
-                    (ctx.background_tasks, ctx.session_id, ctx.tool_registry_arc)
-                {
-                    let registry_clone = Arc::clone(reg_arc);
-                    let tn = tc.function.name.clone();
-                    let av = args_value.clone();
-                    let pe = progress_em.clone();
-                    let ie = image_em.clone();
-                    let wc = web_cache.clone();
-                    let sid_for_tool = session_id.clone();
-                    let sid_for_adopt = session_id.clone();
+            let retry_policy = tool_retry_policy(&tc.function.name);
+            let unified_recovery = crate::config::local_config::get()
+                .features
+                .unified_recovery;
+            let mut attempt = 0u32;
+            let (result_str, is_err, terminate, failure) = loop {
+                let (result_str, is_err, terminate) = if bg_eligible {
+                    if let (Some(bg_mgr), Some(_sid), Some(reg_arc)) =
+                        (ctx.background_tasks, ctx.session_id, ctx.tool_registry_arc)
+                    {
+                        let registry_clone = Arc::clone(reg_arc);
+                        let tn = tc.function.name.clone();
+                        let av = args_value.clone();
+                        let pe = progress_em.clone();
+                        let ie = image_em.clone();
+                        let wc = web_cache.clone();
+                        let sid_for_tool = session_id.clone();
+                        let sid_for_adopt = session_id.clone();
 
-                    let (result_tx, mut result_rx) =
-                        tokio::sync::oneshot::channel::<anyhow::Result<String>>();
-                    let tool_handle = tokio::spawn(async move {
-                        let res = registry_clone
-                            .execute_with_emitters(&tn, &av, pe, ie, wc, sid_for_tool)
-                            .await;
-                        let _ = result_tx.send(res);
-                    });
+                        let (result_tx, mut result_rx) =
+                            tokio::sync::oneshot::channel::<anyhow::Result<String>>();
+                        let tool_handle = tokio::spawn(async move {
+                            let res = registry_clone
+                                .execute_with_emitters(&tn, &av, pe, ie, wc, sid_for_tool)
+                                .await;
+                            let _ = result_tx.send(res);
+                        });
 
-                    let bg_timeout = std::time::Duration::from_secs(
-                        ctx.config.background_promotion_timeout_seconds,
-                    );
-                    let timed_out = tokio::time::timeout(bg_timeout, &mut result_rx).await;
+                        let bg_timeout = std::time::Duration::from_secs(
+                            ctx.config.background_promotion_timeout_seconds,
+                        );
+                        let timed_out = tokio::time::timeout(bg_timeout, &mut result_rx).await;
 
-                    match timed_out {
-                        Ok(Ok(Ok(r))) => (r, false, false),
-                        Ok(Ok(Err(e))) => {
-                            warn!(tool = %tc.function.name, error = %e, "tool execution failed");
-                            (format!("Error: {}", e), true, false)
+                        match timed_out {
+                            Ok(Ok(Ok(r))) => (r, false, false),
+                            Ok(Ok(Err(e))) => {
+                                warn!(tool = %tc.function.name, error = %e, "tool execution failed");
+                                (format!("Error: {}", e), true, false)
+                            }
+                            Ok(Err(_)) => ("Error: tool task panicked".to_string(), true, false),
+                            Err(_) => {
+                                let desc = format!(
+                                    "{}({})",
+                                    tc.function.name,
+                                    truncate_for_display(&args_str, 80)
+                                );
+                                match bg_mgr
+                                    .adopt(
+                                        sid_for_adopt.unwrap_or_else(|| "unknown".to_string()),
+                                        tc.function.name.clone(),
+                                        desc,
+                                        tool_handle,
+                                        result_rx,
+                                    )
+                                    .await
+                                {
+                                    Ok(task_id) => {
+                                        let msg = format!(
+                                            "⚡ 已自动转为后台任务 #{}（运行超过 60s），完成后自动通知。",
+                                            task_id
+                                        );
+                                        info!(tool = %tc.function.name, task_id = %task_id,
+                                            "前台超时，自动转后台");
+                                        has_background_task = true;
+                                        (msg, false, false)
+                                    }
+                                    Err(e) => {
+                                        warn!(tool = %tc.function.name, error = %e, "转后台失败");
+                                        ("Error: 后台队列已满且工具执行超时".to_string(), true, false)
+                                    }
+                                }
+                            }
                         }
-                        Ok(Err(_)) => ("Error: tool task panicked".to_string(), true, false),
-                        Err(_) => {
-                            let desc = format!(
-                                "{}({})",
-                                tc.function.name,
-                                truncate_for_display(&args_str, 80)
-                            );
-                            match bg_mgr
-                                .adopt(
-                                    sid_for_adopt.unwrap_or_else(|| "unknown".to_string()),
-                                    tc.function.name.clone(),
-                                    desc,
-                                    tool_handle,
-                                    result_rx,
-                                )
-                                .await
-                            {
-                                Ok(task_id) => {
-                                    let msg = format!(
-                                        "⚡ 已自动转为后台任务 #{}（运行超过 60s），完成后自动通知。",
-                                        task_id
-                                    );
-                                    info!(tool = %tc.function.name, task_id = %task_id,
-                                        "前台超时，自动转后台");
-                                    has_background_task = true;
-                                    (msg, false, false)
-                                }
-                                Err(e) => {
-                                    warn!(tool = %tc.function.name, error = %e, "转后台失败");
-                                    ("Error: 后台队列已满且工具执行超时".to_string(), true, false)
-                                }
+                    } else {
+                        let result = ctx
+                            .tool_registry
+                            .execute_with_emitters(
+                                &tc.function.name,
+                                &args_value,
+                                progress_em.clone(),
+                                image_em.clone(),
+                                web_cache.clone(),
+                                session_id.clone(),
+                            )
+                            .await;
+                        match result {
+                            Ok(r) => (r, false, false),
+                            Err(e) => {
+                                warn!(tool = %tc.function.name, error = %e, "tool execution failed");
+                                (format!("Error: {}", e), true, false)
                             }
                         }
                     }
                 } else {
                     let result = ctx
                         .tool_registry
-                        .execute_with_emitters(
+                        .execute_with_emitters_output(
                             &tc.function.name,
                             &args_value,
-                            progress_em,
-                            image_em,
-                            web_cache,
-                            session_id,
+                            progress_em.clone(),
+                            image_em.clone(),
+                            web_cache.clone(),
+                            session_id.clone(),
                         )
                         .await;
                     match result {
-                        Ok(r) => (r, false, false),
+                        Ok(output) => {
+                            if let Some(details) = output.details.as_ref() {
+                                ctx.sink.on_tool_details(&tc.id, &tc.function.name, details);
+                            }
+                            (
+                                crate::llm::deferred_tools::attach(
+                                    output.content,
+                                    &output.added_tool_names,
+                                ),
+                                false,
+                                output.terminate,
+                            )
+                        }
                         Err(e) => {
                             warn!(tool = %tc.function.name, error = %e, "tool execution failed");
                             (format!("Error: {}", e), true, false)
                         }
                     }
+                };
+
+                if !is_err {
+                    break (result_str, false, terminate, None);
                 }
-            } else {
-                let result = ctx
-                    .tool_registry
-                    .execute_with_emitters_output(
+
+                let failure = crate::reliability::classify_tool_failure(
+                    &tc.function.name,
+                    &result_str,
+                    crate::reliability::FailureSource::ForegroundTool,
+                    attempt,
+                    retry_policy.max_attempts,
+                )
+                .with_correlation_id(tc.id.clone());
+                if unified_recovery
+                    && failure.can_auto_retry(retry_policy)
+                {
+                    let retry_after = crate::reliability::parse_retry_after_secs(&result_str);
+                    let delay = crate::reliability::retry_delay(attempt, retry_after);
+                    let next_retry_at = (chrono::Utc::now()
+                        + chrono::Duration::from_std(delay).unwrap_or_default())
+                    .to_rfc3339();
+                    let recovering = failure.clone().mark_auto_retrying(Some(next_retry_at));
+                    ctx.sink.on_tool_recovery(
+                        &tc.id,
                         &tc.function.name,
-                        &args_value,
-                        progress_em,
-                        image_em,
-                        web_cache,
-                        session_id,
-                    )
-                    .await;
-                match result {
-                    Ok(output) => {
-                        if let Some(details) = output.details.as_ref() {
-                            ctx.sink.on_tool_details(&tc.id, &tc.function.name, details);
-                        }
-                        (
-                            crate::llm::deferred_tools::attach(
-                                output.content,
-                                &output.added_tool_names,
-                            ),
-                            false,
-                            output.terminate,
-                        )
-                    }
-                    Err(e) => {
-                        warn!(tool = %tc.function.name, error = %e, "tool execution failed");
-                        (format!("Error: {}", e), true, false)
-                    }
+                        &recovering,
+                        "auto_retrying",
+                    );
+                    tokio::time::sleep(delay).await;
+                    attempt = attempt.saturating_add(1);
+                    continue;
                 }
+                break (result_str, true, terminate, Some(failure));
             };
             debug!(tool = %tc.function.name, is_err = is_err, result_len = result_str.len(),
                 "tool executed");
 
-            ctx.sink
-                .on_tool_result(&tc.id, &tc.function.name, &result_str, is_err);
+            ctx.sink.on_tool_result(
+                &tc.id,
+                &tc.function.name,
+                &result_str,
+                is_err,
+                failure.as_ref(),
+            );
 
             // === Hook: post-execute ===
             ctx.hook_runner.run(&HookEvent::ToolPostExecute {
@@ -1191,6 +1236,7 @@ impl AgentGraph {
                 &tc.id,
                 &tool_result.content,
                 tool_result.is_error,
+                failure,
             )
             .await;
             all_terminate &= tool_result.terminate;
@@ -1219,7 +1265,7 @@ impl AgentGraph {
         tool_calls: Vec<ToolCall>,
     ) -> Result<Transition> {
         let batch_size = tool_calls.len();
-        let mut outcomes: Vec<Option<(ToolCall, String, bool, bool)>> = vec![None; batch_size];
+        let mut outcomes: Vec<Option<(ToolCall, String, bool, bool, Option<crate::reliability::FailureEnvelope>)>> = vec![None; batch_size];
         let mut prepared = Vec::new();
 
         for (index, tool_call) in tool_calls.into_iter().enumerate() {
@@ -1227,13 +1273,21 @@ impl AgentGraph {
                 Ok(args) => args,
                 Err(error) => {
                     let message = format!("Invalid JSON arguments: {}", error);
+                    let failure = Some(crate::reliability::classify_tool_failure(
+                        &tool_call.function.name,
+                        &message,
+                        crate::reliability::FailureSource::ForegroundTool,
+                        0,
+                        crate::reliability::MAX_AUTO_RETRIES,
+                    ));
                     ctx.sink.on_tool_result(
                         &tool_call.id,
                         &tool_call.function.name,
                         &message,
                         true,
+                        failure.as_ref(),
                     );
-                    outcomes[index] = Some((tool_call, message, true, false));
+                    outcomes[index] = Some((tool_call, message, true, false, failure));
                     continue;
                 }
             };
@@ -1248,10 +1302,22 @@ impl AgentGraph {
                 || !ctx.tool_registry.has_tool(&tool_call.function.name)
             {
                 let message = "工具不在当前会话的允许列表中".to_string();
+                let failure = Some(crate::reliability::classify_tool_failure(
+                    &tool_call.function.name,
+                    &message,
+                    crate::reliability::FailureSource::ForegroundTool,
+                    0,
+                    crate::reliability::MAX_AUTO_RETRIES,
+                ));
                 ctx.sink.on_permission_denied(&tool_call.function.name);
-                ctx.sink
-                    .on_tool_result(&tool_call.id, &tool_call.function.name, &message, true);
-                outcomes[index] = Some((tool_call, message, true, false));
+                ctx.sink.on_tool_result(
+                    &tool_call.id,
+                    &tool_call.function.name,
+                    &message,
+                    true,
+                    failure.as_ref(),
+                );
+                outcomes[index] = Some((tool_call, message, true, false, failure));
                 continue;
             }
 
@@ -1260,9 +1326,21 @@ impl AgentGraph {
                 .validate_arguments(&tool_call.function.name, &args)
             {
                 let message = error.to_string();
-                ctx.sink
-                    .on_tool_result(&tool_call.id, &tool_call.function.name, &message, true);
-                outcomes[index] = Some((tool_call, message, true, false));
+                let failure = Some(crate::reliability::classify_tool_failure(
+                    &tool_call.function.name,
+                    &message,
+                    crate::reliability::FailureSource::ForegroundTool,
+                    0,
+                    crate::reliability::MAX_AUTO_RETRIES,
+                ));
+                ctx.sink.on_tool_result(
+                    &tool_call.id,
+                    &tool_call.function.name,
+                    &message,
+                    true,
+                    failure.as_ref(),
+                );
+                outcomes[index] = Some((tool_call, message, true, false, failure));
                 continue;
             }
 
@@ -1293,14 +1371,22 @@ impl AgentGraph {
                     }
                 };
                 if let Some(message) = decision {
+                    let failure = Some(crate::reliability::classify_tool_failure(
+                        &tool_call.function.name,
+                        &message,
+                        crate::reliability::FailureSource::ForegroundTool,
+                        0,
+                        crate::reliability::MAX_AUTO_RETRIES,
+                    ));
                     ctx.sink.on_permission_denied(&tool_call.function.name);
                     ctx.sink.on_tool_result(
                         &tool_call.id,
                         &tool_call.function.name,
                         &message,
                         true,
+                        failure.as_ref(),
                     );
-                    outcomes[index] = Some((tool_call, message, true, false));
+                    outcomes[index] = Some((tool_call, message, true, false, failure));
                     continue;
                 }
             }
@@ -1392,13 +1478,31 @@ impl AgentGraph {
                     })
                     .await?;
             }
+            let failure = if result.is_error {
+                Some(crate::reliability::classify_tool_failure(
+                    &tool_call.function.name,
+                    &result.content,
+                    crate::reliability::FailureSource::ForegroundTool,
+                    0,
+                    crate::reliability::MAX_AUTO_RETRIES,
+                ))
+            } else {
+                None
+            };
             ctx.sink.on_tool_result(
                 &tool_call.id,
                 &tool_call.function.name,
                 &result.content,
                 result.is_error,
+                failure.as_ref(),
             );
-            outcomes[index] = Some((tool_call, result.content, result.is_error, result.terminate));
+            outcomes[index] = Some((
+                tool_call,
+                result.content,
+                result.is_error,
+                result.terminate,
+                failure,
+            ));
         }
 
         let outcome_flags = outcomes
@@ -1406,14 +1510,14 @@ impl AgentGraph {
             .filter_map(|outcome| {
                 outcome
                     .as_ref()
-                    .map(|(_, _, is_error, terminate)| (*is_error, *terminate))
+                    .map(|(_, _, is_error, terminate, _)| (*is_error, *terminate))
             })
             .collect::<Vec<_>>();
         let should_terminate = successful_batch_should_terminate(&outcome_flags, batch_size);
         for outcome in outcomes.into_iter().flatten() {
-            let (tool_call, content, is_error, _) = outcome;
+            let (tool_call, content, is_error, _, failure) = outcome;
             state.record_tool_result(&tool_call.function.name, &content, is_error);
-            self.push_tool_result(state, ctx, &tool_call.id, &content, is_error)
+            self.push_tool_result(state, ctx, &tool_call.id, &content, is_error, failure)
                 .await;
         }
 
@@ -1545,6 +1649,7 @@ impl AgentGraph {
                     }
                     StreamEvent::ToolCallEnd { .. } => {}
                     StreamEvent::ToolResult { .. } => {}
+                    StreamEvent::ToolRecovery { .. } => {}
                     StreamEvent::ToolProgress { .. } => {}
                     StreamEvent::ToolImage { .. }
                     | StreamEvent::ToolDocument { .. }
@@ -1684,6 +1789,7 @@ impl AgentGraph {
         tool_call_id: &str,
         result: &str,
         is_error: bool,
+        failure: Option<crate::reliability::FailureEnvelope>,
     ) {
         state.messages.push(ChatMessage {
             role: "tool".to_string(),
@@ -1702,6 +1808,7 @@ impl AgentGraph {
                 tool_use_id: tool_call_id.to_string(),
                 content: result.to_string(),
                 is_error,
+                failure,
             }],
             created_at: now,
             parent_id: None,
@@ -1711,6 +1818,14 @@ impl AgentGraph {
 
         let mut session = ctx.session.lock().await;
         session.add_message(msg);
+    }
+}
+
+
+fn tool_retry_policy(tool_name: &str) -> crate::reliability::ToolRetryPolicy {
+    crate::reliability::ToolRetryPolicy {
+        allow_auto_retry: crate::reliability::is_idempotent_read_tool(tool_name),
+        max_attempts: crate::reliability::MAX_AUTO_RETRIES,
     }
 }
 

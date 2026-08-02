@@ -509,12 +509,15 @@ fn default_max_digest_bytes() -> u32 {
 pub struct FeaturesSection {
     #[serde(default = "default_true")]
     pub auto_memory_extract: bool,
+    #[serde(default = "default_true")]
+    pub unified_recovery: bool,
 }
 
 impl Default for FeaturesSection {
     fn default() -> Self {
         Self {
             auto_memory_extract: true,
+            unified_recovery: true,
         }
     }
 }
@@ -708,6 +711,9 @@ fn extract_typed(root: &Value) -> LocalConfig {
         if let Some(b) = features.get("autoMemoryExtract").and_then(|v| v.as_bool()) {
             out.features.auto_memory_extract = b;
         }
+        if let Some(b) = features.get("unifiedRecovery").and_then(|v| v.as_bool()) {
+            out.features.unified_recovery = b;
+        }
     }
 
     if let Some(server) = root.get("server") {
@@ -774,6 +780,10 @@ fn merge_managed(root: &mut Value, cfg: &LocalConfig) -> Result<()> {
         feats_obj.insert(
             "autoMemoryExtract".into(),
             Value::Bool(cfg.features.auto_memory_extract),
+        );
+        feats_obj.insert(
+            "unifiedRecovery".into(),
+            Value::Bool(cfg.features.unified_recovery),
         );
     }
 

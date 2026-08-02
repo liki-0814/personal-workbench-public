@@ -62,11 +62,57 @@ pub struct ProviderConfig {
     pub model: String,
     #[serde(default)]
     pub models: Vec<ModelEntry>,
+    /// When true, route provider HTTP through the local daemon proxy.
+    /// This is an explicit transport flag, not a vendor-specific special case.
+    #[serde(default, skip_serializing_if = "Option::is_none", rename = "useProxy")]
+    pub use_proxy: Option<bool>,
+    /// Deprecated: ignored by adapters. Kept only so old configs still deserialize.
+    #[serde(default, skip_serializing_if = "Option::is_none", rename = "compatProfile")]
+    pub compat_profile: Option<String>,
 }
 
 impl ProviderConfig {
     pub fn current_model_entry(&self) -> Option<&ModelEntry> {
         self.models.iter().find(|model| model.id == self.model)
+    }
+
+    pub fn uses_proxy(&self) -> bool {
+        self.use_proxy.unwrap_or(false)
+    }
+
+    /// Normalize legacy protocol names and generic knobs into canonical fields.
+    /// Returns true when any field changed.
+    ///
+    /// This is field-shape migration only. It must not infer vendor-specific
+    /// behavior from provider names, base URLs, or model ids.
+    pub fn normalize_in_place(&mut self) -> bool {
+        let mut changed = false;
+
+        let protocol_key = self.protocol.trim().to_ascii_lowercase().replace('-', "_");
+        let normalized_protocol = match protocol_key.as_str() {
+            "openai" | "openai_chat" | "openai_compatible" => "openai_chat",
+            "openai_responses" | "responses" => "openai_responses",
+            "anthropic" | "anthropic_messages" => "anthropic_messages",
+            "google" | "gemini" | "google_generative" | "generative_language" => "google_generative",
+            other if !other.is_empty() => other,
+            _ => "openai_chat",
+        };
+        if self.protocol != normalized_protocol {
+            self.protocol = normalized_protocol.to_string();
+            changed = true;
+        }
+
+        // Historical configs used vendor-ish mode strings; runtime only checks
+        // "is some". Canonicalize any non-empty value to "enabled".
+        for model in &mut self.models {
+            if let Some(mode) = model.deferred_tools_mode.as_deref() {
+                if !mode.is_empty() && mode != "enabled" {
+                    model.deferred_tools_mode = Some("enabled".into());
+                    changed = true;
+                }
+            }
+        }
+        changed
     }
 
     /// 返回当前 self.model 在 self.models 里登记的 max_output（如果有）。
@@ -111,9 +157,42 @@ mod tests {
             protocol: "openai".to_string(),
             model: "gpt-4".to_string(),
             models: Vec::new(),
+            use_proxy: None,
+            compat_profile: None,
         };
         let json = serde_json::to_string(&cfg).unwrap();
         let decoded: ProviderConfig = serde_json::from_str(&json).unwrap();
         assert_eq!(cfg, decoded);
+    }
+
+    #[test]
+    fn normalizes_legacy_protocol_names_and_deferred_tools_mode() {
+        let mut cfg = ProviderConfig {
+            name: "example".into(),
+            base_url: "https://gateway.example.com/v1".into(),
+            api_key: "sk".into(),
+            protocol: "openai".into(),
+            model: "demo-model".into(),
+            models: vec![ModelEntry {
+                id: "demo-model".into(),
+                name: "Demo".into(),
+                enabled: None,
+                max_output: None,
+                context_window: None,
+                capabilities: None,
+                request_params: None,
+                thinking_params: None,
+                deferred_tools_mode: Some("legacy-on".into()),
+            }],
+            use_proxy: None,
+            compat_profile: Some("old-label".into()),
+        };
+        assert!(cfg.normalize_in_place());
+        assert_eq!(cfg.protocol, "openai_chat");
+        // Proxy is never inferred from URL/name; only explicit useProxy counts.
+        assert_eq!(cfg.use_proxy, None);
+        assert_eq!(cfg.models[0].deferred_tools_mode.as_deref(), Some("enabled"));
+        // compatProfile remains for deserialize compatibility but is unused.
+        assert_eq!(cfg.compat_profile.as_deref(), Some("old-label"));
     }
 }

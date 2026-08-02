@@ -23,6 +23,7 @@ pub mod media;
 pub mod memory;
 pub mod middleware;
 pub mod permissions;
+pub mod reliability;
 pub mod rpc;
 pub mod service;
 pub mod session;

@@ -90,6 +90,8 @@ impl ProviderOverride {
             protocol: self.protocol.clone().context("protocol is required")?,
             model,
             models: vec![model_entry],
+            use_proxy: None,
+            compat_profile: None,
         })
     }
 }
@@ -116,6 +118,8 @@ fn provider_config_for_model(
         protocol: provider.protocol,
         model: model_entry.id.clone(),
         models: vec![model_entry],
+        use_proxy: None,
+        compat_profile: None,
     })
 }
 
@@ -1466,12 +1470,34 @@ impl crate::agent_runner::ToolEventSink for ChannelSink {
             arguments_delta: delta.to_string(),
         });
     }
-    fn on_tool_result(&self, id: &str, name: &str, result: &str, is_error: bool) {
+    fn on_tool_result(
+        &self,
+        id: &str,
+        name: &str,
+        result: &str,
+        is_error: bool,
+        failure: Option<&crate::reliability::FailureEnvelope>,
+    ) {
         let _ = self.tx.send(StreamEvent::ToolResult {
             id: id.to_string(),
             name: name.to_string(),
             result: result.to_string(),
             is_error,
+            failure: failure.cloned(),
+        });
+    }
+    fn on_tool_recovery(
+        &self,
+        id: &str,
+        name: &str,
+        failure: &crate::reliability::FailureEnvelope,
+        phase: &str,
+    ) {
+        let _ = self.tx.send(StreamEvent::ToolRecovery {
+            id: id.to_string(),
+            name: name.to_string(),
+            failure: failure.clone(),
+            phase: phase.to_string(),
         });
     }
     fn on_tool_details(&self, id: &str, _name: &str, details: &serde_json::Value) {

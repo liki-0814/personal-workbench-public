@@ -1,3 +1,4 @@
+pub mod adapter;
 pub mod anthropic;
 pub mod client;
 pub mod deferred_tools;
@@ -9,6 +10,7 @@ pub mod retry;
 pub mod streaming;
 pub mod summarize;
 
+pub use adapter::{create_adapter, LlmAdapter};
 pub use client::{LlmClient, LlmStreamOptions};
 pub use models::*;
 pub use summarize::{summarize_via_llm, summarize_via_llm_limited, SummarizeError};

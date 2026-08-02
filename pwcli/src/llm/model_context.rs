@@ -132,6 +132,8 @@ mod tests {
                 )])),
                 deferred_tools_mode: None,
             }],
+            use_proxy: None,
+            compat_profile: None,
         };
 
         assert_eq!(
@@ -164,6 +166,8 @@ mod tests {
                 thinking_params: None,
                 deferred_tools_mode: None,
             }],
+            use_proxy: None,
+            compat_profile: None,
         }];
         assert!(compute_vision_support_for(&providers, "vision"));
         assert!(!compute_vision_support_for(&providers, "missing"));

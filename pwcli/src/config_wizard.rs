@@ -93,6 +93,8 @@ pub async fn run_config_wizard() -> Result<()> {
         protocol,
         model,
         models: Vec::new(),
+        use_proxy: None,
+        compat_profile: None,
     };
 
     config.providers = Some(vec![provider]);

@@ -126,11 +126,77 @@ async fn retry_task(
             )
         })?
     };
-    state
+    let record = state
         .task_broker
         .retry_with_executor(&id, request.executor)
+        .map_err(bad_request)?;
+    if record.kind == "background_tool" {
+        let tool_name = record
+            .metadata
+            .get("toolName")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default()
+            .to_string();
+        let description = record.objective.clone();
+        let arguments = record.metadata.get("toolArguments").cloned();
+        let replayable = record
+            .metadata
+            .get("replayable")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+        if !replayable {
+            return Err((
+                axum::http::StatusCode::CONFLICT,
+                "background tool is not replayable".into(),
+            ));
+        }
+        let Some(arguments) = arguments else {
+            return Err((
+                axum::http::StatusCode::CONFLICT,
+                "background tool is not replayable".into(),
+            ));
+        };
+        match state
+            .background_tasks
+            .spawn_tool_with_runtime(
+                record.root_session_id.clone(),
+                tool_name,
+                description,
+                arguments,
+                std::sync::Arc::clone(&state.tool_registry),
+                record.id.clone(),
+            )
+            .await
+        {
+            Ok(new_bg_id) => {
+                tracing::info!(
+                    runtime_task_id = %record.id,
+                    background_task_id = %new_bg_id,
+                    "replayed durable background tool after RuntimeTask retry"
+                );
+            }
+            Err(error) => {
+                let _ = state.task_broker.complete_background_tool(
+                    &record.id,
+                    false,
+                    &format!("后台重试启动失败: {error}"),
+                );
+                return Err(bad_request(error));
+            }
+        }
+    }
+    // Reload because background spawn may have advanced the durable task.
+    state
+        .task_broker
+        .task(&id)
+        .map_err(bad_request)?
         .map(Json)
-        .map_err(bad_request)
+        .ok_or_else(|| {
+            (
+                axum::http::StatusCode::NOT_FOUND,
+                "runtime task not found".into(),
+            )
+        })
 }
 
 async fn resolve_decision(

@@ -15,6 +15,9 @@ use tokio::sync::{broadcast, RwLock};
 use tokio::task::JoinHandle;
 use tracing::{info, warn};
 
+use crate::reliability::{self, FailureEnvelope};
+use crate::task::TaskBroker;
+
 /// 后台任务状态
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -51,6 +54,12 @@ pub struct TaskResult {
     pub summary: String,
     pub log_file: Option<String>,
     pub duration_secs: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub runtime_task_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub failure: Option<FailureEnvelope>,
+    #[serde(default)]
+    pub replayable: bool,
 }
 
 /// 可序列化的任务信息（不含 JoinHandle）
@@ -73,6 +82,10 @@ pub struct TaskInfo {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub log_file: Option<String>,
     pub replayable: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub runtime_task_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub failure: Option<FailureEnvelope>,
 }
 
 #[derive(Clone)]
@@ -90,6 +103,7 @@ struct BackgroundTask {
     status: TaskStatus,
     handle: JoinHandle<()>,
     replay: Option<ReplaySpec>,
+    runtime_task_id: Option<String>,
 }
 
 pub struct BackgroundTaskManager {
@@ -97,6 +111,7 @@ pub struct BackgroundTaskManager {
     results: Arc<RwLock<HashMap<String, TaskResult>>>,
     max_concurrent: usize,
     event_tx: broadcast::Sender<TaskEvent>,
+    task_broker: Option<Arc<TaskBroker>>,
 }
 
 impl BackgroundTaskManager {
@@ -107,7 +122,17 @@ impl BackgroundTaskManager {
             results: Arc::new(RwLock::new(HashMap::new())),
             max_concurrent: max,
             event_tx: tx,
+            task_broker: None,
         }
+    }
+
+    pub fn set_task_broker(&mut self, broker: Arc<TaskBroker>) {
+        self.task_broker = Some(broker);
+    }
+
+    pub fn with_task_broker(mut self, broker: Arc<TaskBroker>) -> Self {
+        self.task_broker = Some(broker);
+        self
     }
 
     /// 获取当前运行中的任务数
@@ -130,6 +155,31 @@ impl BackgroundTaskManager {
     where
         F: std::future::Future<Output = anyhow::Result<String>> + Send + 'static,
     {
+        self.spawn_with_runtime(
+            session_id,
+            tool_name,
+            description,
+            None,
+            None,
+            false,
+            future,
+        )
+        .await
+    }
+
+    async fn spawn_with_runtime<F>(
+        &self,
+        session_id: String,
+        tool_name: String,
+        description: String,
+        runtime_task_id: Option<String>,
+        replay: Option<ReplaySpec>,
+        replayable: bool,
+        future: F,
+    ) -> anyhow::Result<String>
+    where
+        F: std::future::Future<Output = anyhow::Result<String>> + Send + 'static,
+    {
         if self.running_count().await >= self.max_concurrent {
             anyhow::bail!(
                 "后台任务已满（上限 {}），请等待现有任务完成",
@@ -138,8 +188,6 @@ impl BackgroundTaskManager {
         }
 
         let task_id = format!("bg_{}", chrono::Utc::now().timestamp_millis());
-
-        // 广播 Started 事件
         let _ = self.event_tx.send(TaskEvent::Started {
             task_id: task_id.clone(),
             session_id: session_id.clone(),
@@ -150,20 +198,20 @@ impl BackgroundTaskManager {
         let id = task_id.clone();
         let sid = session_id.clone();
         let tname = tool_name.clone();
-        let tx = self.event_tx.clone();
         let results_map = Arc::clone(&self.results);
+        let event_tx = self.event_tx.clone();
+        let task_broker = self.task_broker.clone();
+        let runtime_task_id_for_future = runtime_task_id.clone();
         let started_at = Instant::now();
         let log_dir = log_dir();
         let log_file = log_dir.join(format!("{}.log", id));
 
         let handle = tokio::spawn(async move {
-            let result_str = match future.await {
+            let mut result = match future.await {
                 Ok(output) => {
-                    // 完整输出写日志
                     if let Err(e) = write_log(&log_file, &output) {
                         warn!(task_id = %id, error = %e, "写后台任务日志失败");
                     }
-                    // 摘要：最后 30 行
                     let summary = make_summary(&output, &id, started_at.elapsed().as_secs());
                     TaskResult {
                         task_id: id.clone(),
@@ -173,6 +221,9 @@ impl BackgroundTaskManager {
                         summary,
                         log_file: Some(log_file.to_string_lossy().to_string()),
                         duration_secs: started_at.elapsed().as_secs(),
+                        runtime_task_id: runtime_task_id_for_future.clone(),
+                        failure: None,
+                        replayable,
                     }
                 }
                 Err(e) => {
@@ -186,20 +237,24 @@ impl BackgroundTaskManager {
                         summary: err_msg,
                         log_file: Some(log_file.to_string_lossy().to_string()),
                         duration_secs: started_at.elapsed().as_secs(),
+                        runtime_task_id: runtime_task_id_for_future.clone(),
+                        failure: None,
+                        replayable,
                     }
                 }
             };
             info!(
-                task_id = %result_str.task_id,
-                success = result_str.success,
-                duration = result_str.duration_secs,
+                task_id = %result.task_id,
+                success = result.success,
+                duration = result.duration_secs,
                 "后台任务完成"
             );
+            result = finalize_background_result(result, task_broker.as_ref()).await;
             results_map
                 .write()
                 .await
-                .insert(result_str.task_id.clone(), result_str.clone());
-            let _ = tx.send(TaskEvent::Completed(result_str));
+                .insert(result.task_id.clone(), result.clone());
+            let _ = event_tx.send(TaskEvent::Completed(result));
         });
 
         let task = BackgroundTask {
@@ -210,7 +265,8 @@ impl BackgroundTaskManager {
             started_at,
             status: TaskStatus::Running,
             handle,
-            replay: None,
+            replay,
+            runtime_task_id,
         };
         self.tasks.write().await.insert(task_id.clone(), task);
         Ok(task_id)
@@ -226,15 +282,240 @@ impl BackgroundTaskManager {
     ) -> anyhow::Result<String> {
         let execute_name = tool_name.clone();
         let execute_arguments = arguments.clone();
-        let id = self
-            .spawn(session_id, tool_name, description, async move {
-                registry.execute(&execute_name, &execute_arguments).await
-            })
-            .await?;
-        if let Some(task) = self.tasks.write().await.get_mut(&id) {
-            task.replay = Some(ReplaySpec { arguments });
+        let replayable = reliability::is_idempotent_read_tool(&tool_name);
+        // Project with placeholder background id then spawn using known ids.
+        let background_task_id = format!("bg_{}", chrono::Utc::now().timestamp_millis());
+        let projected = if let Some(broker) = self.task_broker.as_ref() {
+            match broker.project_background_tool(
+                &session_id,
+                &background_task_id,
+                &tool_name,
+                &description,
+                if replayable { Some(arguments.clone()) } else { None },
+                crate::config::local_config::get().tools.fs_base.as_str(),
+            ) {
+                Ok(record) => Some(record.id),
+                Err(error) => {
+                    warn!(%error, task_id=%background_task_id, "failed to project background tool");
+                    None
+                }
+            }
+        } else {
+            None
+        };
+
+        if self.running_count().await >= self.max_concurrent {
+            if let Some(runtime_id) = projected.as_deref() {
+                if let Some(broker) = self.task_broker.as_ref() {
+                    let _ = broker.complete_background_tool(
+                        runtime_id,
+                        false,
+                        "后台任务已满，未能启动",
+                    );
+                }
+            }
+            anyhow::bail!(
+                "后台任务已满（上限 {}），请等待现有任务完成",
+                self.max_concurrent
+            );
         }
-        Ok(id)
+
+        let _ = self.event_tx.send(TaskEvent::Started {
+            task_id: background_task_id.clone(),
+            session_id: session_id.clone(),
+            tool_name: tool_name.clone(),
+            description: description.clone(),
+        });
+
+        let id = background_task_id.clone();
+        let sid = session_id.clone();
+        let tname = tool_name.clone();
+        let results_map = Arc::clone(&self.results);
+        let event_tx = self.event_tx.clone();
+        let task_broker = self.task_broker.clone();
+        let runtime_task_id_for_future = projected.clone();
+        let started_at = Instant::now();
+        let log_dir = log_dir();
+        let log_file = log_dir.join(format!("{}.log", id));
+
+        let handle = tokio::spawn(async move {
+            let mut result = match registry.execute(&execute_name, &execute_arguments).await {
+                Ok(output) => {
+                    if let Err(e) = write_log(&log_file, &output) {
+                        warn!(task_id = %id, error = %e, "写后台任务日志失败");
+                    }
+                    let summary = make_summary(&output, &id, started_at.elapsed().as_secs());
+                    TaskResult {
+                        task_id: id.clone(),
+                        session_id: sid,
+                        tool_name: tname,
+                        success: true,
+                        summary,
+                        log_file: Some(log_file.to_string_lossy().to_string()),
+                        duration_secs: started_at.elapsed().as_secs(),
+                        runtime_task_id: runtime_task_id_for_future.clone(),
+                        failure: None,
+                        replayable,
+                    }
+                }
+                Err(e) => {
+                    let err_msg = format!("Error: {}", e);
+                    let _ = write_log(&log_file, &err_msg);
+                    TaskResult {
+                        task_id: id.clone(),
+                        session_id: sid,
+                        tool_name: tname,
+                        success: false,
+                        summary: err_msg,
+                        log_file: Some(log_file.to_string_lossy().to_string()),
+                        duration_secs: started_at.elapsed().as_secs(),
+                        runtime_task_id: runtime_task_id_for_future.clone(),
+                        failure: None,
+                        replayable,
+                    }
+                }
+            };
+            info!(
+                task_id = %result.task_id,
+                success = result.success,
+                duration = result.duration_secs,
+                "后台任务完成"
+            );
+            result = finalize_background_result(result, task_broker.as_ref()).await;
+            results_map
+                .write()
+                .await
+                .insert(result.task_id.clone(), result.clone());
+            let _ = event_tx.send(TaskEvent::Completed(result));
+        });
+
+        let task = BackgroundTask {
+            id: background_task_id.clone(),
+            session_id,
+            tool_name,
+            description,
+            started_at,
+            status: TaskStatus::Running,
+            handle,
+            replay: if replayable {
+                Some(ReplaySpec { arguments })
+            } else {
+                None
+            },
+            runtime_task_id: projected,
+        };
+        self.tasks
+            .write()
+            .await
+            .insert(background_task_id.clone(), task);
+        Ok(background_task_id)
+    }
+
+    pub async fn spawn_tool_with_runtime(
+        &self,
+        session_id: String,
+        tool_name: String,
+        description: String,
+        arguments: Value,
+        registry: Arc<crate::tools::registry::ToolRegistry>,
+        runtime_task_id: String,
+    ) -> anyhow::Result<String> {
+        let execute_name = tool_name.clone();
+        let execute_arguments = arguments.clone();
+        let replayable = reliability::is_idempotent_read_tool(&tool_name);
+        if self.running_count().await >= self.max_concurrent {
+            anyhow::bail!(
+                "后台任务已满（上限 {}），请等待现有任务完成",
+                self.max_concurrent
+            );
+        }
+        let background_task_id = format!("bg_{}", chrono::Utc::now().timestamp_millis());
+        let _ = self.event_tx.send(TaskEvent::Started {
+            task_id: background_task_id.clone(),
+            session_id: session_id.clone(),
+            tool_name: tool_name.clone(),
+            description: description.clone(),
+        });
+        let id = background_task_id.clone();
+        let sid = session_id.clone();
+        let tname = tool_name.clone();
+        let results_map = Arc::clone(&self.results);
+        let event_tx = self.event_tx.clone();
+        let task_broker = self.task_broker.clone();
+        let runtime_task_id_for_future = Some(runtime_task_id.clone());
+        let started_at = Instant::now();
+        let log_dir = log_dir();
+        let log_file = log_dir.join(format!("{}.log", id));
+        let handle = tokio::spawn(async move {
+            let mut result = match registry.execute(&execute_name, &execute_arguments).await {
+                Ok(output) => {
+                    if let Err(e) = write_log(&log_file, &output) {
+                        warn!(task_id = %id, error = %e, "写后台任务日志失败");
+                    }
+                    let summary = make_summary(&output, &id, started_at.elapsed().as_secs());
+                    TaskResult {
+                        task_id: id.clone(),
+                        session_id: sid,
+                        tool_name: tname,
+                        success: true,
+                        summary,
+                        log_file: Some(log_file.to_string_lossy().to_string()),
+                        duration_secs: started_at.elapsed().as_secs(),
+                        runtime_task_id: runtime_task_id_for_future.clone(),
+                        failure: None,
+                        replayable,
+                    }
+                }
+                Err(e) => {
+                    let err_msg = format!("Error: {}", e);
+                    let _ = write_log(&log_file, &err_msg);
+                    TaskResult {
+                        task_id: id.clone(),
+                        session_id: sid,
+                        tool_name: tname,
+                        success: false,
+                        summary: err_msg,
+                        log_file: Some(log_file.to_string_lossy().to_string()),
+                        duration_secs: started_at.elapsed().as_secs(),
+                        runtime_task_id: runtime_task_id_for_future.clone(),
+                        failure: None,
+                        replayable,
+                    }
+                }
+            };
+            info!(
+                task_id = %result.task_id,
+                success = result.success,
+                duration = result.duration_secs,
+                "后台任务完成"
+            );
+            result = finalize_background_result(result, task_broker.as_ref()).await;
+            results_map
+                .write()
+                .await
+                .insert(result.task_id.clone(), result.clone());
+            let _ = event_tx.send(TaskEvent::Completed(result));
+        });
+        let task = BackgroundTask {
+            id: background_task_id.clone(),
+            session_id,
+            tool_name,
+            description,
+            started_at,
+            status: TaskStatus::Running,
+            handle,
+            replay: if replayable {
+                Some(ReplaySpec { arguments })
+            } else {
+                None
+            },
+            runtime_task_id: Some(runtime_task_id),
+        };
+        self.tasks
+            .write()
+            .await
+            .insert(background_task_id.clone(), task);
+        Ok(background_task_id)
     }
 
     pub async fn retry_tool(
@@ -242,7 +523,7 @@ impl BackgroundTaskManager {
         task_id: &str,
         registry: Arc<crate::tools::registry::ToolRegistry>,
     ) -> anyhow::Result<String> {
-        let (session_id, tool_name, description, replay) = {
+        let (session_id, tool_name, description, replay, runtime_task_id) = {
             let tasks = self.tasks.read().await;
             let task = tasks
                 .get(task_id)
@@ -256,9 +537,21 @@ impl BackgroundTaskManager {
                 task.tool_name.clone(),
                 task.description.clone(),
                 task.replay.clone(),
+                task.runtime_task_id.clone(),
             )
         };
         let replay = replay.ok_or_else(|| anyhow::anyhow!("background task is not replayable"))?;
+        if let Some(runtime_task_id) = runtime_task_id.as_deref() {
+            if let Some(broker) = self.task_broker.as_ref() {
+                // Durable retry goes through RuntimeTask retry state machine when available.
+                match broker.retry(runtime_task_id) {
+                    Ok(_) => {}
+                    Err(error) => {
+                        warn!(%error, %runtime_task_id, "runtime retry before background replay failed");
+                    }
+                }
+            }
+        }
         self.spawn_tool(
             session_id,
             tool_name,
@@ -288,8 +581,25 @@ impl BackgroundTaskManager {
         }
 
         let task_id = format!("bg_{}", chrono::Utc::now().timestamp_millis());
+        let projected = if let Some(broker) = self.task_broker.as_ref() {
+            match broker.project_background_tool(
+                &session_id,
+                &task_id,
+                &tool_name,
+                &description,
+                None,
+                crate::config::local_config::get().tools.fs_base.as_str(),
+            ) {
+                Ok(record) => Some(record.id),
+                Err(error) => {
+                    warn!(%error, %task_id, "failed to project adopted background tool");
+                    None
+                }
+            }
+        } else {
+            None
+        };
 
-        // 广播 Started 事件
         let _ = self.event_tx.send(TaskEvent::Started {
             task_id: task_id.clone(),
             session_id: session_id.clone(),
@@ -300,15 +610,18 @@ impl BackgroundTaskManager {
         let id = task_id.clone();
         let sid = session_id.clone();
         let tname = tool_name.clone();
-        let tx = self.event_tx.clone();
         let results_map = Arc::clone(&self.results);
+        let event_tx = self.event_tx.clone();
+        let task_broker = self.task_broker.clone();
+        let runtime_task_id_for_future = projected.clone();
         let started_at = Instant::now();
         let log_dir = log_dir();
         let log_file = log_dir.join(format!("{}.log", id));
+        let replayable = reliability::is_idempotent_read_tool(&tool_name);
 
         let watcher = tokio::spawn(async move {
             let _ = handle.await;
-            let result_str = match result_rx.await {
+            let mut result = match result_rx.await {
                 Ok(Ok(output)) => {
                     let _ = write_log(&log_file, &output);
                     let summary = make_summary(&output, &id, started_at.elapsed().as_secs());
@@ -320,6 +633,9 @@ impl BackgroundTaskManager {
                         summary,
                         log_file: Some(log_file.to_string_lossy().to_string()),
                         duration_secs: started_at.elapsed().as_secs(),
+                        runtime_task_id: runtime_task_id_for_future.clone(),
+                        failure: None,
+                        replayable,
                     }
                 }
                 Ok(Err(e)) => {
@@ -333,6 +649,9 @@ impl BackgroundTaskManager {
                         summary: err_msg,
                         log_file: Some(log_file.to_string_lossy().to_string()),
                         duration_secs: started_at.elapsed().as_secs(),
+                        runtime_task_id: runtime_task_id_for_future.clone(),
+                        failure: None,
+                        replayable,
                     }
                 }
                 Err(_) => TaskResult {
@@ -343,19 +662,23 @@ impl BackgroundTaskManager {
                     summary: "任务被中断（sender dropped）".to_string(),
                     log_file: None,
                     duration_secs: started_at.elapsed().as_secs(),
+                    runtime_task_id: runtime_task_id_for_future.clone(),
+                    failure: None,
+                    replayable,
                 },
             };
             info!(
-                task_id = %result_str.task_id,
-                success = result_str.success,
-                duration = result_str.duration_secs,
+                task_id = %result.task_id,
+                success = result.success,
+                duration = result.duration_secs,
                 "后台任务完成（adopt）"
             );
+            result = finalize_background_result(result, task_broker.as_ref()).await;
             results_map
                 .write()
                 .await
-                .insert(result_str.task_id.clone(), result_str.clone());
-            let _ = tx.send(TaskEvent::Completed(result_str));
+                .insert(result.task_id.clone(), result.clone());
+            let _ = event_tx.send(TaskEvent::Completed(result));
         });
 
         let task = BackgroundTask {
@@ -367,6 +690,7 @@ impl BackgroundTaskManager {
             status: TaskStatus::Running,
             handle: watcher,
             replay: None,
+            runtime_task_id: projected,
         };
         self.tasks.write().await.insert(task_id.clone(), task);
         Ok(task_id)
@@ -380,6 +704,11 @@ impl BackgroundTaskManager {
             if task.session_id == session_id && task.status == TaskStatus::Running {
                 task.handle.abort();
                 task.status = TaskStatus::Cancelled;
+                if let Some(runtime_task_id) = task.runtime_task_id.as_deref() {
+                    if let Some(broker) = self.task_broker.as_ref() {
+                        let _ = broker.cancel_background_tool(runtime_task_id, "会话关闭，任务已取消");
+                    }
+                }
                 let _ = self.event_tx.send(TaskEvent::Cancelled(TaskResult {
                     task_id: task.id.clone(),
                     session_id: task.session_id.clone(),
@@ -388,6 +717,9 @@ impl BackgroundTaskManager {
                     summary: "会话关闭，任务已取消".to_string(),
                     log_file: None,
                     duration_secs: task.started_at.elapsed().as_secs(),
+                    runtime_task_id: task.runtime_task_id.clone(),
+                    failure: None,
+                    replayable: task.replay.is_some(),
                 }));
                 cancelled += 1;
             }
@@ -406,6 +738,11 @@ impl BackgroundTaskManager {
                 task.handle.abort();
                 task.status = TaskStatus::Cancelled;
                 info!(task_id = %task_id, "后台任务已取消");
+                if let Some(runtime_task_id) = task.runtime_task_id.as_deref() {
+                    if let Some(broker) = self.task_broker.as_ref() {
+                        let _ = broker.cancel_background_tool(runtime_task_id, "任务已取消");
+                    }
+                }
                 let _ = self.event_tx.send(TaskEvent::Cancelled(TaskResult {
                     task_id: task_id.to_string(),
                     session_id: task.session_id.clone(),
@@ -414,6 +751,9 @@ impl BackgroundTaskManager {
                     summary: "任务已取消".to_string(),
                     log_file: None,
                     duration_secs: task.started_at.elapsed().as_secs(),
+                    runtime_task_id: task.runtime_task_id.clone(),
+                    failure: None,
+                    replayable: task.replay.is_some(),
                 }));
                 return true;
             }
@@ -446,6 +786,8 @@ impl BackgroundTaskManager {
                     summary: r.map(|r| r.summary.clone()),
                     log_file: r.and_then(|r| r.log_file.clone()),
                     replayable: t.replay.is_some(),
+                    runtime_task_id: t.runtime_task_id.clone().or_else(|| r.and_then(|r| r.runtime_task_id.clone())),
+                    failure: r.and_then(|r| r.failure.clone()),
                 }
             })
             .collect()
@@ -486,6 +828,42 @@ impl BackgroundTaskManager {
             }
         }
     }
+}
+
+async fn finalize_background_result(
+    mut result: TaskResult,
+    broker: Option<&Arc<TaskBroker>>,
+) -> TaskResult {
+    if let Some(runtime_task_id) = result.runtime_task_id.as_deref() {
+        if let Some(broker) = broker {
+            match broker.complete_background_tool(runtime_task_id, result.success, &result.summary) {
+                Ok(record) => {
+                    result.failure = record.failure;
+                }
+                Err(error) => {
+                    warn!(%error, %runtime_task_id, "failed to persist background RuntimeTask outcome");
+                    if !result.success {
+                        result.failure = Some(reliability::classify_tool_failure(
+                            &result.tool_name,
+                            &result.summary,
+                            reliability::FailureSource::BackgroundTool,
+                            0,
+                            reliability::MAX_AUTO_RETRIES,
+                        ));
+                    }
+                }
+            }
+        }
+    } else if !result.success {
+        result.failure = Some(reliability::classify_tool_failure(
+            &result.tool_name,
+            &result.summary,
+            reliability::FailureSource::BackgroundTool,
+            0,
+            reliability::MAX_AUTO_RETRIES,
+        ));
+    }
+    result
 }
 
 fn log_dir() -> PathBuf {

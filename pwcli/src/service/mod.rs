@@ -58,6 +58,8 @@ where
                     protocol: "openai".to_string(),
                     model: "unconfigured".to_string(),
                     models: Vec::new(),
+                    use_proxy: None,
+                    compat_profile: None,
                 },
                 config.backend_url.clone(),
             )
@@ -71,10 +73,12 @@ where
     let permission_engine = Arc::new(PermissionEngine::new(PermissionPolicy::default()));
     let session_manager = session_manager::SessionManager::new();
 
-    let background_tasks = Arc::new(crate::background::BackgroundTaskManager::new(8));
     let data_dir = crate::config::local_config::data_dir();
     let permission_broker = Arc::new(crate::permissions::PermissionBroker::new(&data_dir)?);
     let task_broker = crate::task::TaskBroker::new(&data_dir, format!("http://127.0.0.1:{port}"))?;
+    let background_tasks = Arc::new(
+        crate::background::BackgroundTaskManager::new(8).with_task_broker(Arc::clone(&task_broker)),
+    );
     crate::tools::dispatch_tasks::register(
         tool_registry.as_ref(),
         Arc::clone(&task_broker),

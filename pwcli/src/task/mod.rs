@@ -26,6 +26,134 @@ pub mod worktree;
 
 pub use attention::RuntimeAttention;
 
+
+fn failure_from_status_and_error(
+    status: &str,
+    error: Option<&str>,
+    attempt: u32,
+) -> crate::reliability::FailureEnvelope {
+    crate::reliability::classify_runtime_failure(
+        status,
+        error.unwrap_or_default(),
+        attempt.saturating_sub(1),
+        crate::reliability::MAX_AUTO_RETRIES,
+    )
+}
+
+fn attention_kind_status(kind: &str) -> &str {
+    match kind {
+        "merge_required" => "merge_required",
+        "paused_callback" | "waiting_user" | "decision_required" => "waiting_user",
+        "task_failed" | "output_failed" | "background_failure" => "failed",
+        "background_interrupted" => "recovery_required",
+        other => other,
+    }
+}
+
+fn enrich_attention_detail(kind: &str, title: &str, detail: Value) -> Value {
+    let mut detail = if detail.is_object() {
+        detail
+    } else {
+        serde_json::json!({})
+    };
+    if detail.get("failure").is_none() {
+        let status = attention_kind_status(kind);
+        let error = detail
+            .get("error")
+            .and_then(|v| v.as_str())
+            .or_else(|| detail.get("reason").and_then(|v| v.as_str()))
+            .unwrap_or(title);
+        let failure = failure_from_status_and_error(status, Some(error), 1);
+        if let Ok(value) = serde_json::to_value(failure) {
+            if let Some(object) = detail.as_object_mut() {
+                object.insert("failure".into(), value);
+            }
+        }
+    }
+    detail
+}
+
+fn payload_with_failure(payload: &str, failure: Option<&crate::reliability::FailureEnvelope>) -> Result<String> {
+    let mut value = serde_json::from_str::<Value>(payload).unwrap_or_else(|_| serde_json::json!({}));
+    if !value.is_object() {
+        value = serde_json::json!({});
+    }
+    if let Some(object) = value.as_object_mut() {
+        match failure {
+            Some(failure) => {
+                object.insert("failure".into(), serde_json::to_value(failure)?);
+            }
+            None => {
+                object.remove("failure");
+            }
+        }
+    }
+    Ok(value.to_string())
+}
+
+fn create_attention_with_failure_tx(
+    transaction: &rusqlite::Transaction<'_>,
+    task_id: &str,
+    kind: &str,
+    dedupe_key: &str,
+    title: &str,
+    detail: Value,
+    failure: Option<&crate::reliability::FailureEnvelope>,
+) -> Result<Option<String>> {
+    let mut detail = if detail.is_object() {
+        detail
+    } else {
+        serde_json::json!({})
+    };
+    if let Some(failure) = failure {
+        if let Some(object) = detail.as_object_mut() {
+            object.insert("failure".into(), serde_json::to_value(failure)?);
+        }
+    }
+    let detail = enrich_attention_detail(kind, title, detail);
+    attention::create_attention_tx(transaction, task_id, kind, dedupe_key, title, detail)
+}
+
+fn derive_failure_from_row(
+    status: &str,
+    error: Option<&str>,
+    attempt: u32,
+    metadata: &Value,
+) -> Option<crate::reliability::FailureEnvelope> {
+    if let Some(failure) = metadata
+        .get("failure")
+        .cloned()
+        .and_then(|value| serde_json::from_value(value).ok())
+    {
+        return Some(failure);
+    }
+    if !matches!(
+        status,
+        "failed"
+            | "recovery_required"
+            | "waiting_user"
+            | "waiting_configuration"
+            | "cancelled"
+    ) && metadata
+        .get("outputStatus")
+        .and_then(Value::as_str)
+        != Some("failed")
+    {
+        return None;
+    }
+    let status_key = if metadata.get("outputStatus").and_then(Value::as_str) == Some("failed") {
+        "output_failed"
+    } else {
+        status
+    };
+    Some(failure_from_status_and_error(
+        status_key,
+        error,
+        attempt.max(1),
+    ))
+}
+
+
 const MAX_BATCH_TASKS: usize = 16;
 const MAX_DEPTH: u32 = 4;
 const MAX_DESCENDANT_TASKS: i64 = 64;
@@ -439,6 +567,8 @@ pub struct RuntimeTaskRecord {
     pub updated_at: DateTime<Utc>,
     pub result: Option<Value>,
     pub error: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub failure: Option<crate::reliability::FailureEnvelope>,
     pub metadata: Value,
 }
 
@@ -898,6 +1028,7 @@ impl TaskBroker {
         broker.backfill_legacy_attention()?;
         broker.import_spool()?;
         broker.recover_orphaned_attempts()?;
+        broker.recover_running_background_tools()?;
         broker.recover_review_apply_intents()?;
         Ok(broker)
     }
@@ -1048,6 +1179,7 @@ impl TaskBroker {
         ensure_column(&connection, "runtime_batches", "work_item_id", "TEXT")?;
         ensure_column(&connection, "runtime_batches", "parent_task_id", "TEXT")?;
         ensure_column(&connection, "runtime_tasks", "continuation_ref", "TEXT")?;
+        ensure_column(&connection, "runtime_tasks", "failure_json", "TEXT")?;
         ensure_column(&connection, "task_attempts", "continuation_ref", "TEXT")?;
         ensure_column(&connection, "task_attempts", "process_fingerprint", "TEXT")?;
         ensure_column(
@@ -1600,6 +1732,10 @@ impl TaskBroker {
         if let Value::Object(object) = &mut payload {
             object.insert("outputStatus".into(), Value::String("failed".into()));
         }
+        let failure = failure_from_status_and_error("output_failed", Some(error), 1);
+        if let Value::Object(object) = &mut payload {
+            object.insert("failure".into(), serde_json::to_value(&failure)?);
+        }
         let now = Utc::now().to_rfc3339();
         let event_id = format!("{attempt_id}:document-failed");
         let transaction = connection.transaction()?;
@@ -1624,15 +1760,20 @@ impl TaskBroker {
             task_id,
             Some(attempt_id),
             "task_output_failed",
-            serde_json::json!({ "error": error, "persistentAttention": true }),
+            serde_json::json!({
+                "error": error,
+                "persistentAttention": true,
+                "failure": failure,
+            }),
         )?;
-        attention::create_attention_tx(
+        create_attention_with_failure_tx(
             &transaction,
             task_id,
             "output_failed",
             &format!("runtime-task:{task_id}:attempt:{attempt_id}:output-failed"),
             "协作者产出整理失败",
             serde_json::json!({ "attemptId": attempt_id, "error": error }),
+            Some(&failure),
         )?;
         transaction.commit()?;
         self.emit_persisted_event(&event_id)
@@ -2113,6 +2254,339 @@ impl TaskBroker {
         attention::get(&self.connection()?, id)
     }
 
+    /// Project an ordinary background tool into a lightweight RuntimeTask so
+    /// failures can reuse durable Attention without launching workers.
+    pub fn project_background_tool(
+        &self,
+        session_id: &str,
+        background_task_id: &str,
+        tool_name: &str,
+        description: &str,
+        arguments: Option<Value>,
+        cwd: &str,
+    ) -> Result<RuntimeTaskRecord> {
+        let replayable = crate::reliability::is_idempotent_read_tool(tool_name);
+        let mut connection = self.connection()?;
+        let transaction = connection.transaction()?;
+        let now = Utc::now().to_rfc3339();
+        let batch_id = format!("batch_bg_{}", uuid::Uuid::now_v7().simple());
+        let task_id = format!("task_bg_{}", uuid::Uuid::now_v7().simple());
+        let objective = if description.trim().is_empty() {
+            format!("后台工具 {tool_name}")
+        } else {
+            description.to_string()
+        };
+        let mut payload = serde_json::json!({
+            "mode": "background_tool",
+            "toolName": tool_name,
+            "backgroundTaskId": background_task_id,
+            "replayable": replayable,
+            "outputStatus": "pending",
+            "reviewStatus": "not_required",
+            "deliverableTitle": objective.chars().take(80).collect::<String>(),
+            "objective": objective,
+            "cwd": cwd,
+            "role": "operator",
+            "access": "read_only",
+            "executor": "pwcli",
+            "kind": "background_tool",
+        });
+        if replayable {
+            if let Some(arguments) = arguments {
+                if let Some(object) = payload.as_object_mut() {
+                    object.insert("toolArguments".into(), arguments);
+                }
+            }
+        }
+        transaction.execute(
+            "INSERT INTO runtime_batches
+             (id, root_session_id, parent_task_id, work_item_id, session_generation, join_mode,
+              status, idempotency_key, created_at, updated_at)
+             VALUES (?1, ?2, NULL, NULL, NULL, 'all', 'running', ?3, ?4, ?4)",
+            params![
+                batch_id,
+                session_id,
+                format!("background-tool:{background_task_id}"),
+                now
+            ],
+        )?;
+        transaction.execute(
+            "INSERT INTO runtime_tasks
+             (id, batch_id, root_session_id, parent_task_id, kind, objective, cwd, backend, model,
+              payload_json, status, delivery_status, attempt, error, created_at, updated_at)
+             VALUES (?1, ?2, ?3, NULL, 'background_tool', ?4, ?5, NULL, NULL, ?6, 'running',
+                     'not_ready', 1, NULL, ?7, ?7)",
+            params![
+                task_id,
+                batch_id,
+                session_id,
+                objective,
+                cwd,
+                payload.to_string(),
+                now
+            ],
+        )?;
+        insert_event_tx(
+            &transaction,
+            &format!("{task_id}:background-started"),
+            &task_id,
+            None,
+            "task_started",
+            serde_json::json!({
+                "backgroundTaskId": background_task_id,
+                "toolName": tool_name,
+                "replayable": replayable,
+            }),
+        )?;
+        transaction.commit()?;
+        self.emit_persisted_event(&format!("{task_id}:background-started"))?;
+        self.task(&task_id)?.context("background RuntimeTask disappeared")
+    }
+
+    pub fn complete_background_tool(
+        &self,
+        task_id: &str,
+        success: bool,
+        summary: &str,
+    ) -> Result<RuntimeTaskRecord> {
+        let mut connection = self.connection()?;
+        let (raw_payload, current_status, attempt): (String, String, u32) = connection
+            .query_row(
+                "SELECT payload_json, status, attempt FROM runtime_tasks WHERE id=?1",
+                [task_id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .context("background RuntimeTask not found")?;
+        if matches!(current_status.as_str(), "succeeded" | "failed" | "cancelled") {
+            return self.task(task_id)?.context("background RuntimeTask not found");
+        }
+        let mut payload = serde_json::from_str::<Value>(&raw_payload).unwrap_or(serde_json::json!({}));
+        let now = Utc::now().to_rfc3339();
+        let transaction = connection.transaction()?;
+        if success {
+            if let Value::Object(object) = &mut payload {
+                object.insert("outputStatus".into(), Value::String("ready".into()));
+                object.remove("failure");
+            }
+            let result = serde_json::json!({
+                "summary": summary,
+                "document": {
+                    "title": payload.get("deliverableTitle").and_then(Value::as_str).unwrap_or("后台工具结果"),
+                    "format": "markdown",
+                    "body": summary,
+                }
+            });
+            transaction.execute(
+                "UPDATE runtime_tasks SET status='succeeded', delivery_status='delivered',
+                        result_json=?2, error=NULL, payload_json=?3, updated_at=?4 WHERE id=?1",
+                params![task_id, result.to_string(), payload.to_string(), now],
+            )?;
+            transaction.execute(
+                "UPDATE runtime_batches SET status='completed', updated_at=?2
+                 WHERE id=(SELECT batch_id FROM runtime_tasks WHERE id=?1)",
+                params![task_id, now],
+            )?;
+            insert_event_tx(
+                &transaction,
+                &format!("{task_id}:background-succeeded"),
+                task_id,
+                None,
+                "task_completed",
+                serde_json::json!({ "summary": summary }),
+            )?;
+            attention::resolve_task_tx(
+                &transaction,
+                task_id,
+                Some(&["background_failure", "background_interrupted", "task_failed"]),
+            )?;
+            transaction.commit()?;
+            self.emit_persisted_event(&format!("{task_id}:background-succeeded"))?;
+        } else {
+            let tool_name = payload
+                .get("toolName")
+                .and_then(Value::as_str)
+                .unwrap_or("background_tool")
+                .to_string();
+            let mut envelope = crate::reliability::classify_tool_failure(
+                &tool_name,
+                summary,
+                crate::reliability::FailureSource::BackgroundTool,
+                attempt.saturating_sub(1),
+                crate::reliability::MAX_AUTO_RETRIES,
+            );
+            let replayable = payload
+                .get("replayable")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
+            if !replayable {
+                envelope.actions.retain(|action| {
+                    !matches!(
+                        action.kind,
+                        crate::reliability::RecoveryActionKind::RetryTask
+                    )
+                });
+                if envelope.actions.is_empty() {
+                    envelope.actions.push(crate::reliability::RecoveryAction {
+                        kind: crate::reliability::RecoveryActionKind::OpenSession,
+                        label: "打开原会话".into(),
+                        recommended: Some(true),
+                    });
+                }
+            }
+            if let Value::Object(object) = &mut payload {
+                object.insert("outputStatus".into(), Value::String("failed".into()));
+                object.insert("failure".into(), serde_json::to_value(&envelope)?);
+            }
+            transaction.execute(
+                "UPDATE runtime_tasks SET status='failed', delivery_status='waiting_user',
+                        result_json=NULL, error=?2, payload_json=?3, updated_at=?4 WHERE id=?1",
+                params![task_id, summary, payload.to_string(), now],
+            )?;
+            transaction.execute(
+                "UPDATE runtime_batches SET status='completed', updated_at=?2
+                 WHERE id=(SELECT batch_id FROM runtime_tasks WHERE id=?1)",
+                params![task_id, now],
+            )?;
+            insert_event_tx(
+                &transaction,
+                &format!("{task_id}:background-failed"),
+                task_id,
+                None,
+                "task_failed",
+                serde_json::json!({ "error": summary, "failure": envelope }),
+            )?;
+            create_attention_with_failure_tx(
+                &transaction,
+                task_id,
+                "background_failure",
+                &format!("runtime-task:{task_id}:background-failed:{attempt}"),
+                "后台工具执行失败",
+                serde_json::json!({ "error": summary, "toolName": tool_name }),
+                Some(&envelope),
+            )?;
+            transaction.commit()?;
+            self.emit_persisted_event(&format!("{task_id}:background-failed"))?;
+        }
+        self.task(task_id)?.context("background RuntimeTask not found")
+    }
+
+    pub fn interrupt_background_tool(
+        &self,
+        task_id: &str,
+        reason: &str,
+    ) -> Result<RuntimeTaskRecord> {
+        let mut connection = self.connection()?;
+        let (raw_payload, current_status, attempt): (String, String, u32) = connection
+            .query_row(
+                "SELECT payload_json, status, attempt FROM runtime_tasks WHERE id=?1",
+                [task_id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .context("background RuntimeTask not found")?;
+        if matches!(current_status.as_str(), "succeeded" | "failed" | "cancelled" | "recovery_required") {
+            return self.task(task_id)?.context("background RuntimeTask not found");
+        }
+        let mut payload = serde_json::from_str::<Value>(&raw_payload).unwrap_or(serde_json::json!({}));
+        let envelope = failure_from_status_and_error("recovery_required", Some(reason), attempt.max(1));
+        if let Value::Object(object) = &mut payload {
+            object.insert("failure".into(), serde_json::to_value(&envelope)?);
+        }
+        let now = Utc::now().to_rfc3339();
+        let transaction = connection.transaction()?;
+        transaction.execute(
+            "UPDATE runtime_tasks SET status='recovery_required', delivery_status='waiting_user',
+                    error=?2, payload_json=?3, updated_at=?4 WHERE id=?1",
+            params![task_id, reason, payload.to_string(), now],
+        )?;
+        insert_event_tx(
+            &transaction,
+            &format!("{task_id}:background-interrupted"),
+            task_id,
+            None,
+            "task_recovery_required",
+            serde_json::json!({ "reason": reason, "failure": envelope }),
+        )?;
+        create_attention_with_failure_tx(
+            &transaction,
+            task_id,
+            "background_interrupted",
+            &format!("runtime-task:{task_id}:background-interrupted"),
+            "后台工具需要恢复",
+            serde_json::json!({ "error": reason }),
+            Some(&envelope),
+        )?;
+        transaction.commit()?;
+        self.emit_persisted_event(&format!("{task_id}:background-interrupted"))?;
+        self.task(task_id)?.context("background RuntimeTask not found")
+    }
+
+    pub fn cancel_background_tool(
+        &self,
+        task_id: &str,
+        reason: &str,
+    ) -> Result<RuntimeTaskRecord> {
+        let mut connection = self.connection()?;
+        let (raw_payload, current_status): (String, String) = connection
+            .query_row(
+                "SELECT payload_json, status FROM runtime_tasks WHERE id=?1",
+                [task_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .context("background RuntimeTask not found")?;
+        if matches!(current_status.as_str(), "succeeded" | "failed" | "cancelled") {
+            return self.task(task_id)?.context("background RuntimeTask not found");
+        }
+        let mut payload = serde_json::from_str::<Value>(&raw_payload).unwrap_or(serde_json::json!({}));
+        if let Value::Object(object) = &mut payload {
+            object.remove("failure");
+            object.insert("outputStatus".into(), Value::String("failed".into()));
+        }
+        let now = Utc::now().to_rfc3339();
+        let transaction = connection.transaction()?;
+        transaction.execute(
+            "UPDATE runtime_tasks SET status='cancelled', delivery_status='delivered',
+                    error=?2, payload_json=?3, updated_at=?4 WHERE id=?1",
+            params![task_id, reason, payload.to_string(), now],
+        )?;
+        insert_event_tx(
+            &transaction,
+            &format!("{task_id}:background-cancelled"),
+            task_id,
+            None,
+            "task_cancelled",
+            serde_json::json!({ "reason": reason }),
+        )?;
+        attention::resolve_task_tx(
+            &transaction,
+            task_id,
+            Some(&["background_failure", "background_interrupted", "task_failed"]),
+        )?;
+        transaction.commit()?;
+        self.emit_persisted_event(&format!("{task_id}:background-cancelled"))?;
+        self.task(task_id)?.context("background RuntimeTask not found")
+    }
+
+    pub fn recover_running_background_tools(&self) -> Result<usize> {
+        let connection = self.connection()?;
+        let mut statement = connection.prepare(
+            "SELECT id FROM runtime_tasks
+             WHERE kind='background_tool' AND status IN ('running','queued','leased','starting')",
+        )?;
+        let ids = statement
+            .query_map([], |row| row.get::<_, String>(0))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        drop(statement);
+        let mut recovered = 0usize;
+        for task_id in ids {
+            self.interrupt_background_tool(
+                &task_id,
+                "daemon restarted before background tool completion was recorded",
+            )?;
+            recovered += 1;
+        }
+        Ok(recovered)
+    }
+
     pub fn create_attention(
         &self,
         task_id: &str,
@@ -2124,6 +2598,7 @@ impl TaskBroker {
         let mut connection = self.connection()?;
         let transaction =
             connection.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        let detail = enrich_attention_detail(kind, title, detail);
         let inserted =
             attention::create_attention_tx(&transaction, task_id, kind, dedupe_key, title, detail)?;
         let event_id = inserted.as_ref().map(|id| format!("{id}:created"));
@@ -2508,6 +2983,13 @@ impl TaskBroker {
         if task.2 != "queued" {
             return Ok(false);
         }
+        if let Ok(payload) = serde_json::from_str::<Value>(&task.0) {
+            if payload.get("mode").and_then(Value::as_str) == Some("background_tool")
+                || payload.get("kind").and_then(Value::as_str) == Some("background_tool")
+            {
+                return Ok(false);
+            }
+        }
         let mut spec: RuntimeTaskSpec = serde_json::from_str(&task.0)?;
         let active: i64 = connection.query_row(
             "SELECT COUNT(*) FROM runtime_tasks WHERE status IN ('leased','starting','running','waiting_permission')",
@@ -2807,14 +3289,28 @@ impl TaskBroker {
         let now = Utc::now().to_rfc3339();
         let event_id = format!("{}:{event_suffix}", descriptor.attempt_id);
         let mut connection = self.connection()?;
+        let raw_payload: String = connection.query_row(
+            "SELECT payload_json FROM runtime_tasks WHERE id=?1",
+            [&descriptor.task_id],
+            |row| row.get(0),
+        )?;
+        let attempt: u32 = connection
+            .query_row(
+                "SELECT attempt FROM runtime_tasks WHERE id=?1",
+                [&descriptor.task_id],
+                |row| row.get(0),
+            )
+            .unwrap_or(1);
+        let envelope = failure_from_status_and_error(task_status, Some(&message), attempt.max(1));
+        let payload = payload_with_failure(&raw_payload, Some(&envelope))?;
         let transaction = connection.transaction()?;
         transaction.execute(
             "UPDATE task_attempts SET status=?2, error=?3, finished_at=?4 WHERE id=?1",
             params![descriptor.attempt_id, attempt_status, &message, &now],
         )?;
         transaction.execute(
-            "UPDATE runtime_tasks SET status=?2, error=?3, updated_at=?4 WHERE id=?1",
-            params![descriptor.task_id, task_status, &message, &now],
+            "UPDATE runtime_tasks SET status=?2, error=?3, payload_json=?4, updated_at=?5 WHERE id=?1",
+            params![descriptor.task_id, task_status, &message, payload, &now],
         )?;
         insert_event_tx(
             &transaction,
@@ -2825,9 +3321,10 @@ impl TaskBroker {
             serde_json::json!({
                 "reason": message,
                 "sideEffectsPossible": failure.side_effects_possible,
+                "failure": envelope,
             }),
         )?;
-        attention::create_attention_tx(
+        create_attention_with_failure_tx(
             &transaction,
             &descriptor.task_id,
             "task_failed",
@@ -2845,6 +3342,7 @@ impl TaskBroker {
                 "error": message,
                 "recoveryRequired": failure.side_effects_possible,
             }),
+            Some(&envelope),
         )?;
         transaction.commit()?;
         let _ = fs::remove_file(
@@ -3264,7 +3762,12 @@ impl TaskBroker {
                     "nativeSessionId": native_session_id,
                 }),
             )?;
-            attention::create_attention_tx(
+            let envelope = failure_from_status_and_error(
+                "waiting_user",
+                Some(&question),
+                1,
+            );
+            create_attention_with_failure_tx(
                 &transaction,
                 &identity.0,
                 "decision_required",
@@ -3275,6 +3778,7 @@ impl TaskBroker {
                     "question": question,
                     "options": options,
                 }),
+                Some(&envelope),
             )?;
             transaction.commit()?;
             self.emit_persisted_event(&request.event_id)?;
@@ -3492,6 +3996,27 @@ impl TaskBroker {
                 Value::String("materializing".to_string()),
             );
         }
+        let failure = if status == "failed" {
+            let attempt: u32 = connection
+                .query_row(
+                    "SELECT attempt FROM runtime_tasks WHERE id=?1",
+                    [&identity.0],
+                    |row| row.get(0),
+                )
+                .unwrap_or(1);
+            Some(failure_from_status_and_error(
+                "failed",
+                request.error.as_deref(),
+                attempt.max(1),
+            ))
+        } else {
+            None
+        };
+        if let Some(failure) = failure.as_ref() {
+            if let Value::Object(object) = &mut task_payload {
+                object.insert("failure".into(), serde_json::to_value(failure)?);
+            }
+        }
         let transaction = connection.transaction()?;
         transaction.execute(
             "UPDATE task_attempts SET status=?2, native_session_id=?3, result_hash=?4, error=?5, finished_at=?6
@@ -3520,10 +4045,15 @@ impl TaskBroker {
             } else {
                 "task_failed"
             },
-            serde_json::json!({ "outcome": request.outcome, "result": request.result, "error": request.error }),
+            serde_json::json!({
+                "outcome": request.outcome,
+                "result": request.result,
+                "error": request.error,
+                "failure": failure,
+            }),
         )?;
         if status == "failed" {
-            attention::create_attention_tx(
+            create_attention_with_failure_tx(
                 &transaction,
                 &identity.0,
                 "task_failed",
@@ -3533,6 +4063,7 @@ impl TaskBroker {
                     "attemptId": attempt_id,
                     "error": request.error,
                 }),
+                failure.as_ref(),
             )?;
         }
         transaction.execute(
@@ -3821,8 +4352,10 @@ impl TaskBroker {
                 "reviewStatus".into(),
                 Value::String(if mutating { "pending" } else { "not_required" }.into()),
             );
+            object.remove("failure");
         }
-        let changed = connection.execute(
+        let transaction = connection.unchecked_transaction()?;
+        let changed = transaction.execute(
             "UPDATE runtime_tasks SET status='queued', delivery_status='not_ready', result_json=NULL,
                     error=NULL, payload_json=?2, updated_at=?3 WHERE id=?1
                     AND status IN ('failed','cancelled','recovery_required','waiting_configuration')",
@@ -3830,6 +4363,37 @@ impl TaskBroker {
         )?;
         if changed == 0 {
             anyhow::bail!("only failed or cancelled tasks can be retried");
+        }
+        attention::resolve_task_tx(
+            &transaction,
+            task_id,
+            Some(&[
+                "task_failed",
+                "output_failed",
+                "background_failure",
+                "background_interrupted",
+                "decision_required",
+                "merge_required",
+            ]),
+        )?;
+        transaction.commit()?;
+        // Background tool projections never use worker leases. Safe replay is
+        // handled by the BackgroundTaskManager after this state transition.
+        if payload
+            .get("mode")
+            .and_then(Value::as_str)
+            == Some("background_tool")
+            || payload.get("kind").and_then(Value::as_str) == Some("background_tool")
+        {
+            // Background projections are advanced by BackgroundTaskManager.
+            // Mark running now so the inbox reflects an active retry.
+            let connection = self.connection()?;
+            connection.execute(
+                "UPDATE runtime_tasks SET status='running', delivery_status='not_ready',
+                        attempt=attempt+1, updated_at=?2 WHERE id=?1",
+                params![task_id, Utc::now().to_rfc3339()],
+            )?;
+            return self.task(task_id)?.context("runtime task not found");
         }
         if self.launch_workers {
             self.try_start(task_id)?;
@@ -4300,7 +4864,12 @@ impl TaskBroker {
             serde_json::to_value(&response)?,
         )?;
         if review_status == "merge_required" {
-            attention::create_attention_tx(
+            let envelope = failure_from_status_and_error(
+                "merge_required",
+                response.reason.as_deref(),
+                1,
+            );
+            create_attention_with_failure_tx(
                 &transaction,
                 task_id,
                 "merge_required",
@@ -4310,6 +4879,7 @@ impl TaskBroker {
                     "reviewRevision": next_revision,
                     "reason": response.reason,
                 }),
+                Some(&envelope),
             )?;
         } else {
             attention::resolve_task_tx(&transaction, task_id, None)?;
@@ -4592,14 +5162,32 @@ impl TaskBroker {
             };
             let now = Utc::now().to_rfc3339();
             let event_id = format!("{attempt_id}:startup-recovery");
+            let raw_payload: String = connection.query_row(
+                "SELECT payload_json FROM runtime_tasks WHERE id=?1",
+                [&task_id],
+                |row| row.get(0),
+            )?;
+            let attempt: u32 = connection
+                .query_row(
+                    "SELECT attempt FROM runtime_tasks WHERE id=?1",
+                    [&task_id],
+                    |row| row.get(0),
+                )
+                .unwrap_or(1);
+            let envelope = failure_from_status_and_error(
+                next_task_status,
+                Some(message),
+                attempt.max(1),
+            );
+            let payload = payload_with_failure(&raw_payload, Some(&envelope))?;
             let transaction = connection.transaction()?;
             transaction.execute(
                 "UPDATE task_attempts SET status=?2, error=?3, finished_at=?4 WHERE id=?1",
                 params![attempt_id, next_attempt_status, message, now],
             )?;
             transaction.execute(
-                "UPDATE runtime_tasks SET status=?2, error=?3, updated_at=?4 WHERE id=?1",
-                params![task_id, next_task_status, message, now],
+                "UPDATE runtime_tasks SET status=?2, error=?3, payload_json=?4, updated_at=?5 WHERE id=?1",
+                params![task_id, next_task_status, message, payload, now],
             )?;
             insert_event_tx(
                 &transaction,
@@ -4611,7 +5199,29 @@ impl TaskBroker {
                     "reason": message,
                     "recoveredAttemptStatus": attempt_status,
                     "processIdentity": identity_reason,
+                    "failure": envelope,
                 }),
+            )?;
+            create_attention_with_failure_tx(
+                &transaction,
+                &task_id,
+                if next_task_status == "recovery_required" {
+                    "background_interrupted"
+                } else {
+                    "task_failed"
+                },
+                &format!("runtime-task:{task_id}:attempt:{attempt_id}:startup-recovery"),
+                if next_task_status == "recovery_required" {
+                    "协作者需要恢复"
+                } else {
+                    "协作者启动失败"
+                },
+                serde_json::json!({
+                    "attemptId": attempt_id,
+                    "error": message,
+                    "recoveryRequired": next_task_status == "recovery_required",
+                }),
+                Some(&envelope),
             )?;
             transaction.commit()?;
             recovered_event_ids.push(event_id);
@@ -4684,10 +5294,24 @@ impl TaskBroker {
                 transaction.rollback()?;
                 continue;
             }
+            let raw_payload: String = transaction.query_row(
+                "SELECT payload_json FROM runtime_tasks WHERE id=?1",
+                [task_id],
+                |row| row.get(0),
+            )?;
+            let attempt: u32 = transaction
+                .query_row(
+                    "SELECT attempt FROM runtime_tasks WHERE id=?1",
+                    [task_id],
+                    |row| row.get(0),
+                )
+                .unwrap_or(1);
+            let envelope = failure_from_status_and_error(task_next, Some(message), attempt.max(1));
+            let payload = payload_with_failure(&raw_payload, Some(&envelope))?;
             transaction.execute(
-                "UPDATE runtime_tasks SET status=?2, error=?3, updated_at=?4
+                "UPDATE runtime_tasks SET status=?2, error=?3, payload_json=?4, updated_at=?5
                  WHERE id=?1 AND status IN ('leased','starting','running')",
-                params![task_id, task_next, message, timestamp],
+                params![task_id, task_next, message, payload, timestamp],
             )?;
             insert_event_tx(
                 &transaction,
@@ -4699,7 +5323,29 @@ impl TaskBroker {
                     "reason": message,
                     "leaseExpired": true,
                     "workerSignal": worker_signal,
+                    "failure": envelope,
                 }),
+            )?;
+            create_attention_with_failure_tx(
+                &transaction,
+                task_id,
+                if task_next == "recovery_required" {
+                    "background_interrupted"
+                } else {
+                    "task_failed"
+                },
+                &format!("runtime-task:{task_id}:attempt:{attempt_id}:lease-expired"),
+                if task_next == "recovery_required" {
+                    "协作者需要恢复"
+                } else {
+                    "协作者启动失败"
+                },
+                serde_json::json!({
+                    "attemptId": attempt_id,
+                    "error": message,
+                    "recoveryRequired": task_next == "recovery_required",
+                }),
+                Some(&envelope),
             )?;
             transaction.commit()?;
             event_ids.push(event_id);
@@ -5583,6 +6229,12 @@ fn row_to_task(row: &rusqlite::Row<'_>) -> rusqlite::Result<RuntimeTaskRecord> {
         updated_at: parse_time(row.get::<_, String>(13)?)?,
         result: result_json.and_then(|value| serde_json::from_str(&value).ok()),
         error: row.get(15)?,
+        failure: {
+            let status: String = row.get(9)?;
+            let attempt: u32 = row.get(11)?;
+            let error: Option<String> = row.get(15)?;
+            derive_failure_from_row(&status, error.as_deref(), attempt, &metadata)
+        },
         metadata,
     })
 }
@@ -5598,6 +6250,12 @@ fn serialize_spec_preserving_runtime(spec: &RuntimeTaskSpec, previous: &str) -> 
             "reviewRevision",
             "workItemId",
             "sessionGeneration",
+            "failure",
+            "mode",
+            "toolName",
+            "toolArguments",
+            "replayable",
+            "backgroundTaskId",
         ] {
             if let Some(existing) = previous.get(key) {
                 current.insert(key.to_string(), existing.clone());
@@ -7939,6 +8597,45 @@ mod tests {
         assert_eq!(event_count, 1);
         assert_eq!(broker.list_attention().unwrap()[0].kind, "output_failed");
     }
+
+    #[test]
+    fn background_tool_projection_persists_failure_envelope() {
+        let directory = tempfile::tempdir().unwrap();
+        let workspace = tempfile::tempdir_in(std::env::current_dir().unwrap()).unwrap();
+        let broker = TaskBroker::new_with_workspace_root(
+            directory.path(),
+            "http://127.0.0.1:9",
+            workspace.path().to_path_buf(),
+        )
+        .unwrap();
+        let task = broker
+            .project_background_tool(
+                "session-bg",
+                "bg_1",
+                "web_query",
+                "query docs",
+                Some(serde_json::json!({"q":"hello"})),
+                workspace.path().to_string_lossy().as_ref(),
+            )
+            .unwrap();
+        assert_eq!(task.kind, "background_tool");
+        assert_eq!(task.status, "running");
+        let failed = broker
+            .complete_background_tool(&task.id, false, "HTTP 503 service unavailable")
+            .unwrap();
+        assert_eq!(failed.status, "failed");
+        let failure = failed.failure.expect("failure envelope");
+        assert_eq!(failure.class, crate::reliability::FailureClass::Transient);
+        assert_eq!(
+            failure.disposition,
+            crate::reliability::FailureDisposition::UserActionRequired
+        );
+        let attention = broker.list_attention().unwrap();
+        assert_eq!(attention.len(), 1);
+        assert_eq!(attention[0].kind, "background_failure");
+        assert!(attention[0].detail.get("failure").is_some());
+    }
+
 
     #[test]
     fn legacy_attention_backfill_is_idempotent_and_never_reopens_resolved_work() {

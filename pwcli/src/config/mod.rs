@@ -336,6 +336,11 @@ fn parse_backend_providers(value: &serde_json::Value) -> anyhow::Result<Vec<Prov
             .get("protocol")
             .and_then(|v| v.as_str())
             .unwrap_or("openai");
+        let use_proxy = item.get("useProxy").and_then(|v| v.as_bool());
+        let compat_profile = item
+            .get("compatProfile")
+            .and_then(|v| v.as_str())
+            .map(str::to_string);
         if name.is_empty() || base_url.is_empty() || api_key.is_empty() {
             continue;
         }
@@ -397,14 +402,18 @@ fn parse_backend_providers(value: &serde_json::Value) -> anyhow::Result<Vec<Prov
                     .collect()
             })
             .unwrap_or_default();
-        out.push(ProviderConfig {
+        let mut provider = ProviderConfig {
             name: name.to_string(),
             base_url: base_url.to_string(),
             api_key: api_key.to_string(),
             protocol: protocol.to_string(),
             model: String::new(), // filled by override_providers_from_backend
             models,
-        });
+            use_proxy,
+            compat_profile,
+        };
+        let _ = provider.normalize_in_place();
+        out.push(provider);
     }
     Ok(out)
 }
@@ -438,6 +447,8 @@ mod tests {
                 protocol: "openai".to_string(),
                 model: "gpt-4".to_string(),
                 models: Vec::new(),
+                use_proxy: None,
+                compat_profile: None,
             }]),
             active_provider: None,
             features: RuntimeFeatureConfig::default(),
@@ -461,6 +472,8 @@ mod tests {
                     protocol: "openai".to_string(),
                     model: "gpt-4".to_string(),
                     models: Vec::new(),
+                    use_proxy: None,
+                    compat_profile: None,
                 },
                 ProviderConfig {
                     name: "anthropic".to_string(),
@@ -469,6 +482,8 @@ mod tests {
                     protocol: "anthropic".to_string(),
                     model: "claude-sonnet-4-6".to_string(),
                     models: Vec::new(),
+                    use_proxy: None,
+                    compat_profile: None,
                 },
             ]),
             active_provider: Some("anthropic".to_string()),
@@ -500,6 +515,8 @@ mod tests {
                 thinking_params: None,
                 deferred_tools_mode: None,
             }],
+            use_proxy: None,
+            compat_profile: None,
         };
         let mut masked = local.clone();
         masked.api_key = "real****-key".into();
@@ -519,6 +536,8 @@ mod tests {
             protocol: "openai".into(),
             model: String::new(),
             models: Vec::new(),
+            use_proxy: None,
+            compat_profile: None,
         };
 
         assert!(merge_backend_provider(masked, None).is_none());

@@ -6,15 +6,10 @@ use serde_json::Value;
 use tracing::{debug, error};
 
 fn effective_temperature(
-    provider: &crate::config::ProviderConfig,
+    _provider: &crate::config::ProviderConfig,
     requested: Option<f32>,
 ) -> Option<f32> {
-    let model = provider.model.to_ascii_lowercase();
-    if requested.is_some() && (model == "k3" || model.contains("kimi-k3")) {
-        Some(1.0)
-    } else {
-        requested
-    }
+    requested
 }
 
 // 默认输出 token 上限 = 128_000（十进制，不是 128 KiB）。OpenAI 协议
@@ -126,9 +121,9 @@ fn build_openai_messages_json(messages: &[ChatMessage]) -> Vec<Value> {
 fn build_openai_request_parts(
     messages: &[ChatMessage],
     tools: Option<&[ToolSchema]>,
-    kimi_deferred: bool,
+    deferred_tools: bool,
 ) -> (Vec<Value>, Option<Vec<ToolSchema>>) {
-    if !kimi_deferred {
+    if !deferred_tools {
         return (
             build_openai_messages_json(messages),
             tools.map(<[_]>::to_vec),
@@ -188,7 +183,7 @@ impl OpenAiClient {
     }
 
     pub async fn chat(&self, request: &LlmRequest) -> Result<AiResponse> {
-        let use_proxy = needs_proxy(&self.provider.base_url);
+        let use_proxy = needs_proxy(&self.provider);
         let (url, headers) = if use_proxy {
             let url = format!("{}/api/proxy/openai", self.backend_url);
             let mut headers = reqwest::header::HeaderMap::new();
@@ -209,7 +204,7 @@ impl OpenAiClient {
         let (messages_json, request_tools) = build_openai_request_parts(
             &request.messages,
             request.tools.as_deref(),
-            self.provider.deferred_tools_mode() == Some("kimi"),
+            self.provider.deferred_tools_mode().is_some(),
         );
 
         let mut payload = serde_json::json!({
@@ -314,8 +309,8 @@ impl OpenAiClient {
     }
 }
 
-fn needs_proxy(base_url: &str) -> bool {
-    base_url.contains("api.kimi.com")
+fn needs_proxy(provider: &ProviderConfig) -> bool {
+    provider.uses_proxy()
 }
 
 fn apply_provider_options(
@@ -334,19 +329,38 @@ fn apply_provider_options(
         "temperature",
     ];
 
-    let merge_params = |payload: &mut Value, params: &serde_json::Map<String, Value>| {
+    let merge_params = |payload: &mut Value, params: &serde_json::Map<String, Value>, source: &str| {
         if let Some(object) = payload.as_object_mut() {
             for (key, value) in params {
-                if !RESERVED.contains(&key.as_str()) {
-                    object.insert(key.clone(), value.clone());
+                if RESERVED.contains(&key.as_str()) {
+                    debug!(
+                        protocol = "openai_chat",
+                        source,
+                        key = %key,
+                        "ignored reserved request knob"
+                    );
+                    continue;
                 }
+                // Soft guidance only: these keys are commonly from other protocols.
+                if matches!(
+                    key.as_str(),
+                    "budget_tokens" | "anthropic-version" | "user-agent" | "generationConfig"
+                ) {
+                    debug!(
+                        protocol = "openai_chat",
+                        source,
+                        key = %key,
+                        "request knob is unusual for openai_chat and may be ignored upstream"
+                    );
+                }
+                object.insert(key.clone(), value.clone());
             }
         }
     };
 
     let model_entry = provider.current_model_entry();
     if let Some(params) = model_entry.and_then(|model| model.request_params.as_ref()) {
-        merge_params(payload, params);
+        merge_params(payload, params, "requestParams");
     }
     let custom_thinking = model_entry.and_then(|model| model.thinking_params.as_ref());
 
@@ -355,7 +369,7 @@ fn apply_provider_options(
     }
     if thinking {
         if let Some(params) = custom_thinking {
-            merge_params(payload, params);
+            merge_params(payload, params, "thinkingParams");
         } else {
             payload["enable_thinking"] = serde_json::json!(true);
         }
@@ -394,7 +408,7 @@ impl OpenAiClient {
 
         let s = async_stream::stream! {
             // ---- 构造请求（与 chat() 保持一致） ----
-            let use_proxy = needs_proxy(&provider.base_url);
+            let use_proxy = needs_proxy(&provider);
             let (url, headers) = if use_proxy {
                 let url = format!("{}/api/proxy/openai", backend_url);
                 let mut h = reqwest::header::HeaderMap::new();
@@ -414,7 +428,7 @@ impl OpenAiClient {
             let (messages_json, request_tools) = build_openai_request_parts(
                 &request.messages,
                 request.tools.as_deref(),
-                provider.deferred_tools_mode() == Some("kimi"),
+                provider.deferred_tools_mode().is_some(),
             );
 
             let mut payload = serde_json::json!({
@@ -658,7 +672,7 @@ mod tests {
     }
 
     #[test]
-    fn kimi_deferred_tools_move_from_top_level_to_activation_point() {
+    fn deferred_tools_move_from_top_level_to_activation_point() {
         let mut tool_result = msg(
             "tool",
             &crate::llm::deferred_tools::attach("loaded".into(), &["late_tool".to_string()]),
@@ -694,6 +708,8 @@ mod tests {
             protocol: "openai".to_string(),
             model: model.to_string(),
             models: Vec::new(),
+            use_proxy: None,
+            compat_profile: None,
         }
     }
 
@@ -709,21 +725,18 @@ mod tests {
     }
 
     #[test]
-    fn kimi_k3_clamps_sampling_temperature_to_one() {
-        let k3_provider = provider("https://api.moonshot.cn/v1", "k3");
-        assert_eq!(effective_temperature(&k3_provider, Some(0.0)), Some(1.0));
-        assert_eq!(effective_temperature(&k3_provider, None), None);
-
-        let regular = provider("https://api.openai.com/v1", "gpt-5.4");
-        assert_eq!(effective_temperature(&regular, Some(0.2)), Some(0.2));
+    fn sampling_temperature_is_passthrough() {
+        let provider = provider("https://api.openai.com/v1", "gpt-5.4");
+        assert_eq!(effective_temperature(&provider, Some(0.2)), Some(0.2));
+        assert_eq!(effective_temperature(&provider, None), None);
     }
 
     #[test]
     fn test_model_custom_params_replace_default_thinking_param_and_protect_core_fields() {
-        let mut provider = provider("https://api.moonshot.cn/v1", "kimi-k3");
+        let mut provider = provider("https://api.example.com/v1", "example-model");
         provider.models = vec![crate::config::provider::ModelEntry {
-            id: "kimi-k3".to_string(),
-            name: "Kimi K3".to_string(),
+            id: "example-model".to_string(),
+            name: "Example Model".to_string(),
             enabled: None,
             max_output: None,
             context_window: None,
@@ -738,11 +751,11 @@ mod tests {
             )])),
             deferred_tools_mode: None,
         }];
-        let mut payload = serde_json::json!({"model": "kimi-k3", "stream": true});
+        let mut payload = serde_json::json!({"model": "example-model", "stream": true});
 
         apply_provider_options(&mut payload, &provider, true, true);
 
-        assert_eq!(payload["model"], "kimi-k3");
+        assert_eq!(payload["model"], "example-model");
         assert_eq!(payload["top_p"], 0.95);
         assert_eq!(payload["reasoning_effort"], "max");
         assert!(payload.get("enable_thinking").is_none());
@@ -929,6 +942,8 @@ mod tests {
                 protocol: "openai".to_string(),
                 model: "gpt-4".to_string(),
                 models: Vec::new(),
+                use_proxy: None,
+                compat_profile: None,
             },
             server.url(),
         );
@@ -983,6 +998,8 @@ mod tests {
                 protocol: "openai".into(),
                 model: "gpt-4".into(),
                 models: Vec::new(),
+                use_proxy: None,
+                compat_profile: None,
             },
             server.url(),
         );
@@ -1055,6 +1072,8 @@ mod tests {
                 protocol: "openai".into(),
                 model: "qwen".into(),
                 models: Vec::new(),
+                use_proxy: None,
+                compat_profile: None,
             },
             server.url(),
         );

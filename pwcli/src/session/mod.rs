@@ -390,6 +390,7 @@ mod tests {
                 tool_use_id: "tc_1".into(),
                 content: "找到 1 篇".into(),
                 is_error: false,
+                failure: None,
             }],
             created_at: chrono::Utc::now(),
             parent_id: None,

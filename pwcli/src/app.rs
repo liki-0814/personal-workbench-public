@@ -175,7 +175,14 @@ async fn run_oneshot_inner(
                 progress(&format!("🔧 {} · {}", name, truncate(args, 120)));
             }
         }
-        fn on_tool_result(&self, _id: &str, _name: &str, result: &str, is_err: bool) {
+        fn on_tool_result(
+            &self,
+            _id: &str,
+            _name: &str,
+            result: &str,
+            is_err: bool,
+            _failure: Option<&crate::reliability::FailureEnvelope>,
+        ) {
             let prefix = if is_err { "✗" } else { "↳" };
             let _ = writeln!(std::io::stderr(), "  {} {}", prefix, truncate(result, 200));
             if let Some(progress) = &self.progress {
@@ -529,6 +536,8 @@ mod tests {
             protocol: "openai".to_string(),
             model: model.to_string(),
             models: Vec::new(),
+            use_proxy: None,
+            compat_profile: None,
         }
     }
 

@@ -1221,6 +1221,8 @@ mod decision_tests {
                 thinking_params: None,
                 deferred_tools_mode: None,
             }],
+            use_proxy: None,
+            compat_profile: None,
         }
     }
 

@@ -58,9 +58,25 @@ pub enum PermissionDecision {
 /// 回调 trait 用于通知调用方工具执行事件（REPL 模式下用于 UI 输出）
 pub trait ToolEventSink: Send + Sync {
     fn on_tool_call(&self, id: &str, name: &str, args: &str);
-    fn on_tool_result(&self, id: &str, name: &str, result: &str, is_error: bool);
+    fn on_tool_result(
+        &self,
+        id: &str,
+        name: &str,
+        result: &str,
+        is_error: bool,
+        failure: Option<&crate::reliability::FailureEnvelope>,
+    );
     /// Structured tool metadata for UI-native artifacts such as editable documents.
     fn on_tool_details(&self, _id: &str, _name: &str, _details: &serde_json::Value) {}
+    /// Structured recovery progress for auto-retry and final recovery outcomes.
+    fn on_tool_recovery(
+        &self,
+        _id: &str,
+        _name: &str,
+        _failure: &crate::reliability::FailureEnvelope,
+        _phase: &str,
+    ) {
+    }
 
     /// LLM 流式刚发出 ToolCallStart 时立即通知（args 还在累积，可能为空）。
     /// 默认空实现 —— REPL/oneshot sink 关心完整 args，从 `on_tool_call` 收即可；
@@ -128,7 +144,15 @@ pub trait ToolEventSink: Send + Sync {
 pub(crate) struct NoopSink;
 impl ToolEventSink for NoopSink {
     fn on_tool_call(&self, _id: &str, _name: &str, _args: &str) {}
-    fn on_tool_result(&self, _id: &str, _name: &str, _result: &str, _is_error: bool) {}
+    fn on_tool_result(
+        &self,
+        _id: &str,
+        _name: &str,
+        _result: &str,
+        _is_error: bool,
+        _failure: Option<&crate::reliability::FailureEnvelope>,
+    ) {
+    }
     fn on_permission_prompt(&self, _name: &str, _args: &str) {}
     fn on_permission_denied(&self, _name: &str) {}
 }
@@ -427,6 +451,8 @@ mod tests {
                 protocol: "openai".into(),
                 model: "gpt-4o".into(),
                 models: vec![],
+                use_proxy: None,
+                compat_profile: None,
             }]),
             active_provider: Some("t".into()),
             features: crate::config::RuntimeFeatureConfig::default(),
@@ -449,7 +475,14 @@ mod tests {
         fn on_tool_call(&self, _id: &str, n: &str, a: &str) {
             self.calls.lock().unwrap().push((n.into(), a.into()));
         }
-        fn on_tool_result(&self, _id: &str, n: &str, r: &str, e: bool) {
+        fn on_tool_result(
+            &self,
+            _id: &str,
+            n: &str,
+            r: &str,
+            e: bool,
+            _failure: Option<&crate::reliability::FailureEnvelope>,
+        ) {
             self.results.lock().unwrap().push((n.into(), r.into(), e));
         }
         fn on_permission_prompt(&self, _n: &str, _a: &str) {}
