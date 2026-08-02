@@ -14,10 +14,20 @@ against one of the schemas in this folder before any layout work happens.
 | `architecture.schema.json` | `diagram_type: "architecture"` | `components`, `boundaries`, `connections` |
 | `common.schema.json` | shared `$defs` only (no top-level document) | — |
 
-Every diagram schema requires `schema_version`, `diagram_type`, `meta` (with
-`title`), and its structural arrays — except `segments`, `activations`, and
-`cards`, which are optional — and sets `additionalProperties: false` at every
-level, so unknown fields are rejected rather than silently ignored.
+Every diagram schema requires `schema_version`, `diagram_type`, and `meta`
+(with `title`). Required structural collections vary by diagram type:
+
+- Architecture requires `components`; `layout`, `boundaries`, `connections`,
+  and `cards` are optional.
+- Workflow requires `lanes`, `nodes`, and `edges`; `phases`, `groups`,
+  `mainPath`, and `cards` are optional.
+- Sequence requires `participants` and `messages`; `segments`, `activations`,
+  and `cards` are optional.
+- Data flow requires `stages`, `nodes`, and `flows`; `cards` is optional.
+- Lifecycle requires `lanes`, `states`, and `transitions`; `cards` is optional.
+
+Schemas set `additionalProperties: false` at object levels, so unknown fields
+are rejected rather than silently ignored.
 
 Every `meta` object also accepts `animation: "trace"` for opt-in SVG/CSS motion
 in generated HTML. Omit it, or set `"none"`, for the default static output.
@@ -65,12 +75,10 @@ stays in `lifecycle.schema.json`.
 
 ## Runtime validation
 
-At development time, `scripts/generate-validators.mjs` compiles all five
-schemas with ajv's draft 2020-12 standalone generator using `strict: true` and
-`allErrors: true`. The generated `renderers/shared/generated-validators.mjs`
-is committed and shipped with the skill, so runtime validation has no npm or
+The committed `renderers/shared/generated-validators.mjs` contains standalone
+validators for all five schemas, so renderer runtime validation has no npm or
 network dependency. `renderers/shared/validator.mjs` applies the matching
-standalone validator before the renderer's own layout checks.
+validator before the renderer's own layout checks.
 The shared loader then checks cross-collection facts that JSON Schema cannot
 express cleanly here: duplicate view IDs, duplicate focus IDs, focus IDs that do
 not exist in the diagram's semantic collection, and duplicate authored
@@ -79,11 +87,12 @@ relationship IDs within the mode's relationship collection.
 Architecture additionally supports opt-in, revision-pinned repository evidence.
 `meta.repository` names a public GitHub URL and full commit SHA; a component may
 carry one to three `sources` with repo-relative POSIX paths, optional line
-ranges, and optional labels. Shape is schema-checked, then the renderer requires
-`--repo-root`: the local Git origin must match, and Git must prove the commit,
-blobs, and requested lines. Verified evidence is embedded outside the canonical
-SVG for the Semantic Passport and Node Finder; ordinary documents and visual
-exports carry no repository evidence.
+ranges, and optional labels. Shape is schema-checked, then the Node CLI requires
+the `ARCHIFY_REPO_ROOT` environment variable to name the local checkout. Its Git
+origin must match, and Git must prove the commit, blobs, and requested lines.
+Verified evidence is embedded outside the canonical SVG for the Semantic
+Passport and Node Finder; ordinary documents and visual exports carry no
+repository evidence.
 
 ## Visual quality and engineering truth
 
@@ -106,8 +115,10 @@ The profile validates only authored IR. It does not discover infrastructure,
 infer owners, or prove that a diagram matches a live environment. If a fact is
 unknown, leave the profile unset or obtain the fact instead of inventing it.
 
-`npm test` runs the generator in check mode and fails when the committed
-validators drift from their schemas.
+`npm run build:archify` bundles the five embedded runtimes and verifies that
+each embedded renderer produces the same HTML as its Node CLI for the bundled
+comparison example. `cargo test` covers the Rust-side Archify tool contract and
+renders all five embedded examples.
 
 ## Error format
 

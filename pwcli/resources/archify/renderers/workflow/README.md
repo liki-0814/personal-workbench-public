@@ -4,24 +4,19 @@ Render `diagram_type: "workflow"` JSON files into the standard Archify HTML
 template.
 
 ```bash
-node archify/renderers/workflow/render-workflow.mjs input.workflow.json output.html
+node pwcli/resources/archify/renderers/workflow/render-workflow.mjs input.workflow.json output.html
 ```
 
-The renderer validates input against `archify/schemas/workflow.schema.json`
+The renderer validates input against
+`pwcli/resources/archify/schemas/workflow.schema.json`
 with the bundled standalone validator. No dependency installation is required.
 
 If `output.html` is omitted, the renderer uses `meta.output` from the JSON file
 or falls back to `workflow.html` in the current working directory.
 
-After rendering, run the artifact checker:
-
-```bash
-node archify/scripts/check-render-output.mjs output.html
-```
-
-It catches final-SVG issues that are easiest to see in a browser: non-finite
-SVG values, accidental two-point diagonal arrows, and arrows crossing the
-legend.
+The renderer performs schema and geometry/layout checks before it writes the
+output. A validation failure exits non-zero; this repository does not ship a
+separate post-render artifact-checker command.
 
 ## Input
 
@@ -48,12 +43,12 @@ Workflow JSON files must set:
 Omit `meta.viewBox` for the common case: the width is fixed at 720 and the
 height is derived from the lane count, so lanes and legend always fit. A
 complete worked example lives at
-`archify/examples/agent-tool-call.workflow.json`.
+`pwcli/resources/archify/examples/agent-tool-call.workflow.json`.
 
 The schema lives at:
 
 ```text
-archify/schemas/workflow.schema.json
+pwcli/resources/archify/schemas/workflow.schema.json
 ```
 
 ## Layout budget
