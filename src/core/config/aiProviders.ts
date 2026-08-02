@@ -22,7 +22,193 @@ export interface ModelEntry {
   /** Provider-specific top-level fields merged only while extended thinking is enabled. */
   thinkingParams?: Record<string, unknown>;
   /** Cache-stable transcript loading for compatible models. */
-  deferredToolsMode?: 'kimi';
+  deferredToolsMode?: string;
+}
+
+export type ProviderProtocol =
+  | 'openai_chat'
+  | 'openai_responses'
+  | 'anthropic_messages'
+  | 'google_generative'
+  // legacy aliases accepted when reading saved config
+  | 'openai'
+  | 'anthropic';
+
+export const PROVIDER_PROTOCOL_OPTIONS: Array<{ value: ProviderProtocol; label: string; description: string }> = [
+  { value: 'openai_chat', label: 'OpenAI Chat', description: 'Chat Completions / 兼容网关（含 Azure、Ollama）' },
+  { value: 'openai_responses', label: 'OpenAI Responses', description: 'Responses API' },
+  { value: 'anthropic_messages', label: 'Anthropic Messages', description: 'Claude Messages API' },
+  { value: 'google_generative', label: 'Google Generative', description: 'Gemini generateContent 原生协议' },
+];
+
+export function normalizeProviderProtocol(protocol: string | undefined | null): ProviderProtocol {
+  const value = (protocol || '').trim().toLowerCase().replace(/-/g, '_');
+  switch (value) {
+    case 'openai':
+    case 'openai_chat':
+    case 'openai_compatible':
+      return 'openai_chat';
+    case 'openai_responses':
+    case 'responses':
+      return 'openai_responses';
+    case 'anthropic':
+    case 'anthropic_messages':
+      return 'anthropic_messages';
+    case 'google':
+    case 'gemini':
+    case 'google_generative':
+    case 'generative_language':
+      return 'google_generative';
+    default:
+      return 'openai_chat';
+  }
+}
+
+export function protocolLabel(protocol: string | undefined | null): string {
+  const normalized = normalizeProviderProtocol(protocol);
+  return PROVIDER_PROTOCOL_OPTIONS.find(option => option.value === normalized)?.label || normalized;
+}
+
+export function protocolDescription(protocol: string | undefined | null): string {
+  const normalized = normalizeProviderProtocol(protocol);
+  return PROVIDER_PROTOCOL_OPTIONS.find(option => option.value === normalized)?.description || '';
+}
+
+/** Normalize legacy provider/model knobs into explicit fields. */
+export function normalizeProviderConfig(provider: AiProvider): AiProvider {
+  const protocol = normalizeProviderProtocol(provider.protocol);
+  const baseUrl = (provider.baseUrl || '').trim();
+
+  // Field-shape migration only. Never infer transport or vendor behavior from
+  // provider names, base URLs, or model ids.
+  const models = (provider.models || []).map(model => {
+    const next = { ...model };
+    if (next.deferredToolsMode && next.deferredToolsMode !== 'enabled') {
+      // Historical values were vendor-ish strings; runtime only checks presence.
+      next.deferredToolsMode = 'enabled';
+    }
+    return next;
+  });
+
+  return {
+    ...provider,
+    protocol,
+    baseUrl,
+    useProxy: provider.useProxy || undefined,
+    models,
+  };
+}
+
+export type ModelParamTemplate = {
+  id: string;
+  label: string;
+  description: string;
+  protocols: ProviderProtocol[];
+  apply: (model: ModelEntry) => ModelEntry;
+};
+
+export const MODEL_PARAM_TEMPLATES: ModelParamTemplate[] = [
+  {
+    id: 'openai_top_p',
+    label: '兼容网关 top_p',
+    description: '写入 requestParams.top_p=0.95',
+    protocols: ['openai_chat'],
+    apply: model => ({
+      ...model,
+      requestParams: { ...(model.requestParams || {}), top_p: 0.95 },
+    }),
+  },
+  {
+    id: 'openai_responses_reasoning',
+    label: 'Responses reasoning',
+    description: 'thinkingParams.reasoning.effort=medium',
+    protocols: ['openai_responses'],
+    apply: model => ({
+      ...model,
+      capabilities: { ...(model.capabilities || {}), thinking: true },
+      thinkingParams: {
+        ...(model.thinkingParams || {}),
+        reasoning: { effort: 'medium' },
+      },
+    }),
+  },
+  {
+    id: 'anthropic_thinking_budget',
+    label: 'Claude thinking budget',
+    description: 'thinkingParams.budget_tokens=2048',
+    protocols: ['anthropic_messages'],
+    apply: model => ({
+      ...model,
+      capabilities: { ...(model.capabilities || {}), thinking: true },
+      thinkingParams: {
+        ...(model.thinkingParams || {}),
+        budget_tokens: 2048,
+      },
+    }),
+  },
+  {
+    id: 'gemini_include_thoughts',
+    label: 'Gemini includeThoughts',
+    description: 'thinkingParams.generationConfig.thinkingConfig',
+    protocols: ['google_generative'],
+    apply: model => ({
+      ...model,
+      capabilities: { ...(model.capabilities || {}), thinking: true },
+      thinkingParams: {
+        ...(model.thinkingParams || {}),
+        generationConfig: {
+          ...((model.thinkingParams?.generationConfig as Record<string, unknown> | undefined) || {}),
+          thinkingConfig: { includeThoughts: true },
+        },
+      },
+    }),
+  },
+];
+
+export function templatesForProtocol(protocol: string | undefined | null): ModelParamTemplate[] {
+  const normalized = normalizeProviderProtocol(protocol);
+  return MODEL_PARAM_TEMPLATES.filter(template => template.protocols.includes(normalized));
+}
+
+/** Soft validation only: returns warnings, never blocks save. */
+export function validateProviderConfig(provider: AiProvider): string[] {
+  const protocol = normalizeProviderProtocol(provider.protocol);
+  const warnings: string[] = [];
+
+  for (const model of provider.models || []) {
+    const req = model.requestParams || {};
+    const think = model.thinkingParams || {};
+    const reqKeys = Object.keys(req);
+    const thinkKeys = Object.keys(think);
+
+    if (protocol === 'openai_chat') {
+      if (reqKeys.includes('thinking') || thinkKeys.includes('budget_tokens')) {
+        warnings.push(`模型 ${model.id || model.name || '?'}: Anthropic 形态参数在 OpenAI Chat 下可能无效`);
+      }
+      if (thinkKeys.includes('reasoning') || reqKeys.includes('reasoning')) {
+        warnings.push(`模型 ${model.id || model.name || '?'}: reasoning 更适合 OpenAI Responses 协议`);
+      }
+    }
+    if (protocol === 'openai_responses') {
+      if (thinkKeys.includes('budget_tokens') || reqKeys.includes('anthropic-version')) {
+        warnings.push(`模型 ${model.id || model.name || '?'}: 含 Anthropic 专用字段，Responses 协议会忽略`);
+      }
+      if (thinkKeys.includes('enable_thinking')) {
+        warnings.push(`模型 ${model.id || model.name || '?'}: enable_thinking 是 Chat Completions 习惯字段`);
+      }
+    }
+    if (protocol === 'anthropic_messages') {
+      if (thinkKeys.includes('enable_thinking') || thinkKeys.includes('reasoning_effort') || thinkKeys.includes('reasoning')) {
+        warnings.push(`模型 ${model.id || model.name || '?'}: 含 OpenAI 思考字段，Anthropic 更常用 budget_tokens`);
+      }
+    }
+    if (protocol === 'google_generative') {
+      if (thinkKeys.includes('budget_tokens') || thinkKeys.includes('enable_thinking') || reqKeys.includes('anthropic-version')) {
+        warnings.push(`模型 ${model.id || model.name || '?'}: 含非 Gemini 协议字段，可能被忽略`);
+      }
+    }
+  }
+  return warnings;
 }
 
 export interface AiProvider {
@@ -31,26 +217,31 @@ export interface AiProvider {
   name: string;
   baseUrl: string;
   apiKey: string;
-  protocol: 'openai' | 'anthropic';
+  protocol: ProviderProtocol;
   models: ModelEntry[];
+  /** Explicit transport flag: route via local daemon proxy. */
+  useProxy?: boolean;
+  /** @deprecated ignored by adapters; kept for old configs. */
+  compatProfile?: string;
 }
 
 export interface AiModelInfo {
   id: string;
   name: string;
-  provider: 'openai' | 'anthropic';
+  provider: ProviderProtocol;
   baseUrl: string;
   apiKey: string;
   providerIndex: number;
   /** Configured provider name (distinct from protocol in `provider`). */
   providerName?: string;
+  useProxy?: boolean;
   enabled?: boolean;
   maxOutput?: number;
   contextWindow?: number;
   capabilities?: ModelCapabilities;
   requestParams?: Record<string, unknown>;
   thinkingParams?: Record<string, unknown>;
-  deferredToolsMode?: 'kimi';
+  deferredToolsMode?: string;
 }
 
 /* ---------- Runtime provider configuration ----------
@@ -63,7 +254,11 @@ function loadStoredProviders(): AiProvider[] {
   const raw = localStorage.getItem(PROVIDERS_STORAGE_KEY);
   if (!raw) return [];
   try {
-    return JSON.parse(raw);
+    const parsed = JSON.parse(raw) as AiProvider[];
+    if (!Array.isArray(parsed)) return [];
+    return parsed
+      .filter(provider => provider && typeof provider === 'object')
+      .map(provider => normalizeProviderConfig(provider));
   } catch (err) {
     // Corrupted local cache — surface it instead of silently nuking the user's
     // provider list. Backend re-seed on next syncFromServer will restore.
@@ -76,14 +271,15 @@ let _providers: AiProvider[] = loadStoredProviders();
 
 function rebuildModels(): AiModelInfo[] {
   return _providers.flatMap((p, providerIndex) =>
-    p.models.map(m => ({
+    (p.models || []).map(m => ({
       id: m.id,
       name: m.name,
-      provider: p.protocol,
+      provider: normalizeProviderProtocol(p.protocol),
       baseUrl: p.baseUrl,
       apiKey: p.apiKey,
       providerIndex,
       providerName: p.name,
+      useProxy: p.useProxy,
       enabled: m.enabled,
       maxOutput: m.maxOutput,
       contextWindow: m.contextWindow,
@@ -121,13 +317,13 @@ export function getModels(): AiModelInfo[] {
 }
 
 export function setProviders(providers: AiProvider[]): void {
-  _providers = providers;
+  _providers = providers.map(provider => normalizeProviderConfig(provider));
   _models = rebuildModels();
-  save(KEYS.AI_PROVIDERS, providers);
+  save(KEYS.AI_PROVIDERS, _providers);
 }
 
-export function needsProxy(baseUrl: string): boolean {
-  return baseUrl.includes('api.kimi.com');
+export function needsProxy(provider: AiProvider): boolean {
+  return provider.useProxy === true;
 }
 
 /* ---------- Image model detection ---------- */
@@ -138,11 +334,13 @@ const GEMINI_IMAGE_MODEL_IDS = [
 ];
 
 export function isGeminiImageModel(modelId: string): boolean {
+  if (!modelId) return false;
   const id = resolveModelId(modelId).toLowerCase();
   return GEMINI_IMAGE_MODEL_IDS.some(m => id === m || id.startsWith(m));
 }
 
 export function isQwenImageModel(modelId: string): boolean {
+  if (!modelId) return false;
   return resolveModelId(modelId).toLowerCase().includes('qwen-image');
 }
 
@@ -153,6 +351,7 @@ const IMAGE_MODEL_IDS = [
 ];
 
 export function isImageModel(modelId: string): boolean {
+  if (!modelId) return false;
   const id = resolveModelId(modelId).toLowerCase();
   return IMAGE_MODEL_IDS.includes(id) || isGeminiImageModel(id) || isQwenImageModel(id);
 }
@@ -183,15 +382,18 @@ export function isVisionModel(modelId: string): boolean {
   return !!findModel(modelId)?.capabilities?.vision;
 }
 
+/** True when any model on this provider opts into deferred tool loading. */
+export function supportsDeferredTools(provider: AiProvider): boolean {
+  return provider.models.some(model => Boolean(model.deferredToolsMode));
+}
+
+/** @deprecated use supportsDeferredTools */
 export function supportsKimiDeferredTools(provider: AiProvider): boolean {
-  const name = provider.name.toLowerCase();
-  const baseUrl = provider.baseUrl.toLowerCase();
-  return name === 'kimi'
-    || baseUrl.includes('api.kimi.com')
-    || baseUrl.includes('moonshot');
+  return supportsDeferredTools(provider);
 }
 
 export function resolveModelId(value: string): string {
+  if (!value) return '';
   // 用全集解析：disabled 模型仍能正确识别 ID 用于 LLM 客户端。
   const byId = _models.find(m => m.id === value);
   if (byId) return byId.id;
@@ -206,7 +408,7 @@ export function buildAiRequest(info: AiModelInfo): {
   url: string;
   headers: Record<string, string>;
 } {
-  if (info.provider === 'anthropic') {
+  if (normalizeProviderProtocol(info.provider) === 'anthropic_messages') {
     return {
       url: '/api/proxy/anthropic',
       headers: {

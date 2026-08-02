@@ -30,7 +30,8 @@ export interface AgentChatOptions {
   onStreamReset?: (reason: string) => void;
   onToolCall?: (toolCall: { id: string; name: string; arguments: string }) => void;
   onToolCallArgsDelta?: (toolCallId: string, argumentsDelta: string) => void;
-  onToolResult?: (result: { toolCallId: string; name: string; output: string; isError: boolean }) => void;
+  onToolResult?: (result: { toolCallId: string; name: string; output: string; isError: boolean; failure?: import('../types').FailureEnvelope }) => void;
+  onToolRecovery?: (result: { toolCallId: string; name: string; phase: string; failure: import('../types').FailureEnvelope }) => void;
   /** 工具执行期实时进度行（包括 code_agent 的 ACP 事件）。 */
   onToolProgress?: (toolCallId: string, line: string) => void;
   /** 工具产出的图片 URL（generate_image 工具）；前端 push 到 assistant 消息的 generatedImages[]。 */
@@ -160,6 +161,17 @@ export function useAgentChat() {
                         name: parsed.name,
                         output: parsed.result,
                         isError: !!parsed.is_error,
+                        failure: parsed.failure && typeof parsed.failure === 'object' ? parsed.failure as import('../types').FailureEnvelope : undefined,
+                      });
+                    }
+                    break;
+                  case 'tool_recovery':
+                    if (parsed.id && parsed.name && parsed.failure && typeof parsed.failure === 'object') {
+                      options.onToolRecovery?.({
+                        toolCallId: parsed.id,
+                        name: parsed.name,
+                        phase: typeof parsed.phase === 'string' ? parsed.phase : 'auto_retrying',
+                        failure: parsed.failure as import('../types').FailureEnvelope,
                       });
                     }
                     break;

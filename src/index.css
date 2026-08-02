@@ -2522,3 +2522,52 @@
   min-height: 560px;
   gap: 4px;
 }
+
+
+.precision-failure-card {
+  border: 1px solid rgba(245, 158, 11, 0.35);
+  background: rgba(245, 158, 11, 0.08);
+  border-radius: 10px;
+  padding: 8px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.precision-failure-card.is-compact { padding: 6px 8px; }
+.precision-failure-title { font-size: 12px; font-weight: 600; color: #92400e; }
+.precision-failure-meta { display: flex; flex-wrap: wrap; gap: 8px; font-size: 11px; color: #a16207; }
+.dark .precision-failure-card { border-color: rgba(251, 191, 36, 0.28); background: rgba(251, 191, 36, 0.08); }
+.dark .precision-failure-title { color: #fbbf24; }
+.dark .precision-failure-meta { color: #f59e0b; }
+
+.precision-failure-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  margin-top: 0.45rem;
+}
+.precision-failure-actions button {
+  border: 1px solid color-mix(in srgb, currentColor 18%, transparent);
+  background: color-mix(in srgb, currentColor 6%, transparent);
+  border-radius: 999px;
+  padding: 0.15rem 0.55rem;
+  font-size: 11px;
+  line-height: 1.4;
+}
+.precision-failure-actions button.is-primary {
+  background: color-mix(in srgb, #3559D6 16%, transparent);
+  border-color: color-mix(in srgb, #3559D6 35%, transparent);
+}
+.precision-failure-actions button:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+.work-inbox-item-copy-failure {
+  display: block;
+  margin-top: 0.15rem;
+  color: var(--semantic-danger, #b42318);
+  font-size: 12px;
+}
+.work-inbox-item-actions .is-primary-recovery {
+  color: #2448C5;
+}

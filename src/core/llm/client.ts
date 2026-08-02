@@ -1,6 +1,7 @@
 import {
   getModelInfo,
   buildAiRequest,
+  normalizeProviderProtocol,
 } from '@/core/config';
 import { getModelMeta } from '@/core/config/modelMetadata';
 import type { ToolCall, LlmRequest, LlmResponse, LlmStreamEvent } from './types';
@@ -10,7 +11,12 @@ export { parseOpenAIMultimodalContent } from './openai';
 export { parseAnthropicResponse } from './anthropic';
 export { parseDataUrl } from './media';
 
+function isAnthropicProtocol(provider: string | undefined): boolean {
+  return normalizeProviderProtocol(provider) === 'anthropic_messages';
+}
+
 export function getDefaultMaxOutput(modelId: string): number {
+  if (!modelId) return 64_000;
   const meta = getModelMeta(modelId);
   if (meta?.maxOutput) return meta.maxOutput;
   return modelId.toLowerCase().includes('opus') ? 128_000 : 64_000;
@@ -65,7 +71,7 @@ export async function* streamLlm(
 
   let res: Response;
   try {
-    if (info.provider === 'anthropic') {
+    if (isAnthropicProtocol(info.provider)) {
       const { system, messages: anthropicMessages } = toAnthropicMessages(messages, systemPrompt);
       const body: Record<string, unknown> = {
         model: info.id,
@@ -134,7 +140,7 @@ export async function* streamLlm(
       return;
     }
 
-    if (provider === 'anthropic') {
+    if (isAnthropicProtocol(provider)) {
       const parsed = parseAnthropicResponse(data);
       yield { type: 'delta', content: parsed.content, generatedImages: parsed.generatedImages, tool_calls: parsed.tool_calls };
       yield { type: 'done', stop_reason: parsed.stop_reason };
@@ -153,7 +159,7 @@ export async function* streamLlm(
   }
 
   try {
-    const gen = provider === 'anthropic' ? streamAnthropic(res) : streamOpenAI(res);
+    const gen = isAnthropicProtocol(provider) ? streamAnthropic(res) : streamOpenAI(res);
     let lastDelta: StreamDelta | undefined;
     for await (const delta of gen) {
       lastDelta = delta;

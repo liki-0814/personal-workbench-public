@@ -103,7 +103,7 @@ export function buildAgentStreamCallbacks(params: AgentStreamCallbackParams) {
       };
       setMessages(updated);
     },
-    onToolResult: ({ toolCallId, output, isError }: { toolCallId: string; output: string; isError: boolean }) => {
+    onToolResult: ({ toolCallId, output, isError, failure }: { toolCallId: string; output: string; isError: boolean; failure?: import('../types').FailureEnvelope }) => {
       // Flush any pending progress for this tool before recording the result
       if (pendingProgress.has(toolCallId)) {
         if (progressFlushTimer) { clearTimeout(progressFlushTimer); progressFlushTimer = null; }
@@ -118,7 +118,24 @@ export function buildAgentStreamCallbacks(params: AgentStreamCallbackParams) {
           ...t,
           result: truncTraceField(output, TOOL_TRACE_RESULT_LIMIT),
           isError,
+          failure,
+          recoveryPhase: undefined,
           status: isError ? 'error' : 'done',
+        } : t),
+      };
+      setMessages(updated);
+    },
+    onToolRecovery: ({ toolCallId, failure, phase }: { toolCallId: string; failure: import('../types').FailureEnvelope; phase: string }) => {
+      const updated = [...getMessages()];
+      const cur = updated[assistantIndex];
+      if (!cur.toolTrace) return;
+      updated[assistantIndex] = {
+        ...cur,
+        toolTrace: cur.toolTrace.map(t => t.id === toolCallId ? {
+          ...t,
+          failure,
+          recoveryPhase: phase,
+          status: phase === 'auto_retrying' ? 'recovering' : t.status,
         } : t),
       };
       setMessages(updated);

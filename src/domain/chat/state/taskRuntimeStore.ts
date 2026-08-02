@@ -109,6 +109,7 @@ export interface RuntimeTask {
   sessionGeneration?: number;
   result?: RuntimeTaskResult | unknown;
   error?: string;
+  failure?: import('../types').FailureEnvelope;
   metadata?: unknown;
 }
 

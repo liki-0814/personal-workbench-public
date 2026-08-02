@@ -2,13 +2,19 @@ import { useState, useEffect, useCallback, useRef } from 'react';
 import Sortable from 'sortablejs';
 import { X, Plus, Trash2, Settings, Server, CheckCircle, AlertCircle, GripVertical, ArrowUp, ArrowDown, Sparkles, Plug, RotateCcw, MonitorSmartphone, Eye, EyeOff, FolderOpen } from 'lucide-react';
 import { MemorySettingsPanel } from '@/features/memory';
-import type { AiProvider, FeatureModelKey, AppConfig, LocalConfig, LocalConfigGenImageModel, LocalConfigSshServer, ResponseLanguage, VisualScene } from '@/core/config';
+import type { AiProvider, FeatureModelKey, AppConfig, LocalConfig, LocalConfigGenImageModel, LocalConfigSshServer, ResponseLanguage, VisualScene, ProviderProtocol } from '@/core/config';
 import {
   getProviders, setProviders, useAiModels, FEATURE_MODELS, getFeatureModel, setFeatureModel,
   useAppConfig, setAppConfig,
   useLocalConfig, saveLocalConfig, LOCAL_CONFIG_TOKEN_MASK, normalizeFsBase,
   useMoaConfig, saveMoaConfig, getMoaConfig, getProviderModelOptions, validateMoaConfig,
-  supportsKimiDeferredTools,
+  normalizeProviderProtocol,
+  protocolLabel,
+  protocolDescription,
+  PROVIDER_PROTOCOL_OPTIONS,
+  templatesForProtocol,
+  validateProviderConfig,
+  type ModelParamTemplate,
 } from '@/core/config';
 import HarnessMoaSettingsPanel from './HarnessMoaSettingsPanel';
 import { getDefaultMaxOutput } from '@/core/llm/client';
@@ -108,7 +114,7 @@ function emptyProvider(): AiProvider {
     name: '',
     baseUrl: '',
     apiKey: '',
-    protocol: 'openai',
+    protocol: 'openai_chat',
     models: [],
   };
 }
@@ -628,7 +634,7 @@ export default function SettingsModal({ open, onClose }: Props) {
     modelRowKeysRef.current = providers[index].models.map(
       () => `model-row-${modelRowKeyCounterRef.current++}`,
     );
-    setEditForm({ ...providers[index] });
+    setEditForm({ ...providers[index], protocol: normalizeProviderProtocol(providers[index].protocol) });
     setEditingIndex(index);
   };
 
@@ -654,6 +660,7 @@ export default function SettingsModal({ open, onClose }: Props) {
       showToast({ message: '请先修正自定义请求参数的 JSON 格式', type: 'error' });
       return;
     }
+    const warnings = validateProviderConfig(editForm);
     const next = [...providers];
     if (editingIndex === -1) {
       next.push(editForm);
@@ -664,7 +671,21 @@ export default function SettingsModal({ open, onClose }: Props) {
     setLocalProviders(next);
     setProviders(next);
     setEditingIndex(null);
-    showToast({ message: 'Provider 已保存', type: 'success' });
+    if (warnings.length > 0) {
+      showToast({
+        message: `Provider 已保存（${warnings.length} 条个性化配置提示）：${warnings[0]}`,
+        type: 'info',
+      });
+    } else {
+      showToast({ message: 'Provider 已保存', type: 'success' });
+    }
+  };
+
+  const applyModelTemplate = (idx: number, template: ModelParamTemplate) => {
+    const next = [...editForm.models];
+    next[idx] = template.apply(next[idx]);
+    setEditForm({ ...editForm, models: next });
+    showToast({ message: `已应用模板：${template.label}`, type: 'success' });
   };
 
   // Model editor helpers
@@ -704,7 +725,7 @@ export default function SettingsModal({ open, onClose }: Props) {
   const updateModelDeferredTools = (idx: number, value: boolean) => {
     const next = [...editForm.models];
     if (value) {
-      next[idx] = { ...next[idx], deferredToolsMode: 'kimi' };
+      next[idx] = { ...next[idx], deferredToolsMode: 'enabled' };
     } else {
       const { deferredToolsMode: _omit, ...rest } = next[idx];
       next[idx] = rest;
@@ -859,7 +880,7 @@ export default function SettingsModal({ open, onClose }: Props) {
                         </span>
                         <span className="truncate text-sm font-medium text-gray-900 dark:text-white">{p.name}</span>
                         <span className="shrink-0 text-[10px] px-2 py-0.5 rounded-md bg-gray-100 dark:bg-white/10 text-gray-500 dark:text-gray-400 border border-gray-200 dark:border-white/10">
-                          {p.protocol}
+                          {protocolLabel(p.protocol)}
                         </span>
                         <span className="shrink-0 text-[10px] px-2 py-0.5 rounded-md bg-gray-100 dark:bg-white/10 text-gray-500 dark:text-gray-400 border border-gray-200 dark:border-white/10">
                           {p.models.length} 个模型
@@ -1730,15 +1751,28 @@ export default function SettingsModal({ open, onClose }: Props) {
                 <div>
                   <label className="block text-xs font-medium text-gray-600 dark:text-gray-300 mb-1.5">协议 <span className="text-red-500">*</span></label>
                   <SelectField
-                    value={editForm.protocol}
-                    onValueChange={value => setEditForm({ ...editForm, protocol: value as 'openai' | 'anthropic' })}
-                    options={[
-                      { value: 'openai', label: 'OpenAI' },
-                      { value: 'anthropic', label: 'Anthropic' },
-                    ]}
+                    value={normalizeProviderProtocol(editForm.protocol)}
+                    onValueChange={value => {
+                      const nextProtocol = value as ProviderProtocol;
+                      const prev = normalizeProviderProtocol(editForm.protocol);
+                      setEditForm({ ...editForm, protocol: nextProtocol });
+                      if (prev !== nextProtocol) {
+                        showToast({
+                          message: '协议已切换：已有 requestParams/thinkingParams 会保留，但部分参数可能仅对原协议生效',
+                          type: 'info',
+                        });
+                      }
+                    }}
+                    options={PROVIDER_PROTOCOL_OPTIONS.map(option => ({
+                      value: option.value,
+                      label: option.label,
+                    }))}
                     className="w-full text-sm"
                     ariaLabel="Provider 协议"
                   />
+                  <p className="text-[11px] text-gray-400 dark:text-gray-500 mt-1">
+                    {protocolDescription(editForm.protocol)}
+                  </p>
                 </div>
               </div>
 
@@ -1752,6 +1786,15 @@ export default function SettingsModal({ open, onClose }: Props) {
                   className="input-field w-full text-sm dark:bg-white/5 dark:border-white/10 dark:text-white"
                 />
                 <p className="text-[11px] text-gray-400 dark:text-gray-500 mt-1">末尾不要带斜杠，例如 https://api.openai.com/v1</p>
+                <label className="mt-2 inline-flex items-center gap-1.5 text-xs text-gray-600 dark:text-gray-300 cursor-pointer select-none">
+                  <input
+                    type="checkbox"
+                    checked={Boolean(editForm.useProxy)}
+                    onChange={e => setEditForm({ ...editForm, useProxy: e.target.checked || undefined })}
+                    className="w-3.5 h-3.5 accent-purple-500 cursor-pointer"
+                  />
+                  <span>通过本地代理访问（useProxy）</span>
+                </label>
               </div>
 
               <div>
@@ -1843,17 +1886,15 @@ export default function SettingsModal({ open, onClose }: Props) {
                           />
                           <span>思考（深度推理）</span>
                         </label>
-                        {supportsKimiDeferredTools(editForm) && (
-                          <label className="inline-flex items-center gap-1.5 cursor-pointer select-none hover:text-gray-700 dark:hover:text-gray-200 transition-colors">
-                            <input
-                              type="checkbox"
-                              checked={m.deferredToolsMode === 'kimi'}
-                              onChange={e => updateModelDeferredTools(idx, e.target.checked)}
-                              className="w-3.5 h-3.5 accent-purple-500 cursor-pointer"
-                            />
-                            <span>Kimi 延迟工具</span>
-                          </label>
-                        )}
+                        <label className="inline-flex items-center gap-1.5 cursor-pointer select-none hover:text-gray-700 dark:hover:text-gray-200 transition-colors">
+                          <input
+                            type="checkbox"
+                            checked={Boolean(m.deferredToolsMode)}
+                            onChange={e => updateModelDeferredTools(idx, e.target.checked)}
+                            className="w-3.5 h-3.5 accent-purple-500 cursor-pointer"
+                          />
+                          <span>延迟加载工具</span>
+                        </label>
                         <label className="inline-flex items-center gap-1.5 select-none">
                           <span>最大输出</span>
                           <input
@@ -1909,26 +1950,44 @@ export default function SettingsModal({ open, onClose }: Props) {
                           </button>
                         </label>
                       </div>
-                      <div className="grid grid-cols-2 gap-2 ml-6">
-                        <JsonParamsEditor
-                          label="每次请求参数（JSON）"
-                          value={m.requestParams}
-                          placeholder={'{"top_p": 0.95}'}
-                          onChange={value => updateModelParams(idx, 'requestParams', value)}
-                        />
-                        <JsonParamsEditor
-                          label="开启思考时参数（JSON）"
-                          value={m.thinkingParams}
-                          placeholder={'{"reasoning_effort": "max"}'}
-                          onChange={value => updateModelParams(idx, 'thinkingParams', value)}
-                        />
+                      <div className="ml-6 space-y-2">
+                        <div className="flex flex-wrap gap-1.5">
+                          {templatesForProtocol(editForm.protocol).map(template => (
+                            <button
+                              key={template.id}
+                              type="button"
+                              title={template.description}
+                              onClick={() => applyModelTemplate(idx, template)}
+                              className="px-2 py-1 text-[11px] rounded-md border border-purple-400/30 text-purple-600 dark:text-purple-300 hover:bg-purple-500/10 transition-colors"
+                            >
+                              {template.label}
+                            </button>
+                          ))}
+                        </div>
+                        <div className="grid grid-cols-2 gap-2">
+                          <JsonParamsEditor
+                            label="每次请求参数（JSON）"
+                            value={m.requestParams}
+                            placeholder={'{"top_p": 0.95}'}
+                            onChange={value => updateModelParams(idx, 'requestParams', value)}
+                          />
+                          <JsonParamsEditor
+                            label="开启思考时参数（JSON）"
+                            value={m.thinkingParams}
+                            placeholder={'{"reasoning_effort": "max"}'}
+                            onChange={value => updateModelParams(idx, 'thinkingParams', value)}
+                          />
+                        </div>
+                        <p className="text-[11px] text-gray-400 dark:text-gray-500">
+                          协议负责共性能力；个性化请用上方模板或 JSON knobs（requestParams / thinkingParams）。
+                        </p>
                       </div>
                     </div>
                   ))}
                 </div>
 
                 <p className="text-[11px] text-gray-400 dark:text-gray-500 mt-2">
-                  模型 ID 用于 API 调用，显示名称用于下拉选择。所有修改会同步写回 <code className="px-1 rounded bg-purple-500/10 text-purple-400 font-mono">~/.pwcli/config.json</code>。
+                  模型 ID 用于 API 调用，显示名称用于下拉选择。协议层求同、个性化靠 knobs。所有修改会同步写回 <code className="px-1 rounded bg-purple-500/10 text-purple-400 font-mono">~/.pwcli/config.json</code>。
                 </p>
               </div>
             </div>

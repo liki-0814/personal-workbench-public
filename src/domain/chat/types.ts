@@ -157,13 +157,48 @@ export interface ContextUsageSnapshot extends TokenUsage {
   updatedAt: string;
 }
 
+export type FailureClass =
+  | 'transient'
+  | 'permission_required'
+  | 'input_required'
+  | 'conflict'
+  | 'interrupted'
+  | 'validation'
+  | 'permanent';
+
+export type FailureDisposition = 'auto_retrying' | 'user_action_required' | 'terminal';
+
+export interface RecoveryAction {
+  kind: string;
+  label: string;
+  recommended?: boolean;
+}
+
+export interface FailureEnvelope {
+  schemaVersion: number;
+  code: string;
+  class: FailureClass;
+  disposition: FailureDisposition;
+  source: string;
+  userMessage: string;
+  impact?: string;
+  attempt?: number;
+  maxAttempts?: number;
+  nextRetryAt?: string;
+  actions?: RecoveryAction[];
+  correlationId?: string;
+  evidence?: Record<string, unknown>;
+}
+
 export interface ToolTrace {
   id: string;
   name: string;
   args: string;          // 截断到 TOOL_TRACE_ARG_LIMIT
   result?: string;       // 截断到 TOOL_TRACE_RESULT_LIMIT；undefined 表示尚未返回
   isError?: boolean;
-  status: 'running' | 'done' | 'error' | 'backgrounded';
+  failure?: FailureEnvelope;
+  recoveryPhase?: string;
+  status: 'running' | 'done' | 'error' | 'backgrounded' | 'recovering';
   /** 工具执行期实时上抛的进度行（仅长跑工具如 code_agent 有内容）。
    *  pwcli `StreamEvent::ToolProgress` → SSE 'tool_progress' → 这里追加。
    *  上限见 store.ts 的 TOOL_TRACE_PROGRESS_LIMIT。 */

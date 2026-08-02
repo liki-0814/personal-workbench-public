@@ -36,7 +36,7 @@ vi.mock('@/core/config', () => ({
   setAppConfig: mocks.setAppConfig,
   setFeatureModel: vi.fn(),
   setProviders: vi.fn(),
-  supportsKimiDeferredTools: vi.fn(() => false),
+  supportsDeferredTools: vi.fn(() => false),
   useAiModels: vi.fn(() => []),
   useAppConfig: vi.fn(() => mocks.appConfig),
   useLocalConfig: vi.fn(() => mocks.localConfig),

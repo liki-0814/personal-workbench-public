@@ -31,6 +31,7 @@ interface Props {
   onOpenWorkItem?: (item: WorkItem, target: WorkItemNavigationTarget) => void;
   onResolveAttention?: (attentionId: string) => Promise<void>;
   onDeleteAttention?: (attentionId: string) => Promise<void>;
+  onRetryWorkItem?: (item: WorkItem) => Promise<void>;
   projects: LocalProject[];
   onCaptureWorkItem: (request: WorkItemCaptureRequest) => Promise<void>;
 }
@@ -47,7 +48,33 @@ const ACKNOWLEDGEABLE_ATTENTION_KINDS = new Set([
   'task_failed',
   'output_failed',
   'paused_callback',
+  'background_failure',
+  'background_interrupted',
 ]);
+
+function failureFromAttention(item: WorkItem): {
+  userMessage?: string;
+  impact?: string;
+  actions?: Array<{ kind: string; label: string; recommended?: boolean }>;
+} | undefined {
+  const attention = item.attention.find(entry => entry.status !== 'resolved' && entry.detail && typeof entry.detail === 'object');
+  const detail = attention?.detail as Record<string, unknown> | undefined;
+  const failure = detail?.failure;
+  if (!failure || typeof failure !== 'object') {
+    const error = typeof detail?.error === 'string' ? detail.error : undefined;
+    return error ? { userMessage: error } : undefined;
+  }
+  const value = failure as Record<string, unknown>;
+  return {
+    userMessage: typeof value.userMessage === 'string' ? value.userMessage : undefined,
+    impact: typeof value.impact === 'string' ? value.impact : undefined,
+    actions: Array.isArray(value.actions)
+      ? value.actions.filter((action): action is { kind: string; label: string; recommended?: boolean } => (
+        !!action && typeof action === 'object' && typeof (action as { kind?: unknown }).kind === 'string' && typeof (action as { label?: unknown }).label === 'string'
+      ))
+      : undefined,
+  };
+}
 
 function getTodayLabel(): string {
   return new Intl.DateTimeFormat('zh-CN', {
@@ -72,6 +99,7 @@ export default function WorkbenchRightPanel({
   onOpenWorkItem,
   onResolveAttention,
   onDeleteAttention,
+  onRetryWorkItem,
   projects,
   onCaptureWorkItem,
 }: Props) {
@@ -182,6 +210,7 @@ export default function WorkbenchRightPanel({
             onOpenItem={onOpenWorkItem}
             onResolveAttention={onResolveAttention}
             onDeleteAttention={onDeleteAttention}
+            onRetryWorkItem={onRetryWorkItem}
           />
         )}
       </div>
@@ -201,11 +230,13 @@ function WorkInbox({
   onOpenItem,
   onResolveAttention,
   onDeleteAttention,
+  onRetryWorkItem,
 }: {
   projection: WorkItemProjection;
   onOpenItem?: (item: WorkItem, target: WorkItemNavigationTarget) => void;
   onResolveAttention?: (attentionId: string) => Promise<void>;
   onDeleteAttention?: (attentionId: string) => Promise<void>;
+  onRetryWorkItem?: (item: WorkItem) => Promise<void>;
 }) {
   const [resolvingItemId, setResolvingItemId] = useState<string>();
   const [deletingItemId, setDeletingItemId] = useState<string>();
@@ -289,6 +320,8 @@ function WorkInbox({
               ));
               const isResolving = resolvingItemId === item.id;
               const isDeleting = deletingItemId === item.id;
+              const failure = failureFromAttention(item);
+              const recommended = failure?.actions?.find(action => action.recommended) || failure?.actions?.[0];
               const primaryTarget: WorkItemNavigationTarget = (
                 (item.task.reviewStatus === 'pending' || item.task.reviewStatus === 'merge_required')
                 && view.changedFiles[0]
@@ -310,6 +343,9 @@ function WorkInbox({
                         item.sessionTitle,
                         view.statusLabel,
                       ].filter(Boolean).join(' · ')}</small>
+                      {failure?.userMessage && (
+                        <span className="work-inbox-item-copy-failure">{failure.userMessage}</span>
+                      )}
                     </span>
                   </button>
                   <div className="work-inbox-item-actions">
@@ -334,6 +370,18 @@ function WorkInbox({
                         <GitCompare size={14} />
                       </button>
                     ))}
+                    {section.id === 'attention' && recommended?.kind === 'retry_task' && onRetryWorkItem && (
+                      <button
+                        type="button"
+                        className="is-primary-recovery"
+                        disabled={Boolean(resolvingItemId || deletingItemId)}
+                        onClick={() => void onRetryWorkItem(item)}
+                        title={recommended.label}
+                        aria-label={`${recommended.label}：${view.documentTitle}`}
+                      >
+                        <Check size={14} />
+                      </button>
+                    )}
                     {section.id === 'attention' && hasAcknowledgeableAttention && onResolveAttention && (
                       <button
                         type="button"

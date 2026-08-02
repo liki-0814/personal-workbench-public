@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { Wrench, ChevronDown, ChevronRight, Loader2, Check, AlertCircle, Activity, ArrowUpRight } from 'lucide-react';
 import type { ToolTrace } from '@/domain/chat/types';
+import FailureCard from './FailureCard';
 import { ToolActivityGroup, type ToolActivityItem } from '@/shell';
 
 interface Props {
@@ -44,6 +45,7 @@ export default function ToolTraceList({ traces, compact = false }: Props) {
 function TraceItem({ trace }: { trace: ToolTrace }) {
   const isErr = trace.status === 'error';
   const isRunning = trace.status === 'running';
+  const isRecovering = trace.status === 'recovering';
   const isBackgrounded = trace.status === 'backgrounded';
   const hasProgress = (trace.progressLog?.length ?? 0) > 0;
   const [override, setOverride] = useState<boolean | null>(null);
@@ -51,6 +53,7 @@ function TraceItem({ trace }: { trace: ToolTrace }) {
 
   const StatusIcon = () => {
     if (isBackgrounded) return <ArrowUpRight size={11} className="precision-status-warning" />;
+    if (isRecovering) return <Loader2 size={11} className="precision-status-warning animate-spin" />;
     if (isRunning) return <Loader2 size={11} className="precision-status-primary animate-spin" />;
     if (isErr)     return <AlertCircle size={11} className="precision-status-danger" />;
     return <Check size={11} className="precision-status-success" />;
@@ -97,6 +100,9 @@ function TraceItem({ trace }: { trace: ToolTrace }) {
           )}
           {hasProgress && (
             <ProgressSection lines={trace.progressLog!} running={isRunning} />
+          )}
+          {trace.failure && (
+            <FailureCard failure={trace.failure} recoveryPhase={trace.recoveryPhase} compact />
           )}
           {trace.result !== undefined && (
             <div>

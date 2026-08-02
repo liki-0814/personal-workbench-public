@@ -337,6 +337,9 @@ function WorkbenchApp() {
                     onOpenWorkItem={openWorkItem}
                     onResolveAttention={taskRuntime.resolveAttention}
                     onDeleteAttention={taskRuntime.deleteAttention}
+                    onRetryWorkItem={async (item) => {
+                      await taskRuntime.retry(item.task.id);
+                    }}
                     projects={chatSessions.folders}
                     onCaptureWorkItem={handleCaptureWorkItem}
                     habitPanel={
