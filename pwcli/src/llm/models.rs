@@ -294,6 +294,7 @@ pub struct LlmRequest {
 pub enum ProviderProtocol {
     OpenAiChat,
     OpenAiResponses,
+    OpenAiCodexResponses,
     AnthropicMessages,
     GoogleGenerative,
 }
@@ -303,6 +304,7 @@ impl ProviderProtocol {
         match self {
             Self::OpenAiChat => "openai_chat",
             Self::OpenAiResponses => "openai_responses",
+            Self::OpenAiCodexResponses => "openai_codex_responses",
             Self::AnthropicMessages => "anthropic_messages",
             Self::GoogleGenerative => "google_generative",
         }
@@ -316,6 +318,7 @@ impl ProviderProtocol {
             // New canonical names
             "openai_chat" | "openai" | "openai_compatible" => Ok(Self::OpenAiChat),
             "openai_responses" | "responses" => Ok(Self::OpenAiResponses),
+            "openai_codex_responses" | "codex_responses" => Ok(Self::OpenAiCodexResponses),
             "anthropic_messages" | "anthropic" => Ok(Self::AnthropicMessages),
             "google_generative" | "google" | "gemini" | "generative_language" => {
                 Ok(Self::GoogleGenerative)
@@ -369,6 +372,10 @@ mod tests {
         assert_eq!(
             ProviderProtocol::parse("openai_responses").unwrap(),
             ProviderProtocol::OpenAiResponses
+        );
+        assert_eq!(
+            ProviderProtocol::parse("openai-codex-responses").unwrap(),
+            ProviderProtocol::OpenAiCodexResponses
         );
         assert_eq!(
             ProviderProtocol::parse("google-generative").unwrap(),

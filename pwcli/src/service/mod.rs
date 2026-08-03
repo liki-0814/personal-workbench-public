@@ -47,6 +47,7 @@ where
     register_tools(&mut tool_registry, Arc::clone(&backend));
 
     let tool_registry = Arc::new(tool_registry);
+    let auth_manager = Arc::new(crate::provider_ai::AuthManager::default());
     let llm_client = Arc::new(match LlmClient::from_config(&config) {
         Ok(client) => client,
         Err(error) => {
@@ -65,7 +66,8 @@ where
                 config.backend_url.clone(),
             )
         }
-    });
+    }
+    .with_auth_manager(Arc::clone(&auth_manager)));
     crate::tools::register::register_runtime_tools(
         Arc::clone(&tool_registry),
         Arc::clone(&llm_client),
@@ -98,6 +100,7 @@ where
         web_cache: Arc::new(crate::tools::web_cache::WebFetchCache::new()),
         tool_registry,
         llm_client,
+        auth_manager,
         permission_engine,
         permission_broker,
         config: Arc::new(config),

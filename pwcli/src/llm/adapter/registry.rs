@@ -8,6 +8,7 @@ use crate::llm::models::{AiResponse, LlmRequest, ProviderProtocol, StreamEvent};
 use super::anthropic_messages::AnthropicMessagesAdapter;
 use super::google_generative::GoogleGenerativeAdapter;
 use super::openai_chat::OpenAiChatAdapter;
+use super::openai_codex_responses::OpenAiCodexResponsesAdapter;
 use super::openai_responses::OpenAiResponsesAdapter;
 
 #[async_trait]
@@ -42,6 +43,9 @@ pub fn create_adapter(
             backend_url,
             session_id,
         )),
+        ProviderProtocol::OpenAiCodexResponses => {
+            Box::new(OpenAiCodexResponsesAdapter::new(provider, session_id))
+        }
         ProviderProtocol::GoogleGenerative => {
             Box::new(GoogleGenerativeAdapter::new(provider, backend_url))
         }
@@ -73,6 +77,7 @@ mod tests {
             "anthropic",
             "anthropic_messages",
             "openai_responses",
+            "openai_codex_responses",
             "google_generative",
         ] {
             create_adapter(provider(protocol), "http://127.0.0.1:9".into(), None).unwrap();

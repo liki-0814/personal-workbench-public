@@ -284,7 +284,7 @@ impl AnthropicClient {
             let url = format!("{}/v1/messages", self.provider.base_url);
             let mut headers = reqwest::header::HeaderMap::new();
             headers.insert("Content-Type", "application/json".parse()?);
-            headers.insert("x-api-key", self.provider.api_key.parse()?);
+            insert_anthropic_auth_header(&mut headers, &self.provider)?;
             let anthropic_version = provider_request_param(&self.provider, "anthropic-version")
                 .unwrap_or_else(|| "2023-06-01".into());
             let user_agent = provider_request_param(&self.provider, "user-agent")
@@ -435,6 +435,21 @@ fn needs_proxy(provider: &ProviderConfig) -> bool {
     provider.uses_proxy()
 }
 
+fn insert_anthropic_auth_header(
+    headers: &mut reqwest::header::HeaderMap,
+    provider: &ProviderConfig,
+) -> Result<()> {
+    if crate::provider_ai::provider_kind(provider) == crate::provider_ai::ProviderKind::KimiCoding {
+        headers.insert(
+            "Authorization",
+            format!("Bearer {}", provider.api_key).parse()?,
+        );
+    } else {
+        headers.insert("x-api-key", provider.api_key.parse()?);
+    }
+    Ok(())
+}
+
 impl AnthropicClient {
     /// 流式对话：消费 Anthropic SSE，逐 delta 产出 StreamEvent
     pub fn chat_stream(&self, request: &LlmRequest) -> BoxStream<'_, StreamEvent> {
@@ -460,7 +475,10 @@ impl AnthropicClient {
                 let url = format!("{}/v1/messages", provider.base_url);
                 let mut h = reqwest::header::HeaderMap::new();
                 h.insert("Content-Type", "application/json".parse().unwrap());
-                if let Ok(v) = provider.api_key.parse() { h.insert("x-api-key", v); }
+                if insert_anthropic_auth_header(&mut h, &provider).is_err() {
+                    yield StreamEvent::Error("invalid provider authentication header".into());
+                    return;
+                }
                 h.insert("anthropic-version", "2023-06-01".parse().unwrap());
                 h.insert("User-Agent", claude_code_user_agent().parse().unwrap());
                 (url, h)
@@ -718,6 +736,31 @@ mod tests {
     }
 
     use mockito::Server;
+
+    #[test]
+    fn kimi_uses_bearer_while_custom_anthropic_uses_api_key() {
+        let provider = |compat_profile: Option<&str>| ProviderConfig {
+            name: "test".into(),
+            base_url: "https://example.test".into(),
+            api_key: "secret".into(),
+            protocol: "anthropic_messages".into(),
+            model: "model".into(),
+            models: Vec::new(),
+            use_proxy: None,
+            compat_profile: compat_profile.map(str::to_string),
+        };
+
+        let mut kimi_headers = reqwest::header::HeaderMap::new();
+        insert_anthropic_auth_header(&mut kimi_headers, &provider(Some("builtin:kimi-coding")))
+            .unwrap();
+        assert_eq!(kimi_headers["Authorization"], "Bearer secret");
+        assert!(!kimi_headers.contains_key("x-api-key"));
+
+        let mut custom_headers = reqwest::header::HeaderMap::new();
+        insert_anthropic_auth_header(&mut custom_headers, &provider(None)).unwrap();
+        assert_eq!(custom_headers["x-api-key"], "secret");
+        assert!(!custom_headers.contains_key("Authorization"));
+    }
 
     #[test]
     fn test_build_messages_assistant_with_tool_use_blocks() {

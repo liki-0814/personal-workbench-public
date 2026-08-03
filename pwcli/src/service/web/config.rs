@@ -15,11 +15,14 @@ use super::WebState;
 const MASK: &str = "******";
 #[derive(Clone)]
 pub struct ProviderEndpoint {
+    pub id: String,
     pub name: String,
     pub base_url: String,
     pub api_key: String,
     pub protocol: String,
     pub models: Vec<Value>,
+    pub use_proxy: Option<bool>,
+    pub compat_profile: Option<String>,
 }
 
 #[derive(Clone)]
@@ -39,6 +42,16 @@ impl ConfigStore {
 
     pub fn read(&self) -> Result<Value> {
         self.repository.read()
+    }
+
+    /// Atomically update the shared configuration while preserving unrelated
+    /// sections. Dedicated settings APIs use this instead of round-tripping the
+    /// entire config through a frontend-owned DTO.
+    pub(crate) fn update<F>(&self, update: F) -> Result<()>
+    where
+        F: FnOnce(&mut Value) -> Result<()>,
+    {
+        self.repository.update(update)
     }
 
     pub fn revision(&self) -> Option<(std::time::SystemTime, u64)> {
@@ -139,28 +152,22 @@ impl ConfigStore {
             .and_then(Value::as_array)
             .and_then(|providers| providers.get(index))
             .context("Provider not configured. Please set up AI Provider in settings.")?;
-        Ok(ProviderEndpoint {
-            name: text(provider, "name").to_string(),
-            base_url: provider
-                .get("base_url")
-                .or_else(|| provider.get("baseUrl"))
-                .and_then(Value::as_str)
-                .unwrap_or_default()
-                .trim_end_matches('/')
-                .to_string(),
-            api_key: provider
-                .get("api_key")
-                .or_else(|| provider.get("apiKey"))
-                .and_then(Value::as_str)
-                .unwrap_or_default()
-                .to_string(),
-            protocol: text(provider, "protocol").to_string(),
-            models: provider
-                .get("models")
-                .and_then(Value::as_array)
-                .cloned()
-                .unwrap_or_default(),
-        })
+        provider_endpoint(provider)
+    }
+
+    pub fn provider_by_id(&self, id: &str) -> Result<ProviderEndpoint> {
+        let root = self.read()?;
+        let provider = root
+            .get("providers")
+            .and_then(Value::as_array)
+            .and_then(|providers| {
+                providers.iter().find(|provider| {
+                    provider.get("id").and_then(Value::as_str) == Some(id)
+                        || provider.get("name").and_then(Value::as_str) == Some(id)
+                })
+            })
+            .context("Provider not configured. Please set up AI Provider in settings.")?;
+        provider_endpoint(provider)
     }
 
     pub fn providers(&self) -> Result<Vec<ProviderEndpoint>> {
@@ -171,7 +178,48 @@ impl ConfigStore {
             .map_or(0, Vec::len);
         (0..count).map(|index| self.provider(index)).collect()
     }
+}
 
+fn provider_endpoint(provider: &Value) -> Result<ProviderEndpoint> {
+    Ok(ProviderEndpoint {
+        id: provider
+            .get("id")
+            .and_then(Value::as_str)
+            .unwrap_or_else(|| text(provider, "name"))
+            .to_string(),
+        name: text(provider, "name").to_string(),
+        base_url: provider
+            .get("base_url")
+            .or_else(|| provider.get("baseUrl"))
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .trim_end_matches('/')
+            .to_string(),
+        api_key: provider
+            .get("api_key")
+            .or_else(|| provider.get("apiKey"))
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string(),
+        protocol: text(provider, "protocol").to_string(),
+        models: provider
+            .get("models")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default(),
+        use_proxy: provider
+            .get("useProxy")
+            .or_else(|| provider.get("use_proxy"))
+            .and_then(Value::as_bool),
+        compat_profile: provider
+            .get("compatProfile")
+            .or_else(|| provider.get("compat_profile"))
+            .and_then(Value::as_str)
+            .map(str::to_string),
+    })
+}
+
+impl ConfigStore {
     pub fn write_frontend_providers(&self, incoming: Value) -> Result<Value> {
         incoming.as_array().context("providers must be an array")?;
         self.repository.update(move |root| {
@@ -245,7 +293,7 @@ impl ConfigStore {
                     "name": name,
                     "base_url": base_url,
                     "api_key": api_key,
-                    "protocol": if text(provider, "protocol") == "anthropic" { "anthropic" } else { "openai" },
+                    "protocol": normalize_provider_protocol(text(provider, "protocol")),
                     "model": model,
                     "models": models,
                 }));
@@ -535,6 +583,20 @@ fn normalize_models(value: Option<&Value>) -> Vec<Value> {
             Some(Value::Object(normalized))
         })
         .collect()
+}
+
+fn normalize_provider_protocol(value: &str) -> String {
+    let key = value.trim().to_ascii_lowercase().replace('-', "_");
+    match key.as_str() {
+        "openai" | "openai_chat" | "openai_compatible" => "openai_chat".to_string(),
+        "openai_responses" | "responses" => "openai_responses".to_string(),
+        "anthropic" | "anthropic_messages" => "anthropic_messages".to_string(),
+        "google" | "gemini" | "google_generative" | "generative_language" => {
+            "google_generative".to_string()
+        }
+        other if !other.is_empty() => other.to_string(),
+        _ => "openai_chat".to_string(),
+    }
 }
 
 fn find_previous_provider<'a>(
@@ -1027,6 +1089,31 @@ mod tests {
         assert_eq!(providers[0]["api_key"], "secret-b");
         assert_eq!(providers[1]["id"], "provider-a");
         assert_eq!(providers[1]["api_key"], "secret-a");
+    }
+
+    #[test]
+    fn provider_write_preserves_canonical_protocols() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.json");
+        let store = ConfigStore {
+            repository: crate::config::ConfigRepository::new(&path, dir.path().join("data")),
+        };
+
+        store
+            .write_frontend_providers(json!([{
+                "id": "responses",
+                "name": "Responses",
+                "baseUrl": "https://api.example.test/v1",
+                "apiKey": "secret",
+                "protocol": "openai_responses",
+                "models": [{ "id": "model", "name": "Model" }]
+            }]))
+            .unwrap();
+
+        assert_eq!(
+            store.read().unwrap()["providers"][0]["protocol"],
+            "openai_responses"
+        );
     }
 
     #[test]

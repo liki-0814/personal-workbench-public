@@ -24,6 +24,7 @@ pub struct LlmClient {
     fallbacks: Vec<ProviderConfig>,
     backend_url: String,
     session_id: Option<String>,
+    auth: std::sync::Arc<crate::provider_ai::AuthManager>,
 }
 
 impl LlmClient {
@@ -48,6 +49,7 @@ impl LlmClient {
             fallbacks,
             backend_url: config.backend_url.clone(),
             session_id: None,
+            auth: std::sync::Arc::new(crate::provider_ai::AuthManager::default()),
         })
     }
 
@@ -58,11 +60,20 @@ impl LlmClient {
             fallbacks: Vec::new(),
             backend_url,
             session_id: None,
+            auth: std::sync::Arc::new(crate::provider_ai::AuthManager::default()),
         }
     }
 
     pub fn with_session_id(mut self, session_id: impl Into<String>) -> Self {
         self.session_id = Some(session_id.into());
+        self
+    }
+
+    pub fn with_auth_manager(
+        mut self,
+        auth: std::sync::Arc<crate::provider_ai::AuthManager>,
+    ) -> Self {
+        self.auth = auth;
         self
     }
 
@@ -77,8 +88,9 @@ impl LlmClient {
         provider: &ProviderConfig,
         request: &LlmRequest,
     ) -> Result<AiResponse> {
+        let provider = self.auth.authenticated_provider(provider).await?;
         let adapter = super::adapter::create_adapter(
-            provider.clone(),
+            provider,
             self.backend_url.clone(),
             self.session_id.clone(),
         )?;
@@ -245,6 +257,7 @@ impl LlmClient {
             .collect::<Vec<_>>();
         let backend_url = self.backend_url.clone();
         let session_id = self.session_id.clone();
+        let auth = std::sync::Arc::clone(&self.auth);
         let stream = async_stream::stream! {
             use futures::StreamExt;
 
@@ -253,12 +266,13 @@ impl LlmClient {
                 let selected_request = request.clone();
                 let selected_backend_url = backend_url.clone();
                 let selected_session_id = session_id.clone();
+                let selected_auth = std::sync::Arc::clone(&auth);
                 let mut inner: BoxStream<'static, StreamEvent> = {
-                    match super::adapter::create_adapter(
-                        selected_provider,
+                    match selected_auth.authenticated_provider(&selected_provider).await.and_then(|provider| super::adapter::create_adapter(
+                        provider,
                         selected_backend_url,
                         selected_session_id,
-                    ) {
+                    )) {
                         Ok(adapter) => adapter.chat_stream(selected_request),
                         Err(error) => Box::pin(async_stream::stream! {
                             yield StreamEvent::Error(error.to_string());
@@ -391,6 +405,7 @@ mod tests {
             backend_url: server.url(),
             fallbacks: Vec::new(),
             session_id: None,
+            auth: std::sync::Arc::new(crate::provider_ai::AuthManager::default()),
         };
 
         let response = client
@@ -443,6 +458,7 @@ mod tests {
             backend_url: server.url(),
             fallbacks: Vec::new(),
             session_id: None,
+            auth: std::sync::Arc::new(crate::provider_ai::AuthManager::default()),
         };
 
         let response = client
@@ -494,6 +510,7 @@ mod tests {
             backend_url: server.url(),
             fallbacks: Vec::new(),
             session_id: None,
+            auth: std::sync::Arc::new(crate::provider_ai::AuthManager::default()),
         };
 
         let tools = vec![ToolSchema {
@@ -568,6 +585,7 @@ mod tests {
             fallbacks: vec![provider("claude", fallback_server.url())],
             backend_url: "http://localhost".into(),
             session_id: None,
+            auth: std::sync::Arc::new(crate::provider_ai::AuthManager::default()),
         };
         let messages = vec![ChatMessage {
             role: "user".into(),
@@ -637,6 +655,7 @@ mod tests {
             fallbacks: vec![provider("claude", "anthropic", fallback_server.url())],
             backend_url: "http://localhost".into(),
             session_id: None,
+            auth: std::sync::Arc::new(crate::provider_ai::AuthManager::default()),
         };
         let messages = vec![ChatMessage {
             role: "user".into(),

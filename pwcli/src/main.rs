@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use std::io::Read;
 use tokio::sync::mpsc;
@@ -86,6 +86,11 @@ enum Command {
         #[command(subcommand)]
         sub: Option<ConfigSub>,
     },
+    /// Login, inspect, or logout AI provider credentials.
+    Auth {
+        #[command(subcommand)]
+        sub: AuthSub,
+    },
     /// Manage named Mixture-of-Agents presets.
     Moa {
         #[command(subcommand)]
@@ -121,6 +126,24 @@ enum ConfigSub {
         #[arg(long)]
         email: String,
     },
+}
+
+#[derive(Subcommand)]
+enum AuthSub {
+    /// Authenticate a configured provider.
+    Login {
+        provider_id: String,
+        /// Codex login method; other OAuth providers always use device code.
+        #[arg(long, value_parser = ["device", "browser"], default_value = "device")]
+        method: String,
+        /// API key for API-key providers. Omit to enter it interactively.
+        #[arg(long)]
+        api_key: Option<String>,
+    },
+    /// Print credential status for configured providers.
+    Status,
+    /// Remove a provider credential.
+    Logout { provider_id: String },
 }
 
 #[derive(Subcommand)]
@@ -249,6 +272,10 @@ async fn main() -> Result<()> {
             Some(ConfigSub::User { email }) => return run_config_user(email).await,
             None => return run_config_wizard().await,
         },
+        Some(Command::Auth { sub }) => {
+            pwcli::config::local_config::init().await;
+            return run_auth_command(sub).await;
+        }
         Some(Command::Moa { sub }) => {
             pwcli::config::local_config::init().await;
             return run_moa_command(sub).await;
@@ -392,6 +419,102 @@ fn open_capture_url(url: &str) -> Result<()> {
     let status = status?;
     if !status.success() {
         anyhow::bail!("system browser command exited with {status}");
+    }
+    Ok(())
+}
+
+async fn run_auth_command(sub: AuthSub) -> Result<()> {
+    use pwcli::provider_ai::{
+        provider_kind, AuthFlowMethod, AuthFlowState, AuthManager, ProviderKind,
+    };
+
+    let config = RuntimeConfig::load();
+    let providers = config.providers.as_deref().unwrap_or_default();
+    let find_provider = |id: &str| {
+        providers
+            .iter()
+            .find(|provider| provider.name == id)
+            .cloned()
+            .ok_or_else(|| anyhow::anyhow!("provider `{id}` is not configured"))
+    };
+    let manager = AuthManager::default();
+    match sub {
+        AuthSub::Status => {
+            if providers.is_empty() {
+                println!("No providers configured.");
+                return Ok(());
+            }
+            for provider in providers {
+                let status = manager.status(provider).await?;
+                println!("{}\t{}\t{}", provider.name, status.method, status.status);
+            }
+        }
+        AuthSub::Logout { provider_id } => {
+            let provider = find_provider(&provider_id)?;
+            manager.logout(&provider)?;
+            println!("Logged out {}", provider.name);
+        }
+        AuthSub::Login {
+            provider_id,
+            method,
+            api_key,
+        } => {
+            let provider = find_provider(&provider_id)?;
+            let kind = provider_kind(&provider);
+            if matches!(kind, ProviderKind::Custom | ProviderKind::QwenTokenPlanCn) {
+                let key = match api_key {
+                    Some(value) => value,
+                    None => {
+                        eprint!("API key: ");
+                        use std::io::Write;
+                        std::io::stderr().flush()?;
+                        let mut value = String::new();
+                        std::io::stdin().read_line(&mut value)?;
+                        value.trim().to_string()
+                    }
+                };
+                manager.set_api_key(&provider, key)?;
+                println!("Authenticated {} with API key", provider.name);
+                return Ok(());
+            }
+            let method = if method == "browser" {
+                AuthFlowMethod::Browser
+            } else {
+                AuthFlowMethod::DeviceCode
+            };
+            let flow = manager.start_flow(&provider, method).await?;
+            if let Some(url) = flow.verification_uri.as_deref() {
+                println!("Open: {url}");
+                if method == AuthFlowMethod::Browser {
+                    if let Err(error) = open_capture_url(url) {
+                        eprintln!("Could not open browser automatically: {error}");
+                    }
+                }
+            }
+            if let Some(code) = flow.user_code.as_deref() {
+                println!("Code: {code}");
+            }
+            loop {
+                tokio::time::sleep(Duration::from_secs(1)).await;
+                let snapshot = manager
+                    .flow(&flow.flow_id)
+                    .await
+                    .context("authentication flow disappeared")?;
+                match snapshot.state {
+                    AuthFlowState::Pending => continue,
+                    AuthFlowState::Connected => {
+                        println!("Authenticated {}", provider.name);
+                        break;
+                    }
+                    AuthFlowState::Failed => anyhow::bail!(
+                        "authentication failed: {}",
+                        snapshot.error.unwrap_or_else(|| "unknown error".into())
+                    ),
+                    AuthFlowState::Expired => anyhow::bail!("authentication flow expired"),
+                    AuthFlowState::Cancelled => anyhow::bail!("authentication was cancelled"),
+                }
+            }
+        }
     }
     Ok(())
 }

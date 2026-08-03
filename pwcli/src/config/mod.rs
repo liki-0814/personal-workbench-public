@@ -231,8 +231,10 @@ impl RuntimeConfig {
 
     pub fn active_provider(&self) -> Option<&ProviderConfig> {
         let providers = self.providers.as_ref()?;
-        if let Some(name) = &self.active_provider {
-            providers.iter().find(|p| p.name == *name)
+        if let Some(id) = &self.active_provider {
+            providers.iter().find(|provider| {
+                provider.name == *id || crate::provider_ai::provider_id(provider) == id
+            })
         } else {
             providers.first()
         }
@@ -275,10 +277,16 @@ impl RuntimeConfig {
         let active_still_valid = self
             .active_provider
             .as_ref()
-            .map(|n| merged.iter().any(|p| p.name == *n))
+            .map(|id| {
+                merged.iter().any(|provider| {
+                    provider.name == *id || crate::provider_ai::provider_id(provider) == id
+                })
+            })
             .unwrap_or(false);
         if !active_still_valid {
-            self.active_provider = merged.first().map(|p| p.name.clone());
+            self.active_provider = merged
+                .first()
+                .map(|provider| crate::provider_ai::provider_id(provider).to_string());
         }
         self.providers = Some(merged);
         Ok(())

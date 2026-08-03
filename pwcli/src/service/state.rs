@@ -24,6 +24,7 @@ pub struct AppState {
     pub web_cache: Arc<WebFetchCache>,
     pub tool_registry: Arc<ToolRegistry>,
     pub llm_client: Arc<LlmClient>,
+    pub auth_manager: Arc<crate::provider_ai::AuthManager>,
     pub permission_engine: Arc<PermissionEngine>,
     pub permission_broker: Arc<PermissionBroker>,
     pub config: Arc<RuntimeConfig>,

@@ -76,6 +76,7 @@ pub struct RuntimeCapabilitySnapshot {
     pub provider: String,
     pub model: String,
     pub protocol: String,
+    pub auth_source: String,
     pub memory_mode: String,
     pub reviewer_enabled: bool,
     pub background_enabled: bool,
@@ -88,6 +89,7 @@ pub struct RuntimeFactory {
     permissions: Option<Arc<PermissionEngine>>,
     web_cache: Option<Arc<WebFetchCache>>,
     background_tasks: Option<Arc<BackgroundTaskManager>>,
+    auth_manager: Arc<crate::provider_ai::AuthManager>,
 }
 
 impl RuntimeFactory {
@@ -102,6 +104,7 @@ impl RuntimeFactory {
             permissions: None,
             web_cache: None,
             background_tasks: None,
+            auth_manager: Arc::new(crate::provider_ai::AuthManager::default()),
         })
     }
 
@@ -112,6 +115,7 @@ impl RuntimeFactory {
         permissions: Arc<PermissionEngine>,
         web_cache: Arc<WebFetchCache>,
         background_tasks: Arc<BackgroundTaskManager>,
+        auth_manager: Arc<crate::provider_ai::AuthManager>,
     ) -> Self {
         Self {
             config,
@@ -120,6 +124,7 @@ impl RuntimeFactory {
             permissions: Some(permissions),
             web_cache: Some(web_cache),
             background_tasks: Some(background_tasks),
+            auth_manager,
         }
     }
 
@@ -150,6 +155,7 @@ impl RuntimeFactory {
         if let Some(session_id) = request.session_id.as_ref() {
             llm = llm.with_session_id(session_id.to_string());
         }
+        llm = llm.with_auth_manager(Arc::clone(&self.auth_manager));
         let llm = Arc::new(llm);
 
         let user_slug = config
@@ -193,6 +199,12 @@ impl RuntimeFactory {
                 )
             }
         };
+        let auth_source = self
+            .auth_manager
+            .resolve(&selected_provider)
+            .await?
+            .source
+            .to_string();
         let snapshot = capability_snapshot(
             request.profile,
             &config,
@@ -201,6 +213,7 @@ impl RuntimeFactory {
             reviewer.is_some(),
             request.permission_mode,
             self.background_tasks.is_some(),
+            auth_source,
         )?;
 
         let mut tool_context = request.tool_context;
@@ -324,6 +337,7 @@ fn capability_snapshot(
     reviewer_enabled: bool,
     permission_mode: AgentPermissionMode,
     background_enabled: bool,
+    auth_source: String,
 ) -> Result<RuntimeCapabilitySnapshot> {
     let provider = config
         .active_provider()
@@ -363,6 +377,7 @@ fn capability_snapshot(
         provider: provider.name.clone(),
         model: provider.model.clone(),
         protocol: provider.protocol.clone(),
+        auth_source,
         memory_mode: config.features.memory_injection.mode.clone(),
         reviewer_enabled,
         background_enabled,
@@ -400,9 +415,10 @@ pub(crate) fn apply_provider_selection(
         .providers
         .as_mut()
         .and_then(|providers| {
-            providers
-                .iter_mut()
-                .find(|provider| provider.name == provider_id)
+            providers.iter_mut().find(|provider| {
+                provider.name == provider_id
+                    || crate::provider_ai::provider_id(provider) == provider_id
+            })
         })
         .ok_or_else(|| anyhow::anyhow!("委派任务的 provider `{provider_id}` 已不可用"))?;
     if let Some(model) = selection
@@ -517,6 +533,7 @@ mod tests {
             false,
             AgentPermissionMode::Risk,
             false,
+            "legacy_config".into(),
         )
         .unwrap();
         let second = capability_snapshot(
@@ -527,6 +544,7 @@ mod tests {
             false,
             AgentPermissionMode::Risk,
             false,
+            "legacy_config".into(),
         )
         .unwrap();
         assert_eq!(first, second);
@@ -535,6 +553,7 @@ mod tests {
         assert!(!first.harness_fingerprint.is_empty());
         assert_eq!(first.permission_mode, "risk");
         assert_eq!(first.memory_mode, config().features.memory_injection.mode);
+        assert_eq!(first.auth_source, "legacy_config");
         assert!(!serde_json::to_string(&first)
             .unwrap()
             .contains("secret-must-not-leak"));
@@ -550,6 +569,7 @@ mod tests {
             true,
             AgentPermissionMode::Risk,
             true,
+            "legacy_config".into(),
         )
         .unwrap();
 
@@ -573,6 +593,7 @@ mod tests {
             false,
             AgentPermissionMode::Risk,
             false,
+            "legacy_config".into(),
         )
         .unwrap();
 

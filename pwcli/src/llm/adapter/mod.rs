@@ -6,6 +6,7 @@
 mod anthropic_messages;
 mod google_generative;
 mod openai_chat;
+mod openai_codex_responses;
 mod openai_responses;
 mod registry;
 

@@ -25,6 +25,7 @@ pub mod media;
 pub mod memory;
 pub mod middleware;
 pub mod permissions;
+pub mod provider_ai;
 pub mod reliability;
 pub mod rpc;
 pub mod service;

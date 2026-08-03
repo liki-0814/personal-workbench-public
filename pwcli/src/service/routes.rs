@@ -39,6 +39,8 @@ fn append_latest_user_message(session: &mut crate::session::Session, messages: &
 #[derive(Debug, Deserialize)]
 pub struct ProviderOverride {
     #[serde(default)]
+    pub provider_id: Option<String>,
+    #[serde(default)]
     pub provider_index: Option<usize>,
     #[serde(default)]
     pub base_url: Option<String>,
@@ -61,6 +63,19 @@ pub struct ProviderOverride {
 
 impl ProviderOverride {
     fn resolve_provider(&self, state: &AppState) -> anyhow::Result<ProviderConfig> {
+        if let Some(id) = self
+            .provider_id
+            .as_deref()
+            .filter(|id| !id.trim().is_empty())
+        {
+            let provider = state
+                .web
+                .as_ref()
+                .context("Web service is disabled")?
+                .config
+                .provider_by_id(id)?;
+            return provider_config_for_model(provider, &self.model);
+        }
         if let Some(index) = self.provider_index {
             let provider = state
                 .web
@@ -118,8 +133,8 @@ fn provider_config_for_model(
         protocol: provider.protocol,
         model: model_entry.id.clone(),
         models: vec![model_entry],
-        use_proxy: None,
-        compat_profile: None,
+        use_proxy: provider.use_proxy,
+        compat_profile: provider.compat_profile,
     })
 }
 
@@ -817,6 +832,7 @@ async fn create_web_runtime(
         Arc::clone(&state.permission_engine),
         Arc::clone(&state.web_cache),
         Arc::clone(&state.background_tasks),
+        Arc::clone(&state.auth_manager),
     );
     factory
         .create(crate::composition::RuntimeRequest {
@@ -2104,10 +2120,13 @@ mod tests {
     #[test]
     fn provider_index_resolution_uses_server_secret_and_model_metadata() {
         let provider = super::super::web::ProviderEndpoint {
+            id: "provider-example".into(),
             name: "Example".into(),
             base_url: "https://api.example.com/v1".into(),
             api_key: "server-secret".into(),
             protocol: "openai".into(),
+            use_proxy: None,
+            compat_profile: Some("credential:provider-example".into()),
             models: vec![serde_json::json!({
                 "id": "Qwen3.7-Max-DogFooding",
                 "name": "Qwen 3.7 Max DogFooding",
@@ -2127,10 +2146,13 @@ mod tests {
     #[test]
     fn provider_index_resolution_rejects_unknown_model() {
         let provider = super::super::web::ProviderEndpoint {
+            id: "provider-example".into(),
             name: "Example".into(),
             base_url: "https://api.example.com/v1".into(),
             api_key: "server-secret".into(),
             protocol: "openai".into(),
+            use_proxy: None,
+            compat_profile: Some("credential:provider-example".into()),
             models: vec![],
         };
 

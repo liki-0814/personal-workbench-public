@@ -6,6 +6,7 @@ mod documents;
 mod fs;
 pub(crate) mod images;
 mod jobs;
+mod providers;
 mod proxy;
 
 use std::path::Path;
@@ -143,4 +144,5 @@ pub fn routes() -> Router<AppState> {
         .merge(images::routes())
         .merge(jobs::routes())
         .merge(proxy::routes())
+        .merge(providers::routes())
 }

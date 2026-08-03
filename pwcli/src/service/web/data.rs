@@ -365,7 +365,9 @@ async fn persist_config_aware(
     value: serde_json::Value,
 ) -> Result<serde_json::Value> {
     let value = match key {
-        "ai_providers" => web.config.write_frontend_providers(value),
+        "ai_providers" => {
+            anyhow::bail!("ai_providers is read-only; use the dedicated /api/providers endpoints")
+        }
         "app_config" => web.config.write_frontend_app_config(value),
         _ => Ok(value),
     }?;
