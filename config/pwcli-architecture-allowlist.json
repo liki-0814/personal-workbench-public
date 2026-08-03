@@ -1,0 +1,7 @@
+{
+  "coreForbiddenEdges": [],
+  "taskLocalFiles": [
+    "pwcli/src/tools/fs_local.rs",
+    "pwcli/src/tools/progress.rs"
+  ]
+}

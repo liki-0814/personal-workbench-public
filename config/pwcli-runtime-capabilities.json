@@ -1,0 +1,45 @@
+{
+  "schemaVersion": 2,
+  "profiles": {
+    "web_main": {
+      "migrationStatus": "runtime_factory",
+      "compositionOwner": "composition",
+      "transport": ["json", "sse"],
+      "harnessProfile": "main",
+      "permissionModeSource": "daemon_config",
+      "memoryModeSource": "runtime_config",
+      "durableSession": true,
+      "backgroundTools": true
+    },
+    "cli_oneshot": {
+      "migrationStatus": "runtime_factory",
+      "compositionOwner": "composition",
+      "transport": "stdio",
+      "harnessProfile": "oneshot",
+      "permissionModeSource": "cli_flag",
+      "memoryModeSource": "runtime_config",
+      "durableSession": false,
+      "backgroundTools": false
+    },
+    "internal_worker": {
+      "migrationStatus": "runtime_factory",
+      "compositionOwner": "composition",
+      "transport": "task_callback",
+      "harnessProfile": "oneshot",
+      "permissionModeSource": "worker_access",
+      "memoryModeSource": "runtime_config",
+      "durableSession": false,
+      "backgroundTools": false
+    },
+    "acp_external_worker": {
+      "migrationStatus": "legacy",
+      "compositionOwner": "task",
+      "transport": "acp",
+      "harnessProfile": "external_adapter",
+      "permissionModeSource": "task_descriptor",
+      "memoryModeSource": "none",
+      "durableSession": true,
+      "backgroundTools": false
+    }
+  }
+}
