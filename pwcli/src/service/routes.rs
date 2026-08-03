@@ -12,7 +12,7 @@ use tracing::{error, info, warn};
 
 use tokio::sync::broadcast;
 
-use crate::llm::{ChatMessage, LlmClient, ProviderConfig, StreamEvent};
+use crate::llm::{ChatMessage, ProviderConfig, StreamEvent};
 use crate::session::ConversationMessage;
 
 use super::state::AppState;
@@ -787,46 +787,58 @@ async fn health() -> &'static str {
     "ok"
 }
 
-/// 计算给定 model id 是否支持视觉输入，用于 read_file 图片门控的 task-local 注入。
-///
-/// The acting model is always a normal provider model. Harness MoA reviewers
-/// receive image grounding independently and therefore do not affect tool
-/// vision gating.
-async fn compute_supports_vision(backend: &crate::backend::BackendClient, model_id: &str) -> bool {
-    let providers = crate::fusion::registry::load_providers(backend).await;
-    crate::llm::model_context::compute_vision_support_for(&providers, model_id)
-}
-
-/// 根据 provider_override 构造 ActiveModelContext。
-/// 没有 override 时使用 config 默认 provider 的 model（与 LlmClient::from_config 一致）。
-async fn build_active_model_context(
+fn resolve_web_provider_selection(
     state: &AppState,
     provider_override: Option<&ProviderOverride>,
+) -> anyhow::Result<Option<crate::composition::ProviderSelection>> {
+    Ok(provider_override
+        .map(|value| value.resolve_provider(state))
+        .transpose()?
+        .map(crate::composition::ProviderSelection::resolved))
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn create_web_runtime(
+    state: &AppState,
+    session_id: &str,
+    chat_session_id: Option<String>,
+    work_item_id: Option<String>,
+    workspace: std::path::PathBuf,
     thinking: bool,
-) -> crate::llm::model_context::ActiveModelContext {
-    let provider = provider_override
-        .and_then(|value| value.resolve_provider(state).ok())
-        .or_else(|| state.config.active_provider().cloned());
-    let provider_id = provider.as_ref().map(|value| value.name.clone());
-    let model_id = provider
-        .as_ref()
-        .map(|value| value.model.clone())
-        .unwrap_or_default();
-    let effort = provider
-        .as_ref()
-        .and_then(|value| crate::llm::model_context::effort_for_provider(value, thinking));
-    let supports_vision = if model_id.is_empty() {
-        false
-    } else {
-        compute_supports_vision(&state.backend, &model_id).await
-    };
-    crate::llm::model_context::ActiveModelContext {
-        provider_id,
-        model_id,
-        effort,
-        thinking,
-        supports_vision,
-    }
+    system_prompt: String,
+    harness: Arc<crate::harness::HarnessControl>,
+    provider: Option<crate::composition::ProviderSelection>,
+    image_references: Arc<crate::visual_generation::ImageReferenceRegistry>,
+) -> anyhow::Result<crate::composition::AgentRuntime> {
+    let factory = crate::composition::RuntimeFactory::from_shared(
+        Arc::clone(&state.config),
+        Arc::clone(&state.backend),
+        Arc::clone(&state.tool_registry),
+        Arc::clone(&state.permission_engine),
+        Arc::clone(&state.web_cache),
+        Arc::clone(&state.background_tasks),
+    );
+    factory
+        .create(crate::composition::RuntimeRequest {
+            profile: crate::composition::RuntimeProfile::WebMain,
+            provider_override: provider,
+            workspace: workspace.clone(),
+            permission_mode: crate::permissions::current_agent_permission_mode(),
+            thinking,
+            session_id: Some(session_id.to_string().into()),
+            worker_dispatch: None,
+            system_prompt,
+            harness: Some(harness),
+            tool_context: crate::tools::context::ToolExecutionContext {
+                chat_session_id: chat_session_id.map(Into::into),
+                work_item_id: work_item_id.map(Into::into),
+                cwd: workspace,
+                image_references: Some(image_references),
+                web_cache: Some(Arc::clone(&state.web_cache)),
+                ..crate::tools::context::ToolExecutionContext::default()
+            },
+        })
+        .await
 }
 
 async fn create_session(
@@ -1217,8 +1229,6 @@ async fn chat(
             "\n\n## 捕获事项执行约束\n\n这是一个异步捕获事项。请先判断合适 role/access，随后调用 dispatch_tasks；executor 必须设为 `{executor}`。发布成功后立即结束本回合，不要在主进程内自行等待。"
         ));
     }
-    let tool_schemas = state.tool_registry.to_schemas();
-    let hook_runner = crate::hooks::HookRunner::default();
     let mut messages = req.messages;
     if !req.internal_callback {
         append_latest_user_message(&mut session, &messages);
@@ -1233,81 +1243,46 @@ async fn chat(
     let image_references = crate::visual_generation::build_image_reference_registry(&mut messages);
     let mut usage_tracker = crate::usage::UsageTracker::new();
 
-    // 在 provider_override 被消费前抓 active model 上下文，供工具感知 per-request 模型。
-    let active_model_ctx =
-        build_active_model_context(&state, req.provider_override.as_ref(), req.thinking).await;
-
-    let override_client = req
-        .provider_override
-        .as_ref()
-        .map(|po| po.resolve_provider(&state))
-        .transpose()
-        .map_err(|error| {
+    let provider = resolve_web_provider_selection(&state, req.provider_override.as_ref()).map_err(
+        |error| {
             warn!(error = %error, "invalid provider override");
             axum::http::StatusCode::BAD_REQUEST
-        })?
-        .map(|provider| LlmClient::with_provider(provider, state.config.backend_url.clone()));
-    let llm = override_client
-        .as_ref()
-        .unwrap_or(&state.llm_client)
-        .clone()
-        .with_session_id(id.clone());
-
+        },
+    )?;
     let harness = session_harness(&state, &id).await;
-    let decision_reviewer =
-        crate::fusion::moa::active_runtime(&state.backend, state.config.backend_url.clone())
-            .await
-            .map_err(|error| {
-                warn!(error = %error, "invalid active Harness MoA configuration");
-                axum::http::StatusCode::INTERNAL_SERVER_ERROR
-            })?;
     let audit_sink = state.session_manager.audit_sink(id.clone());
-    let runner = crate::agent_runner::AgentRunner {
-        llm: &llm,
-        tool_registry: &state.tool_registry,
-        permission_engine: &state.permission_engine,
-        hook_runner: &hook_runner,
-        tool_schemas: &tool_schemas,
-        system_prompt: &system_prompt,
-        config: &state.config,
-        run_options: crate::agent_runner::HarnessRunOptions::main(req.thinking),
-        sink: None,
-        cancel_token: None,
-        background_tasks: Some(&state.background_tasks),
-        session_id: Some(id.clone()),
-        tool_registry_arc: Some(std::sync::Arc::clone(&state.tool_registry)),
-        web_cache: Some(std::sync::Arc::clone(&state.web_cache)),
-        harness: Some(harness.as_ref()),
-        decision_reviewer: decision_reviewer
-            .as_ref()
-            .map(|reviewer| reviewer as &dyn crate::fusion::DecisionReviewer),
-        audit_sink: Some(&audit_sink),
-    };
+    let runtime = create_web_runtime(
+        &state,
+        &id,
+        chat_session_id,
+        req.work_item_id.clone(),
+        bound_cwd,
+        req.thinking,
+        system_prompt,
+        Arc::clone(&harness),
+        provider,
+        image_references,
+    )
+    .await
+    .map_err(|error| {
+        warn!(error = %error, "failed to create Web AgentRuntime");
+        axum::http::StatusCode::INTERNAL_SERVER_ERROR
+    })?;
 
     state
         .session_manager
         .mark_turn_started(&id)
         .map_err(|_| axum::http::StatusCode::CONFLICT)?;
-    let turn_result = crate::tools::web_context::with_work_item(
-        req.work_item_id.clone(),
-        crate::tools::web_context::with_chat_session(
-            chat_session_id,
-            crate::tools::web_context::with_image_references(
-                Some(image_references),
-                crate::llm::model_context::with_active_model(active_model_ctx, async {
-                    execute_turn(
-                        &runner,
-                        harness.as_ref(),
-                        &state.session_manager,
-                        &id,
-                        &mut messages,
-                        &mut session,
-                        &mut usage_tracker,
-                    )
-                    .await
-                }),
-            ),
-        ),
+    let noop_sink = crate::agent_runner::NoopSink;
+    let turn_result = execute_turn(
+        &runtime,
+        &noop_sink,
+        Some(&audit_sink),
+        &state.session_manager,
+        &id,
+        &mut messages,
+        &mut session,
+        &mut usage_tracker,
     )
     .await;
     if turn_result.is_err() {
@@ -1345,15 +1320,19 @@ async fn chat(
 }
 
 async fn execute_turn(
-    runner: &crate::agent_runner::AgentRunner<'_>,
-    harness: &crate::harness::HarnessControl,
+    runtime: &crate::composition::AgentRuntime,
+    sink: &dyn crate::agent_runner::ToolEventSink,
+    audit_sink: Option<&dyn crate::harness::HarnessAuditSink>,
     session_manager: &super::session_manager::SessionManager,
     session_id: &str,
     messages: &mut Vec<ChatMessage>,
     session: &mut crate::session::Session,
     usage: &mut crate::usage::UsageTracker,
 ) -> anyhow::Result<Option<crate::agent_runner::TurnSummary>> {
-    let mut result = runner.run_turn(messages, session, usage).await;
+    let harness = runtime.harness();
+    let mut result = runtime
+        .run_turn(messages, session, usage, sink, audit_sink)
+        .await;
     while result.is_ok() {
         let legacy_guidance = harness
             .drain_pending_guidance(|remaining_queue_item_ids| {
@@ -1401,7 +1380,9 @@ async fn execute_turn(
                 break;
             }
         }
-        result = runner.run_turn(messages, session, usage).await;
+        result = runtime
+            .run_turn(messages, session, usage, sink, audit_sink)
+            .await;
     }
     result
 }
@@ -1754,7 +1735,6 @@ async fn stream_chat(
                 "\n\n## 捕获事项执行约束\n\n这是一个异步捕获事项。请先判断合适 role/access，随后调用 dispatch_tasks；executor 必须设为 `{executor}`。发布成功后立即结束本回合，不要在主进程内自行等待。"
             ));
         }
-        let tool_schemas = state.tool_registry.to_schemas();
         let mut messages_for_task = req.messages;
         if !req.internal_callback {
             append_latest_user_message(&mut session, &messages_for_task);
@@ -1771,21 +1751,8 @@ async fn stream_chat(
         }
         let image_references_for_task =
             crate::visual_generation::build_image_reference_registry(&mut messages_for_task);
-        let system_prompt_owned = system_prompt.clone();
-
-        // 在 provider_override 被消费前抓 active model 上下文（图片门控等工具用）。
-        let active_model_ctx =
-            build_active_model_context(&state, req.provider_override.as_ref(), req.thinking).await;
-
-        let override_client = match req
-            .provider_override
-            .as_ref()
-            .map(|po| po.resolve_provider(&state))
-            .transpose()
-        {
-            Ok(provider) => provider.map(|provider| {
-                LlmClient::with_provider(provider, state.config.backend_url.clone())
-            }),
+        let provider = match resolve_web_provider_selection(&state, req.provider_override.as_ref()) {
+            Ok(resolved) => resolved,
             Err(error) => {
                 warn!(error = %error, "invalid provider override");
                 yield Ok(super::sse::stream_event_to_sse(StreamEvent::FirstToken));
@@ -1793,11 +1760,30 @@ async fn stream_chat(
                 return;
             }
         };
-        let llm_owned = override_client
-            .as_ref()
-            .unwrap_or(&state.llm_client)
-            .clone()
-            .with_session_id(id.clone());
+
+        let harness_for_task = session_harness(&state, &id).await;
+        let runtime = match create_web_runtime(
+            &state,
+            &id,
+            session_name_for_stream.clone(),
+            req.work_item_id.clone(),
+            bound_cwd.clone(),
+            req.thinking,
+            system_prompt,
+            Arc::clone(&harness_for_task),
+            provider,
+            image_references_for_task,
+        )
+        .await
+        {
+            Ok(runtime) => runtime,
+            Err(error) => {
+                warn!(error = %error, "failed to create Web AgentRuntime");
+                yield Ok(super::sse::stream_event_to_sse(StreamEvent::FirstToken));
+                yield Ok(super::sse::stream_event_to_sse(StreamEvent::Error(error.to_string())));
+                return;
+            }
+        };
 
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<StreamEvent>();
 
@@ -1806,12 +1792,9 @@ async fn stream_chat(
         // durable session update performed below.
         let session_for_task = session.clone();
         let mut usage_for_task = crate::usage::UsageTracker::new();
-        let tool_schemas_owned = tool_schemas.clone();
         let state_for_task = state.clone();
-        let thinking_flag = req.thinking;
         let require_permission_approval = req.require_permission_approval;
         let request_cwd = bound_cwd.to_string_lossy().into_owned();
-        let harness_for_task = session_harness(&state, &id).await;
 
         if let Err(error) = state.session_manager.mark_turn_started(&id) {
             yield Ok(super::sse::stream_event_to_sse(StreamEvent::FirstToken));
@@ -1820,10 +1803,7 @@ async fn stream_chat(
         }
 
         let session_id_owned = id.clone();
-        let chat_session_id_for_task = session_name_for_stream.clone();
-        let active_model_ctx_for_task = active_model_ctx.clone();
         tokio::spawn(async move {
-            let hook_runner = crate::hooks::HookRunner::default();
             let sink = ChannelSink {
                 tx,
                 permission_broker: Arc::clone(&state_for_task.permission_broker),
@@ -1831,72 +1811,20 @@ async fn stream_chat(
                 cwd: request_cwd,
                 require_permission_approval,
             };
-            let decision_reviewer = match crate::fusion::moa::active_runtime(
-                &state_for_task.backend,
-                state_for_task.config.backend_url.clone(),
-            )
-            .await
-            {
-                Ok(reviewer) => reviewer,
-                Err(error) => {
-                    let _ = sink.tx.send(StreamEvent::Error(format!(
-                        "Invalid Harness MoA configuration: {error}"
-                    )));
-                    state_for_task.session_manager.update(session_for_task);
-                    let _ = state_for_task
-                        .session_manager
-                        .mark_turn_settled(&session_id_owned, true);
-                    return;
-                }
-            };
             let audit_sink = state_for_task
                 .session_manager
                 .audit_sink(session_id_owned.clone());
-            let runner = crate::agent_runner::AgentRunner {
-                llm: &llm_owned,
-                tool_registry: &state_for_task.tool_registry,
-                permission_engine: &state_for_task.permission_engine,
-                hook_runner: &hook_runner,
-                tool_schemas: &tool_schemas_owned,
-                system_prompt: &system_prompt_owned,
-                config: &state_for_task.config,
-                run_options: crate::agent_runner::HarnessRunOptions::main(thinking_flag),
-                sink: Some(&sink),
-                cancel_token: None,
-                background_tasks: Some(&state_for_task.background_tasks),
-                session_id: Some(session_id_owned.clone()),
-                tool_registry_arc: Some(std::sync::Arc::clone(&state_for_task.tool_registry)),
-                web_cache: Some(std::sync::Arc::clone(&state_for_task.web_cache)),
-                harness: Some(harness_for_task.as_ref()),
-                decision_reviewer: decision_reviewer
-                    .as_ref()
-                    .map(|reviewer| reviewer as &dyn crate::fusion::DecisionReviewer),
-                audit_sink: Some(&audit_sink),
-            };
             let mut session_local = session_for_task;
-            let result = crate::tools::web_context::with_work_item(
-                req.work_item_id.clone(),
-                crate::tools::web_context::with_chat_session(
-                chat_session_id_for_task,
-                crate::tools::web_context::with_image_references(
-                    Some(image_references_for_task),
-                    crate::llm::model_context::with_active_model(
-                        active_model_ctx_for_task,
-                        async {
-                    execute_turn(
-                        &runner,
-                        harness_for_task.as_ref(),
-                        &state_for_task.session_manager,
-                        &session_id_owned,
-                        &mut messages_for_task,
-                        &mut session_local,
-                        &mut usage_for_task,
-                    )
-                    .await
-                        },
-                    ),
-                ),
-            ))
+            let result = execute_turn(
+                &runtime,
+                &sink,
+                Some(&audit_sink),
+                &state_for_task.session_manager,
+                &session_id_owned,
+                &mut messages_for_task,
+                &mut session_local,
+                &mut usage_for_task,
+            )
             .await;
             finalize_turn(&state_for_task, user_slug, &session_local);
             if result.is_err() {

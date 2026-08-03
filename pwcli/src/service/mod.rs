@@ -5,6 +5,7 @@ pub mod session_manager;
 pub mod sse;
 pub mod state;
 pub mod static_assets;
+mod tool_ports;
 pub mod web;
 
 use std::sync::Arc;
@@ -81,8 +82,12 @@ where
     );
     crate::tools::dispatch_tasks::register(
         tool_registry.as_ref(),
-        Arc::clone(&task_broker),
-        session_manager.clone(),
+        Arc::new(tool_ports::DaemonSessionContextPort::new(
+            session_manager.clone(),
+        )),
+        Arc::new(tool_ports::DaemonTaskPublisherPort::new(Arc::clone(
+            &task_broker,
+        ))),
     );
     let background_sessions = session_manager.clone();
     // 启动时清理超 24h 的旧日志

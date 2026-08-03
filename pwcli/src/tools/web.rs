@@ -5,10 +5,10 @@ use futures::StreamExt;
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 
+use crate::tools::context::ToolExecutionContext;
 use crate::tools::progress;
 use crate::tools::registry::{ToolExecutionMode, ToolImpact, ToolOutput, ToolRegistry};
 use crate::tools::web_cache::WebCacheKey;
-use crate::tools::web_context;
 
 const READ_LIMIT: usize = 12000;
 const BATCH_MAX_URLS: usize = 10;
@@ -74,20 +74,40 @@ fn truncate_with_prefix_hint(content: &str, limit: usize, label: &str) -> String
 }
 
 async fn try_cache_get(
+    context: &ToolExecutionContext,
     mode: &str,
     url: &str,
     offset: usize,
     selector: Option<&str>,
 ) -> Option<String> {
-    let cache = web_context::web_cache()?;
-    let sid = web_context::session_id()?;
-    let key = WebCacheKey::new(sid, mode, url, offset, selector.map(|s| s.to_string()));
+    let cache = context.web_cache.as_ref()?;
+    let sid = context.session_id.as_ref()?;
+    let key = WebCacheKey::new(
+        sid.to_string(),
+        mode,
+        url,
+        offset,
+        selector.map(|s| s.to_string()),
+    );
     cache.get(&key).await
 }
 
-async fn cache_put(mode: &str, url: &str, offset: usize, selector: Option<&str>, content: String) {
-    if let (Some(cache), Some(sid)) = (web_context::web_cache(), web_context::session_id()) {
-        let key = WebCacheKey::new(sid, mode, url, offset, selector.map(|s| s.to_string()));
+async fn cache_put(
+    context: &ToolExecutionContext,
+    mode: &str,
+    url: &str,
+    offset: usize,
+    selector: Option<&str>,
+    content: String,
+) {
+    if let (Some(cache), Some(sid)) = (&context.web_cache, &context.session_id) {
+        let key = WebCacheKey::new(
+            sid.to_string(),
+            mode,
+            url,
+            offset,
+            selector.map(|s| s.to_string()),
+        );
         cache.put(key, content).await;
     }
 }
@@ -100,29 +120,43 @@ fn with_cache_note(content: String, cached: bool) -> String {
     }
 }
 
-async fn cached_fetch_read(url: &str, offset: usize) -> anyhow::Result<String> {
-    cached_fetch_read_with_limit(url, offset, READ_LIMIT).await
+async fn cached_fetch_read(
+    context: &ToolExecutionContext,
+    url: &str,
+    offset: usize,
+) -> anyhow::Result<String> {
+    cached_fetch_read_with_limit(context, url, offset, READ_LIMIT).await
 }
 
 pub(crate) async fn cached_fetch_read_with_limit(
+    context: &ToolExecutionContext,
     url: &str,
     offset: usize,
     char_limit: usize,
 ) -> anyhow::Result<String> {
     let cache_tag = format!("cl={}", char_limit);
-    let content = if let Some(hit) = try_cache_get("read", url, offset, Some(&cache_tag)).await {
-        with_cache_note(hit, true)
-    } else {
-        let content = crate::tools::anysearch::extract(url).await?;
-        let fresh = if offset == 0 {
-            truncate_with_prefix_hint(&content, char_limit, "内容已截断")
+    let content =
+        if let Some(hit) = try_cache_get(context, "read", url, offset, Some(&cache_tag)).await {
+            with_cache_note(hit, true)
         } else {
-            let (page, suffix) = paginate_chars(&content, offset, char_limit);
-            suffix.map_or(page.clone(), |suffix| format!("{page}{suffix}"))
+            let content = crate::tools::anysearch::extract(url).await?;
+            let fresh = if offset == 0 {
+                truncate_with_prefix_hint(&content, char_limit, "内容已截断")
+            } else {
+                let (page, suffix) = paginate_chars(&content, offset, char_limit);
+                suffix.map_or(page.clone(), |suffix| format!("{page}{suffix}"))
+            };
+            cache_put(
+                context,
+                "read",
+                url,
+                offset,
+                Some(&cache_tag),
+                fresh.clone(),
+            )
+            .await;
+            fresh
         };
-        cache_put("read", url, offset, Some(&cache_tag), fresh.clone()).await;
-        fresh
-    };
     Ok(content)
 }
 
@@ -312,18 +346,19 @@ fn query_cache_key(query: &str, num: u8, site: Option<&str>) -> String {
 }
 
 pub(crate) async fn cached_fetch_query(
+    context: &ToolExecutionContext,
     query: &str,
     num: u8,
     site: Option<&str>,
 ) -> anyhow::Result<String> {
     let cache_key = query_cache_key(query, num, site);
-    let content = if let Some(hit) = try_cache_get("query", &cache_key, 0, None).await {
+    let content = if let Some(hit) = try_cache_get(context, "query", &cache_key, 0, None).await {
         with_cache_note(hit, true)
     } else {
         let fresh =
             crate::tools::anysearch::search_markdown(query, num as usize, site, None).await?;
         let fresh = truncate_with_prefix_hint(&fresh, QUERY_LIMIT, "搜索结果已截断");
-        cache_put("query", &cache_key, 0, None, fresh.clone()).await;
+        cache_put(context, "query", &cache_key, 0, None, fresh.clone()).await;
         fresh
     };
     Ok(content)
@@ -341,6 +376,7 @@ fn hydrate_cache_tag(hydrate: u8, char_limit: usize) -> String {
 /// - char_limit 控制每个 hydrated 页字符上限
 /// - 失败的页不报错，标 `[hydrate failed: ...]`
 pub(crate) async fn cached_fetch_query_with_hydrate(
+    context: &ToolExecutionContext,
     query: &str,
     num: u8,
     site: Option<&str>,
@@ -349,7 +385,7 @@ pub(crate) async fn cached_fetch_query_with_hydrate(
 ) -> anyhow::Result<String> {
     let cache_key = query_cache_key(query, num, site);
     let cache_tag = hydrate_cache_tag(hydrate, char_limit);
-    if let Some(hit) = try_cache_get("query", &cache_key, 0, Some(&cache_tag)).await {
+    if let Some(hit) = try_cache_get(context, "query", &cache_key, 0, Some(&cache_tag)).await {
         return Ok(with_cache_note(hit, true));
     }
 
@@ -360,32 +396,22 @@ pub(crate) async fn cached_fetch_query_with_hydrate(
         Vec::new()
     } else {
         progress::emit(&format!("📰 抽取 {} 个结果正文...", take_n));
-        let cache = web_context::web_cache();
-        let sid = web_context::session_id();
         let mut handles = Vec::with_capacity(take_n);
         for item in items.iter().take(take_n) {
             let url = item.url.clone();
-            let cache = cache.clone();
-            let sid = sid.clone();
+            let context = context.clone();
             handles.push(tokio::spawn(async move {
-                let fut = async {
-                    let timeout_fut = tokio::time::timeout(
-                        Duration::from_secs(HYDRATE_PER_URL_TIMEOUT_SECS),
-                        cached_fetch_read_with_limit(&url, 0, char_limit),
-                    );
-                    match timeout_fut.await {
-                        Ok(Ok(text)) => Some(text),
-                        Ok(Err(e)) => Some(format!("[hydrate failed: {}]", e)),
-                        Err(_) => Some(format!(
-                            "[hydrate failed: timeout {}s]",
-                            HYDRATE_PER_URL_TIMEOUT_SECS
-                        )),
-                    }
-                };
-                if cache.is_some() || sid.is_some() {
-                    web_context::with_web_context(cache, sid, fut).await
-                } else {
-                    fut.await
+                let timeout_fut = tokio::time::timeout(
+                    Duration::from_secs(HYDRATE_PER_URL_TIMEOUT_SECS),
+                    cached_fetch_read_with_limit(&context, &url, 0, char_limit),
+                );
+                match timeout_fut.await {
+                    Ok(Ok(text)) => Some(text),
+                    Ok(Err(e)) => Some(format!("[hydrate failed: {}]", e)),
+                    Err(_) => Some(format!(
+                        "[hydrate failed: timeout {}s]",
+                        HYDRATE_PER_URL_TIMEOUT_SECS
+                    )),
                 }
             }));
         }
@@ -428,12 +454,21 @@ pub(crate) async fn cached_fetch_query_with_hydrate(
     }
 
     let truncated = truncate_with_prefix_hint(&buf, QUERY_LIMIT, "搜索结果已截断");
-    cache_put("query", &cache_key, 0, Some(&cache_tag), truncated.clone()).await;
+    cache_put(
+        context,
+        "query",
+        &cache_key,
+        0,
+        Some(&cache_tag),
+        truncated.clone(),
+    )
+    .await;
     Ok(truncated)
 }
 
 /// 2-5 条查询并行调用 AnySearch；单条失败不阻塞其余。
 pub(crate) async fn batch_fetch_queries(
+    context: &ToolExecutionContext,
     queries: Vec<String>,
     num: u8,
     site: Option<&str>,
@@ -441,37 +476,28 @@ pub(crate) async fn batch_fetch_queries(
     hydrate_char_limit: usize,
 ) -> String {
     let total = queries.len();
-    let cache = web_context::web_cache();
-    let sid = web_context::session_id();
     let mut handles = Vec::with_capacity(total);
     for (i, q) in queries.into_iter().enumerate() {
         let site_owned = site.map(|s| s.to_string());
-        let cache = cache.clone();
-        let sid = sid.clone();
+        let context = context.clone();
         handles.push(tokio::spawn(async move {
             let label = format!("[{}/{}] {}", i + 1, total, q);
-            let fut = async {
-                let res = if hydrate > 0 {
-                    cached_fetch_query_with_hydrate(
-                        &q,
-                        num,
-                        site_owned.as_deref(),
-                        hydrate,
-                        hydrate_char_limit,
-                    )
-                    .await
-                } else {
-                    cached_fetch_query(&q, num, site_owned.as_deref()).await
-                };
-                match res {
-                    Ok(body) => format!("## 搜索 {label}\n\n{body}"),
-                    Err(e) => format!("## 搜索 {label}\n\n❌ {e}"),
-                }
-            };
-            if cache.is_some() || sid.is_some() {
-                web_context::with_web_context(cache, sid, fut).await
+            let res = if hydrate > 0 {
+                cached_fetch_query_with_hydrate(
+                    &context,
+                    &q,
+                    num,
+                    site_owned.as_deref(),
+                    hydrate,
+                    hydrate_char_limit,
+                )
+                .await
             } else {
-                fut.await
+                cached_fetch_query(&context, &q, num, site_owned.as_deref()).await
+            };
+            match res {
+                Ok(body) => format!("## 搜索 {label}\n\n{body}"),
+                Err(e) => format!("## 搜索 {label}\n\n❌ {e}"),
             }
         }));
     }
@@ -486,7 +512,7 @@ pub(crate) async fn batch_fetch_queries(
 }
 
 pub fn register(registry: &mut ToolRegistry) {
-    registry.register(
+    registry.register_contextual_structured_with_impact(
         "web_read",
         "通过 AnySearch 抽取公开 URL 的正文并返回 Markdown；搜索请使用 web_query。\
          适用场景：文章、博客、文档、PDF 等公开且以正文为核心的页面。\
@@ -514,7 +540,10 @@ pub fn register(registry: &mut ToolRegistry) {
             "required": ["url"],
             "additionalProperties": false
         }),
-        Box::new(move |args: &Value| {
+        ToolExecutionMode::Parallel,
+        ToolImpact::Observe,
+        Box::new(move |context, args: &Value| {
+            let context = context.clone();
             let url = args["url"].as_str().unwrap_or("").to_string();
             let offset = args["offset"].as_u64().unwrap_or(0) as usize;
             let char_limit = args
@@ -528,7 +557,9 @@ pub fn register(registry: &mut ToolRegistry) {
                     anyhow::bail!("url is required");
                 }
                 progress::emit(&format!("🔍 读取: {}", &url[..url.len().min(60)]));
-                cached_fetch_read_with_limit(&url, offset, char_limit).await
+                cached_fetch_read_with_limit(&context, &url, offset, char_limit)
+                    .await
+                    .map(ToolOutput::text)
             })
         }),
     );
@@ -628,7 +659,7 @@ pub fn register(registry: &mut ToolRegistry) {
         }),
     );
 
-    registry.register(
+    registry.register_contextual_structured_with_impact(
         "web_query",
         "唯一联网搜索入口，由 AnySearch 提供。单个检索问题用 query；只有 2-5 个彼此独立、可以并行回答的问题才用 queries，后者调用 AnySearch batch_search。\
          垂直搜索先用 web_search_domains 查询 sub_domain 和必填参数，再传 domain、sub_domain、sub_domain_params。\
@@ -693,7 +724,10 @@ pub fn register(registry: &mut ToolRegistry) {
             ],
             "additionalProperties": false
         }),
-        Box::new(move |args: &Value| {
+        ToolExecutionMode::Parallel,
+        ToolImpact::Observe,
+        Box::new(move |context, args: &Value| {
+            let context = context.clone();
             let queries: Vec<String> = args["queries"]
                 .as_array()
                 .map(|arr| {
@@ -767,11 +801,11 @@ pub fn register(registry: &mut ToolRegistry) {
                         .await
                         {
                             Ok(result) => {
-                                return Ok(truncate_with_prefix_hint(
+                                return Ok(ToolOutput::text(truncate_with_prefix_hint(
                                     &result,
                                     QUERY_LIMIT,
                                     "批量搜索结果已截断",
-                                ));
+                                )));
                             }
                             Err(error) if vertical => {
                                 return Err(error).context(
@@ -783,14 +817,15 @@ pub fn register(registry: &mut ToolRegistry) {
                             )),
                         }
                     }
-                    return Ok(batch_fetch_queries(
+                    return Ok(ToolOutput::text(batch_fetch_queries(
+                        &context,
                         queries,
                         num,
                         site.as_deref(),
                         hydrate,
                         hydrate_char_limit,
                     )
-                    .await);
+                    .await));
                 }
                 if query.is_empty() {
                     anyhow::bail!("需要 query 或 queries（2-5 条）");
@@ -807,14 +842,15 @@ pub fn register(registry: &mut ToolRegistry) {
                         sub_domain_params.as_ref(),
                     )
                     .await?;
-                    return Ok(truncate_with_prefix_hint(
+                    return Ok(ToolOutput::text(truncate_with_prefix_hint(
                         &result,
                         QUERY_LIMIT,
                         "搜索结果已截断",
-                    ));
+                    )));
                 }
-                if hydrate > 0 {
+                let result = if hydrate > 0 {
                     cached_fetch_query_with_hydrate(
+                        &context,
                         &query,
                         num,
                         site.as_deref(),
@@ -823,13 +859,14 @@ pub fn register(registry: &mut ToolRegistry) {
                     )
                     .await
                 } else {
-                    cached_fetch_query(&query, num, site.as_deref()).await
-                }
+                    cached_fetch_query(&context, &query, num, site.as_deref()).await
+                }?;
+                Ok(ToolOutput::text(result))
             })
         }),
     );
 
-    registry.register(
+    registry.register_contextual_structured_with_impact(
         "web_fetch_batch",
         "通过 AnySearch 批量抽取多个公开 URL 的正文。\
          同一会话内已读过的 URL 会命中缓存。适合对比多个文档、调研多来源。\
@@ -853,7 +890,10 @@ pub fn register(registry: &mut ToolRegistry) {
             "required": ["urls"],
             "additionalProperties": false
         }),
-        Box::new(move |args: &Value| {
+        ToolExecutionMode::Parallel,
+        ToolImpact::Observe,
+        Box::new(move |context, args: &Value| {
+            let context = context.clone();
             let urls: Vec<String> = args["urls"]
                 .as_array()
                 .map(|arr| {
@@ -875,19 +915,13 @@ pub fn register(registry: &mut ToolRegistry) {
 
                 let total = urls.len();
                 let mut sections = Vec::with_capacity(total);
-                let cache = web_context::web_cache();
-                let sid = web_context::session_id();
                 let mut handles = Vec::with_capacity(total);
                 for url in urls {
-                    let cache = cache.clone();
-                    let sid = sid.clone();
+                    let context = context.clone();
                     handles.push(tokio::spawn(async move {
-                        let fut = async { cached_fetch_read(&url, offset).await.map(|c| (url, c)) };
-                        if cache.is_some() || sid.is_some() {
-                            web_context::with_web_context(cache, sid, fut).await
-                        } else {
-                            fut.await
-                        }
+                        cached_fetch_read(&context, &url, offset)
+                            .await
+                            .map(|content| (url, content))
                     }));
                 }
                 for (i, handle) in handles.into_iter().enumerate() {
@@ -905,7 +939,7 @@ pub fn register(registry: &mut ToolRegistry) {
                     sections.push(section);
                 }
 
-                Ok(sections.join("\n\n---\n\n"))
+                Ok(ToolOutput::text(sections.join("\n\n---\n\n")))
             })
         }),
     );
@@ -914,6 +948,54 @@ pub fn register(registry: &mut ToolRegistry) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn explicit_context_scopes_cache_across_spawn_and_sessions() {
+        let cache = std::sync::Arc::new(crate::tools::web_cache::WebFetchCache::new());
+        let context_a = ToolExecutionContext {
+            session_id: Some(crate::contracts::SessionId::new("session-a")),
+            web_cache: Some(std::sync::Arc::clone(&cache)),
+            ..ToolExecutionContext::default()
+        };
+        cache_put(
+            &context_a,
+            "read",
+            "https://example.com/a",
+            0,
+            None,
+            "cached-a".into(),
+        )
+        .await;
+
+        let spawned_context = context_a.clone();
+        let spawned = tokio::spawn(async move {
+            try_cache_get(&spawned_context, "read", "https://example.com/a", 0, None).await
+        })
+        .await
+        .unwrap();
+        assert_eq!(spawned.as_deref(), Some("cached-a"));
+
+        let context_b = ToolExecutionContext {
+            session_id: Some(crate::contracts::SessionId::new("session-b")),
+            web_cache: Some(std::sync::Arc::clone(&cache)),
+            ..ToolExecutionContext::default()
+        };
+        assert!(
+            try_cache_get(&context_b, "read", "https://example.com/a", 0, None,)
+                .await
+                .is_none()
+        );
+
+        let no_session = ToolExecutionContext {
+            web_cache: Some(cache),
+            ..ToolExecutionContext::default()
+        };
+        assert!(
+            try_cache_get(&no_session, "read", "https://example.com/a", 0, None,)
+                .await
+                .is_none()
+        );
+    }
 
     #[test]
     fn native_reader_rejects_local_and_non_http_urls() {

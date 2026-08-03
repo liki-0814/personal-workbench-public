@@ -88,7 +88,7 @@ async fn generate_image(
         .parent()
         .unwrap_or_else(|| std::path::Path::new("."));
     match ImageGenerationService::new(data_dir)
-        .generate(&request)
+        .generate(&request, None)
         .await
     {
         Ok(result) => match serde_json::to_value(result) {

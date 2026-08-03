@@ -1,9 +1,11 @@
 use crate::llm::{FunctionSchema, ToolSchema};
 use std::sync::{Arc, RwLock};
 
+pub use crate::contracts::tool::{ToolExecutionMode, ToolImpact, ToolImpactResolver, ToolOutput};
+
+use crate::tools::context::ToolExecutionContext;
 use crate::tools::progress::{self, ImageEmitter, ProgressEmitter};
 use crate::tools::web_cache::WebFetchCache;
-use crate::tools::web_context;
 use anyhow::Result;
 use serde_json::Value;
 use std::collections::HashMap;
@@ -16,84 +18,33 @@ pub type ToolHandler =
 
 pub type StructuredToolHandler =
     Box<dyn Fn(&Value) -> Pin<Box<dyn Future<Output = Result<ToolOutput>> + Send>> + Send + Sync>;
+pub type ContextualStructuredToolHandler = Box<
+    dyn Fn(
+            &ToolExecutionContext,
+            &Value,
+        ) -> Pin<Box<dyn Future<Output = Result<ToolOutput>> + Send>>
+        + Send
+        + Sync,
+>;
 
 type SharedToolHandler =
     Arc<dyn Fn(&Value) -> Pin<Box<dyn Future<Output = Result<String>> + Send>> + Send + Sync>;
 type SharedStructuredToolHandler =
     Arc<dyn Fn(&Value) -> Pin<Box<dyn Future<Output = Result<ToolOutput>> + Send>> + Send + Sync>;
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ToolOutput {
-    pub content: String,
-    /// Requests agent termination after the current batch. A mixed batch only
-    /// terminates when every result opts in, matching Pi's batch semantics.
-    pub terminate: bool,
-    pub details: Option<Value>,
-    pub added_tool_names: Vec<String>,
-}
-
-impl ToolOutput {
-    pub fn text(content: impl Into<String>) -> Self {
-        Self {
-            content: content.into(),
-            terminate: false,
-            details: None,
-            added_tool_names: Vec::new(),
-        }
-    }
-
-    pub fn terminating(content: impl Into<String>) -> Self {
-        Self {
-            content: content.into(),
-            terminate: true,
-            details: None,
-            added_tool_names: Vec::new(),
-        }
-    }
-
-    pub fn with_details(content: impl Into<String>, details: Value) -> Self {
-        Self {
-            content: content.into(),
-            terminate: false,
-            details: Some(details),
-            added_tool_names: Vec::new(),
-        }
-    }
-}
+type SharedContextualStructuredToolHandler = Arc<
+    dyn Fn(
+            &ToolExecutionContext,
+            &Value,
+        ) -> Pin<Box<dyn Future<Output = Result<ToolOutput>> + Send>>
+        + Send
+        + Sync,
+>;
 
 #[derive(Clone)]
 enum RegisteredToolHandler {
     Legacy(SharedToolHandler),
     Structured(SharedStructuredToolHandler),
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ToolExecutionMode {
-    Parallel,
-    Sequential,
-}
-
-/// Shared effect classification used by permission policy and the Harness.
-/// Permissions decide whether a call needs approval, while the Harness uses
-/// the same impact to decide whether independent review is warranted.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ToolImpact {
-    Observe,
-    ReversibleMutation,
-    IrreversibleMutation,
-    ExternalSideEffect,
-    Control,
-}
-
-/// Resolve the impact of a specific call from its validated arguments. Tools
-/// such as `run_command` can be either observational or mutating, so a static
-/// classification alone is too coarse for Harness decision routing.
-pub type ToolImpactResolver = fn(&Value) -> ToolImpact;
-
-impl ToolImpact {
-    pub fn requires_decision(self) -> bool {
-        matches!(self, Self::IrreversibleMutation | Self::ExternalSideEffect)
-    }
+    ContextualStructured(SharedContextualStructuredToolHandler),
 }
 
 /// 工具定义（内部格式）
@@ -298,6 +249,74 @@ impl ToolRegistry {
             .insert(name, RegisteredToolHandler::Structured(Arc::from(handler)));
     }
 
+    pub fn register_contextual_structured_with_impact(
+        &self,
+        name: impl Into<String>,
+        description: impl Into<String>,
+        parameters: Value,
+        execution_mode: ToolExecutionMode,
+        impact: ToolImpact,
+        handler: ContextualStructuredToolHandler,
+    ) {
+        let name = name.into();
+        let (validator, schema_error) = match jsonschema::validator_for(&parameters) {
+            Ok(validator) => (Some(validator), None),
+            Err(error) => (None, Some(error.to_string())),
+        };
+        self.definitions
+            .write()
+            .expect("tool definitions poisoned")
+            .insert(
+                name.clone(),
+                ToolDefinition {
+                    name: name.clone(),
+                    description: description.into(),
+                    parameters,
+                    execution_mode,
+                    impact,
+                    impact_resolver: None,
+                    validator,
+                    schema_error,
+                },
+            );
+        self.handlers
+            .write()
+            .expect("tool handlers poisoned")
+            .insert(
+                name,
+                RegisteredToolHandler::ContextualStructured(Arc::from(handler)),
+            );
+    }
+
+    pub fn register_contextual_structured_with_impact_resolver(
+        &self,
+        name: impl Into<String>,
+        description: impl Into<String>,
+        parameters: Value,
+        execution_mode: ToolExecutionMode,
+        default_impact: ToolImpact,
+        impact_resolver: ToolImpactResolver,
+        handler: ContextualStructuredToolHandler,
+    ) {
+        let name = name.into();
+        self.register_contextual_structured_with_impact(
+            name.clone(),
+            description,
+            parameters,
+            execution_mode,
+            default_impact,
+            handler,
+        );
+        if let Some(definition) = self
+            .definitions
+            .write()
+            .expect("tool definitions poisoned")
+            .get_mut(&name)
+        {
+            definition.impact_resolver = Some(impact_resolver);
+        }
+    }
+
     pub fn remove(&self, name: &str) {
         self.definitions
             .write()
@@ -402,6 +421,51 @@ impl ToolRegistry {
         web_cache: Option<Arc<WebFetchCache>>,
         session_id: Option<String>,
     ) -> Result<ToolOutput> {
+        self.execute_with_invocation_output(
+            name,
+            args,
+            progress,
+            image,
+            web_cache,
+            session_id,
+            tokio_util::sync::CancellationToken::new(),
+            None,
+        )
+        .await
+    }
+
+    pub async fn execute_with_invocation_output(
+        &self,
+        name: &str,
+        args: &Value,
+        progress: Option<ProgressEmitter>,
+        image: Option<ImageEmitter>,
+        web_cache: Option<Arc<WebFetchCache>>,
+        session_id: Option<String>,
+        cancellation: tokio_util::sync::CancellationToken,
+        base_context: Option<&ToolExecutionContext>,
+    ) -> Result<ToolOutput> {
+        let mut context = base_context.cloned().unwrap_or_default();
+        if let Some(session_id) = session_id {
+            context.session_id = Some(session_id.into());
+        }
+        if web_cache.is_some() {
+            context.web_cache = web_cache;
+        }
+        context.progress = progress;
+        context.image = image;
+        context.cancellation = cancellation;
+        self.execute_with_context_output(name, args, &context).await
+    }
+
+    /// Canonical execution API. Context-aware tools receive invocation state
+    /// explicitly; legacy handlers only retain the progress-emitter compatibility scope.
+    pub async fn execute_with_context_output(
+        &self,
+        name: &str,
+        args: &Value,
+        context: &ToolExecutionContext,
+    ) -> Result<ToolOutput> {
         let normalized_args = normalize_arguments_before_validation(name, args)?;
         let args = normalized_args.as_ref().unwrap_or(args);
         self.validate_arguments(name, args)?;
@@ -412,24 +476,38 @@ impl ToolRegistry {
             .get(name)
             .cloned()
             .ok_or_else(|| anyhow::anyhow!("Unknown tool: {}", name))?;
-        match handler {
-            RegisteredToolHandler::Legacy(handler) => Ok(ToolOutput::text(
-                web_context::with_web_context(
-                    web_cache,
-                    session_id,
-                    progress::with_emitters(progress, image, handler(args)),
-                )
-                .await?,
-            )),
-            RegisteredToolHandler::Structured(handler) => {
-                web_context::with_web_context(
-                    web_cache,
-                    session_id,
-                    progress::with_emitters(progress, image, handler(args)),
-                )
-                .await
+        let invocation = async {
+            match handler {
+                RegisteredToolHandler::Legacy(handler) => Ok(ToolOutput::text(
+                    progress::with_all_emitters(
+                        context.progress.clone(),
+                        context.image.clone(),
+                        context.text_delta.clone(),
+                        handler(args),
+                    )
+                    .await?,
+                )),
+                RegisteredToolHandler::Structured(handler) => {
+                    progress::with_all_emitters(
+                        context.progress.clone(),
+                        context.image.clone(),
+                        context.text_delta.clone(),
+                        handler(args),
+                    )
+                    .await
+                }
+                RegisteredToolHandler::ContextualStructured(handler) => {
+                    progress::with_all_emitters(
+                        context.progress.clone(),
+                        context.image.clone(),
+                        context.text_delta.clone(),
+                        handler(context, args),
+                    )
+                    .await
+                }
             }
-        }
+        };
+        invocation.await
     }
 
     pub fn validate_arguments(&self, name: &str, args: &Value) -> Result<()> {
@@ -518,6 +596,8 @@ fn normalize_arguments_before_validation(name: &str, args: &Value) -> Result<Opt
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::contracts::{SessionId, WorkItemId};
+    use crate::tools::context::ToolExecutionContext;
 
     #[tokio::test]
     async fn test_register_and_execute() {
@@ -538,6 +618,92 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(result, "hello");
+    }
+
+    #[tokio::test]
+    async fn contextual_handler_receives_explicit_invocation_state() {
+        let registry = ToolRegistry::new();
+        registry.register_contextual_structured_with_impact(
+            "context",
+            "context",
+            serde_json::json!({"type": "object"}),
+            ToolExecutionMode::Sequential,
+            ToolImpact::Observe,
+            Box::new(|context, _| {
+                let session = context.session_id.clone();
+                let work_item = context.work_item_id.clone();
+                let cancelled = context.cancellation.is_cancelled();
+                Box::pin(async move {
+                    Ok(ToolOutput::text(format!(
+                        "{}:{}:{}",
+                        session.map(|id| id.to_string()).unwrap_or_default(),
+                        work_item.map(|id| id.to_string()).unwrap_or_default(),
+                        cancelled
+                    )))
+                })
+            }),
+        );
+        let context = ToolExecutionContext {
+            session_id: Some(SessionId::new("session-1")),
+            work_item_id: Some(WorkItemId::new("work-1")),
+            ..ToolExecutionContext::default()
+        };
+        let output = registry
+            .execute_with_context_output("context", &serde_json::json!({}), &context)
+            .await
+            .unwrap();
+        assert_eq!(output.content, "session-1:work-1:false");
+    }
+
+    #[tokio::test]
+    async fn invocation_context_propagates_through_spawn_and_uses_turn_cancellation() {
+        let registry = ToolRegistry::new();
+        registry.register_contextual_structured_with_impact(
+            "spawn_context",
+            "spawn context",
+            serde_json::json!({"type": "object"}),
+            ToolExecutionMode::Parallel,
+            ToolImpact::Observe,
+            Box::new(|context, _| {
+                let session = context.session_id.clone();
+                let work_item = context.work_item_id.clone();
+                let cancellation = context.cancellation.clone();
+                Box::pin(async move {
+                    tokio::spawn(async move {
+                        Ok(ToolOutput::text(format!(
+                            "{}:{}:{}",
+                            session.map(|id| id.to_string()).unwrap_or_default(),
+                            work_item.map(|id| id.to_string()).unwrap_or_default(),
+                            cancellation.is_cancelled()
+                        )))
+                    })
+                    .await
+                    .map_err(anyhow::Error::from)?
+                })
+            }),
+        );
+        let base_context = ToolExecutionContext {
+            session_id: Some(SessionId::new("session-spawn")),
+            work_item_id: Some(WorkItemId::new("work-spawn")),
+            ..ToolExecutionContext::default()
+        };
+        let cancellation = tokio_util::sync::CancellationToken::new();
+        cancellation.cancel();
+
+        let output = registry
+            .execute_with_invocation_output(
+                "spawn_context",
+                &serde_json::json!({}),
+                None,
+                None,
+                None,
+                None,
+                cancellation,
+                Some(&base_context),
+            )
+            .await
+            .unwrap();
+        assert_eq!(output.content, "session-spawn:work-spawn:true");
     }
 
     #[tokio::test]
@@ -702,6 +868,53 @@ mod tests {
             registry.impact_for_call("dynamic", &serde_json::json!({})),
             Some(ToolImpact::ExternalSideEffect)
         );
+    }
+
+    #[tokio::test]
+    async fn contextual_impact_resolver_keeps_context_and_policy_on_one_registration() {
+        fn resolver(args: &Value) -> ToolImpact {
+            if args.get("mutate").and_then(Value::as_bool) == Some(true) {
+                ToolImpact::ExternalSideEffect
+            } else {
+                ToolImpact::Observe
+            }
+        }
+
+        let registry = ToolRegistry::new();
+        registry.register_contextual_structured_with_impact_resolver(
+            "contextual_dynamic",
+            "contextual dynamic",
+            serde_json::json!({"type": "object"}),
+            ToolExecutionMode::Sequential,
+            ToolImpact::Observe,
+            resolver,
+            Box::new(|context, _| {
+                let session_id = context.session_id.as_ref().map(ToString::to_string);
+                Box::pin(async move {
+                    Ok(ToolOutput::text(
+                        session_id.unwrap_or_else(|| "none".into()),
+                    ))
+                })
+            }),
+        );
+
+        assert_eq!(
+            registry.impact_for_call("contextual_dynamic", &serde_json::json!({"mutate": true})),
+            Some(ToolImpact::ExternalSideEffect)
+        );
+        let context = ToolExecutionContext {
+            session_id: Some(SessionId::new("session-contextual")),
+            ..ToolExecutionContext::default()
+        };
+        let output = registry
+            .execute_with_context_output(
+                "contextual_dynamic",
+                &serde_json::json!({"mutate": false}),
+                &context,
+            )
+            .await
+            .unwrap();
+        assert_eq!(output.content, "session-contextual");
     }
 
     #[tokio::test]

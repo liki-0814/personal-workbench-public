@@ -1,6 +1,4 @@
-//! Task-local active-model context used by tools such as image-aware `read_file`.
-
-use tokio::task_local;
+//! Explicit active-model context propagated through ToolExecutionContext.
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ActiveModelContext {
@@ -11,45 +9,11 @@ pub struct ActiveModelContext {
     pub supports_vision: bool,
 }
 
-task_local! {
-    pub static ACTIVE_MODEL: ActiveModelContext;
-}
-
-pub async fn with_active_model<F, T>(context: ActiveModelContext, future: F) -> T
-where
-    F: std::future::Future<Output = T>,
-{
-    ACTIVE_MODEL.scope(context, future).await
-}
-
 pub fn compute_vision_support_for(
     providers: &[crate::config::ProviderConfig],
     model_id: &str,
 ) -> bool {
     crate::fusion::registry::is_vision_model(providers, model_id)
-}
-
-pub fn try_current_supports_vision() -> Option<bool> {
-    ACTIVE_MODEL
-        .try_with(|context| context.supports_vision)
-        .ok()
-}
-
-pub fn try_current_model_id() -> Option<String> {
-    ACTIVE_MODEL
-        .try_with(|context| context.model_id.clone())
-        .ok()
-}
-
-pub fn try_current_provider_id() -> Option<String> {
-    ACTIVE_MODEL
-        .try_with(|context| context.provider_id.clone())
-        .ok()
-        .flatten()
-}
-
-pub fn try_current() -> Option<ActiveModelContext> {
-    ACTIVE_MODEL.try_with(Clone::clone).ok()
 }
 
 /// Return the reasoning-effort value that the provider will put on the wire.
@@ -80,29 +44,6 @@ pub fn effort_for_provider(
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[tokio::test]
-    async fn active_context_is_scoped() {
-        assert_eq!(try_current_supports_vision(), None);
-        let context = ActiveModelContext {
-            provider_id: Some("openai".into()),
-            model_id: "gpt-4o".into(),
-            effort: Some("high".into()),
-            thinking: true,
-            supports_vision: true,
-        };
-        let observed = with_active_model(context, async {
-            (try_current_supports_vision(), try_current())
-        })
-        .await;
-        assert_eq!(observed.0, Some(true));
-        let observed = observed.1.unwrap();
-        assert_eq!(observed.provider_id.as_deref(), Some("openai"));
-        assert_eq!(observed.model_id, "gpt-4o");
-        assert_eq!(observed.effort.as_deref(), Some("high"));
-        assert!(observed.thinking);
-        assert_eq!(try_current_supports_vision(), None);
-    }
 
     #[test]
     fn provider_effort_matches_the_effective_request_parameters() {

@@ -92,6 +92,7 @@ impl ImageGenerationService {
     pub async fn generate(
         &self,
         request: &ImageGenerationRequest,
+        acting_model: Option<&crate::llm::model_context::ActiveModelContext>,
     ) -> Result<ImageGenerationResult> {
         validate_request(request)?;
         let config = crate::config::local_config::get().tools.gen_image;
@@ -99,13 +100,15 @@ impl ImageGenerationService {
             config.enabled,
             "未启用 gen-image 工具；请在设置 → 系统集成中完成配置"
         );
-        self.generate_configured(request, &config).await
+        self.generate_configured(request, &config, acting_model)
+            .await
     }
 
     async fn generate_configured(
         &self,
         request: &ImageGenerationRequest,
         config: &GenImageSection,
+        acting_model: Option<&crate::llm::model_context::ActiveModelContext>,
     ) -> Result<ImageGenerationResult> {
         let response_language = crate::config::local_config::get().ai.response_language;
         emit_stage(VisualStage::Briefing);
@@ -133,8 +136,14 @@ impl ImageGenerationService {
         emit_stage(VisualStage::Generating);
         let initial = generate_candidate(model, &compiled_request).await?;
         emit_stage(VisualStage::Validating);
-        let initial_qa =
-            run_vision_qa(&brief, &initial.bytes, initial.mime, response_language).await;
+        let initial_qa = run_vision_qa(
+            &brief,
+            &initial.bytes,
+            initial.mime,
+            response_language,
+            acting_model,
+        )
+        .await;
         let (candidate, qa, final_model, routing_reason) = match initial_qa {
             Ok(Some(decision)) => {
                 let qa = qa_record_from_decision(decision, false);
@@ -285,8 +294,9 @@ async fn run_vision_qa(
     bytes: &[u8],
     mime: &str,
     response_language: crate::config::local_config::ResponseLanguage,
+    acting_model: Option<&crate::llm::model_context::ActiveModelContext>,
 ) -> Result<Option<QaDecision>> {
-    let Some(provider) = select_qa_provider() else {
+    let Some(provider) = select_qa_provider(acting_model) else {
         return Ok(None);
     };
     let runtime = crate::config::RuntimeConfig::load();
@@ -428,7 +438,9 @@ fn parse_qa_decision(content: &str) -> Result<QaDecision> {
     Ok(decision)
 }
 
-fn select_qa_provider() -> Option<crate::config::ProviderConfig> {
+fn select_qa_provider(
+    acting_model: Option<&crate::llm::model_context::ActiveModelContext>,
+) -> Option<crate::config::ProviderConfig> {
     let runtime = crate::config::RuntimeConfig::load();
     let providers = runtime.providers.unwrap_or_default();
     let local = crate::config::local_config::get();
@@ -445,11 +457,11 @@ fn select_qa_provider() -> Option<crate::config::ProviderConfig> {
             }
         }
     }
-    if crate::llm::model_context::try_current_supports_vision() == Some(true) {
-        if let Some(model_id) = crate::llm::model_context::try_current_model_id() {
+    if let Some(acting_model) = acting_model.filter(|model| model.supports_vision) {
+        if !acting_model.model_id.is_empty() {
             let model_ref = crate::fusion::config::MoaModelRef {
-                provider: crate::llm::model_context::try_current_provider_id().unwrap_or_default(),
-                model: model_id,
+                provider: acting_model.provider_id.clone().unwrap_or_default(),
+                model: acting_model.model_id.clone(),
             };
             if let Some(provider) =
                 crate::fusion::registry::resolve_model_ref(&providers, &model_ref)

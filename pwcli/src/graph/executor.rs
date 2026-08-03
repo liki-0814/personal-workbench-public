@@ -163,6 +163,7 @@ pub struct GraphContext<'a> {
     pub decision_reviewer: Option<&'a dyn DecisionReviewer>,
     pub harness_fingerprint: &'a HarnessFingerprint,
     pub audit_sink: Option<&'a dyn HarnessAuditSink>,
+    pub tool_context: Option<&'a crate::tools::context::ToolExecutionContext>,
 }
 
 impl GraphContext<'_> {
@@ -1033,13 +1034,25 @@ impl AgentGraph {
                         let wc = web_cache.clone();
                         let sid_for_tool = session_id.clone();
                         let sid_for_adopt = session_id.clone();
+                        let cancellation = ctx.cancel_token.clone();
+                        let tool_context = ctx.tool_context.cloned();
 
                         let (result_tx, mut result_rx) =
                             tokio::sync::oneshot::channel::<anyhow::Result<String>>();
                         let tool_handle = tokio::spawn(async move {
                             let res = registry_clone
-                                .execute_with_emitters(&tn, &av, pe, ie, wc, sid_for_tool)
-                                .await;
+                                .execute_with_invocation_output(
+                                    &tn,
+                                    &av,
+                                    pe,
+                                    ie,
+                                    wc,
+                                    sid_for_tool,
+                                    cancellation,
+                                    tool_context.as_ref(),
+                                )
+                                .await
+                                .map(|output| output.content);
                             let _ = result_tx.send(res);
                         });
 
@@ -1095,17 +1108,19 @@ impl AgentGraph {
                     } else {
                         let result = ctx
                             .tool_registry
-                            .execute_with_emitters(
+                            .execute_with_invocation_output(
                                 &tc.function.name,
                                 &args_value,
                                 progress_em.clone(),
                                 image_em.clone(),
                                 web_cache.clone(),
                                 session_id.clone(),
+                                ctx.cancel_token.clone(),
+                                ctx.tool_context,
                             )
                             .await;
                         match result {
-                            Ok(r) => (r, false, false),
+                            Ok(output) => (output.content, false, false),
                             Err(e) => {
                                 warn!(tool = %tc.function.name, error = %e, "tool execution failed");
                                 (format!("Error: {}", e), true, false)
@@ -1115,13 +1130,15 @@ impl AgentGraph {
                 } else {
                     let result = ctx
                         .tool_registry
-                        .execute_with_emitters_output(
+                        .execute_with_invocation_output(
                             &tc.function.name,
                             &args_value,
                             progress_em.clone(),
                             image_em.clone(),
                             web_cache.clone(),
                             session_id.clone(),
+                            ctx.cancel_token.clone(),
+                            ctx.tool_context,
                         )
                         .await;
                     match result {
@@ -1443,17 +1460,20 @@ impl AgentGraph {
             let image = ctx.sink.image_emitter_for(&tool_call.id);
             let web_cache = ctx.web_cache.cloned();
             let session_id = ctx.session_id.map(str::to_string);
+            let cancellation = ctx.cancel_token.clone();
             running.push(async move {
                 let started = std::time::Instant::now();
                 let result = ctx
                     .tool_registry
-                    .execute_with_emitters_output(
+                    .execute_with_invocation_output(
                         &tool_call.function.name,
                         &args,
                         progress,
                         image,
                         web_cache,
                         session_id,
+                        cancellation,
+                        ctx.tool_context,
                     )
                     .await;
                 (index, tool_call, args, result, started.elapsed())

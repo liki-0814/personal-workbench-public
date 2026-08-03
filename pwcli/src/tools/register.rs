@@ -5,7 +5,7 @@ use serde_json::{json, Value};
 
 use crate::backend::BackendClient;
 use crate::tools::progress;
-use crate::tools::registry::{ToolExecutionMode, ToolImpact, ToolRegistry};
+use crate::tools::registry::{ToolExecutionMode, ToolImpact, ToolOutput, ToolRegistry};
 
 /// Register all built-in tools into the given [`ToolRegistry`].
 ///
@@ -317,7 +317,7 @@ fn register_fs_tools(registry: &mut ToolRegistry, backend: Arc<BackendClient>) {
     );
 
     let b = Arc::clone(&backend);
-    registry.register(
+    registry.register_contextual_structured_with_impact(
         "read_file",
         "读取文件内容。文本文件返回原文；图片（png/jpg/jpeg/gif/webp，≤5MB）在当前模型支持视觉时以多模态形式注入对话，否则拒绝并提示切换视觉模型。",
         serde_json::json!({
@@ -327,20 +327,24 @@ fn register_fs_tools(registry: &mut ToolRegistry, backend: Arc<BackendClient>) {
             },
             "required": ["path"]
         }),
-        Box::new(move |args: &Value| {
+        ToolExecutionMode::Parallel,
+        ToolImpact::Observe,
+        Box::new(move |context, args: &Value| {
             let b = Arc::clone(&b);
+            let active_model = context.active_model.clone();
             let path = args["path"]
                 .as_str()
                 .ok_or_else(|| anyhow::anyhow!("path is required"))
                 .map(|s| s.to_string());
             Box::pin(async move {
+                let result: anyhow::Result<String> = async move {
                 let path = path?;
                 let sandbox = crate::tools::fs_local::FsSandbox::from_config()?;
                 let local_path = sandbox.resolve(&path)?;
                 // ── 图片分支：本地直读 + 视觉门控 ──
                 if crate::tools::read_file_image::detect_image_ext(&path).is_some() {
-                    if !crate::tools::read_file_image::current_model_supports_vision() {
-                        let model = crate::tools::read_file_image::current_model_label();
+                    if !crate::tools::read_file_image::model_supports_vision(active_model.as_ref()) {
+                        let model = crate::tools::read_file_image::model_label(active_model.as_ref());
                         let abs = std::fs::canonicalize(&path)
                             .map(|p| p.to_string_lossy().to_string())
                             .unwrap_or_else(|_| path.clone());
@@ -385,6 +389,9 @@ fn register_fs_tools(registry: &mut ToolRegistry, backend: Arc<BackendClient>) {
                         Ok(result.content.unwrap_or_else(|| "（空文件）".to_string()))
                     }
                 }
+                }
+                .await;
+                result.map(ToolOutput::text)
             })
         }),
     );
@@ -508,7 +515,7 @@ fn register_fs_tools(registry: &mut ToolRegistry, backend: Arc<BackendClient>) {
 /// The chat model plans composition, writes the final prompt, and selects an aspect ratio.
 /// The daemon selects the configured default image model and adapts its upstream protocol.
 fn register_generate_image_tool(registry: &mut ToolRegistry) {
-    registry.register_with_impact(
+    registry.register_contextual_structured_with_impact(
         "generate_image",
         "生成、参考、编辑或派生一张高质量栅格图片。先识别视觉意图和场景，再把用户事实整理为结构化参数；不要在 prompt 中编造用户未提供的数据、结论或科学关系。真实实验结果、显微数据和证据性图表应改用真实数据绘图。当前消息中如有 imgref_*，只按实际用途选择并放入 imageRefs。一次调用只生成一张图片；自动验收只报告问题，不会自动修复。验收建议修改时，必须先向用户说明问题并得到明确确认，才能再次调用本工具。",
         json!({
@@ -566,36 +573,18 @@ fn register_generate_image_tool(registry: &mut ToolRegistry) {
         // action. Routing it through the MoA pre-action gate allowed a quality
         // reviewer to replace the requested raster result with SVG before the
         // image model ever ran. The visual QA stage remains the quality gate.
+        ToolExecutionMode::Parallel,
         ToolImpact::ReversibleMutation,
-        Box::new(move |args: &Value| {
-            let args = args.clone();
+        Box::new(move |context, args: &Value| {
+            let request = image_generation_request(context, args);
+            let active_model = context.active_model.clone();
             Box::pin(async move {
-                let session_id = crate::tools::web_context::chat_session_id()
-                    .or_else(crate::tools::web_context::session_id)
-                    .unwrap_or_else(|| "default".to_string());
-                let mut request_value = args;
-                request_value["sessionId"] = Value::String(session_id);
-                let mut request: crate::image_generation::ImageGenerationRequest =
-                    serde_json::from_value(request_value).context("生图参数无效")?;
-                if !request.image_refs.is_empty() {
-                    let registry = crate::tools::web_context::image_references()
-                        .context("当前任务没有可用的图片引用")?;
-                    request.resolved_images = request
-                        .image_refs
-                        .iter()
-                        .map(|reference| {
-                            Ok(crate::image_generation::ResolvedImageInput {
-                                reference: registry.resolve(&reference.id)?,
-                                role: reference.role,
-                            })
-                        })
-                        .collect::<anyhow::Result<Vec<_>>>()?;
-                }
+                let request = request?;
 
                 progress::emit("🎨 正在解析视觉需求…");
                 let data_dir = crate::config::local_config::data_dir();
                 let result = crate::image_generation::ImageGenerationService::new(&data_dir)
-                    .generate(&request)
+                    .generate(&request, active_model.as_ref())
                     .await?;
                 let image_url = result
                     .image_urls
@@ -621,16 +610,49 @@ fn register_generate_image_tool(registry: &mut ToolRegistry) {
                     &result.generated_image_record,
                 );
                 progress::emit(&format!("✅ 图片已生成（{model}）"));
-                Ok(format!(
+                Ok(ToolOutput::text(format!(
                     "已生成 1 张图片并展示在对话中（model={model}，url={image_url}）。{qa_guidance}"
-                ))
+                )))
             })
         }),
     );
 }
 
+fn image_generation_request(
+    context: &crate::tools::context::ToolExecutionContext,
+    args: &Value,
+) -> anyhow::Result<crate::image_generation::ImageGenerationRequest> {
+    let session_id = context
+        .chat_session_id
+        .as_ref()
+        .or(context.session_id.as_ref())
+        .map(ToString::to_string)
+        .unwrap_or_else(|| "default".to_string());
+    let mut request_value = args.clone();
+    request_value["sessionId"] = Value::String(session_id);
+    let mut request: crate::image_generation::ImageGenerationRequest =
+        serde_json::from_value(request_value).context("生图参数无效")?;
+    if !request.image_refs.is_empty() {
+        let registry = context
+            .image_references
+            .as_ref()
+            .context("当前任务没有可用的图片引用")?;
+        request.resolved_images = request
+            .image_refs
+            .iter()
+            .map(|reference| {
+                Ok(crate::image_generation::ResolvedImageInput {
+                    reference: registry.resolve(&reference.id)?,
+                    role: reference.role,
+                })
+            })
+            .collect::<anyhow::Result<Vec<_>>>()?;
+    }
+    Ok(request)
+}
+
 fn register_shell_tools(registry: &mut ToolRegistry) {
-    registry.register_with_impact_resolver(
+    registry.register_contextual_structured_with_impact_resolver(
         "run_command",
         "执行本地 bash/shell 命令（支持 ls、cat、grep、git 等常用命令）",
         serde_json::json!({
@@ -642,18 +664,20 @@ fn register_shell_tools(registry: &mut ToolRegistry) {
             },
             "required": ["command"]
         }),
+        ToolExecutionMode::Parallel,
         ToolImpact::ExternalSideEffect,
         run_command_impact,
-        Box::new(move |args: &Value| {
+        Box::new(move |context, args: &Value| {
             let command = args["command"].as_str().unwrap_or("").to_string();
             let cwd = args["cwd"].as_str().map(|s| s.to_string());
             let timeout_secs = args["timeout_secs"].as_u64().unwrap_or(30);
-            if command.is_empty() {
-                return Box::pin(async move { Err(anyhow::anyhow!("命令不能为空")) });
-            }
+            let session_id = shell_session_id(context);
             Box::pin(async move {
+                if command.is_empty() {
+                    anyhow::bail!("命令不能为空");
+                }
                 let sandbox = crate::bash::SandboxConfig::default();
-                let output = if let Some(session_id) = crate::tools::web_context::session_id() {
+                let output = if let Some(session_id) = session_id {
                     crate::bash::shell_state::execute(
                         &session_id,
                         command,
@@ -683,7 +707,7 @@ fn register_shell_tools(registry: &mut ToolRegistry) {
                         output.exit_code.unwrap_or(-1)
                     ));
                 }
-                Ok(result)
+                Ok(ToolOutput::text(result))
             })
         }),
     );
@@ -691,6 +715,10 @@ fn register_shell_tools(registry: &mut ToolRegistry) {
 
 fn run_command_impact(_args: &Value) -> ToolImpact {
     ToolImpact::ExternalSideEffect
+}
+
+fn shell_session_id(context: &crate::tools::context::ToolExecutionContext) -> Option<String> {
+    context.session_id.as_ref().map(ToString::to_string)
 }
 
 #[cfg(test)]
@@ -714,6 +742,39 @@ mod tests {
             run_command_impact(&composed),
             ToolImpact::ExternalSideEffect
         );
+    }
+
+    #[test]
+    fn run_command_selects_shell_state_only_from_explicit_context() {
+        let context = crate::tools::context::ToolExecutionContext {
+            session_id: Some("shell-context".to_string().into()),
+            ..crate::tools::context::ToolExecutionContext::default()
+        };
+        assert_eq!(shell_session_id(&context).as_deref(), Some("shell-context"));
+        assert_eq!(
+            shell_session_id(&crate::tools::context::ToolExecutionContext::default()),
+            None
+        );
+    }
+
+    #[test]
+    fn image_generation_context_preserves_cli_default_and_fails_closed_for_missing_refs() {
+        let request = image_generation_request(
+            &crate::tools::context::ToolExecutionContext::default(),
+            &serde_json::json!({"prompt": "test"}),
+        )
+        .unwrap();
+        assert_eq!(request.session_id, "default");
+
+        let error = image_generation_request(
+            &crate::tools::context::ToolExecutionContext::default(),
+            &serde_json::json!({
+                "prompt": "edit",
+                "imageRefs": [{"id": "imgref_missing", "role": "edit-target"}]
+            }),
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("没有可用的图片引用"));
     }
 
     #[test]

@@ -2,6 +2,7 @@ pub mod anysearch;
 pub mod archify;
 pub mod artifacts;
 pub mod code_agent;
+pub mod context;
 pub mod data_crud;
 pub mod dispatch_tasks;
 pub mod documents;
@@ -24,7 +25,6 @@ pub mod ssh;
 pub mod text_search;
 pub mod web;
 pub mod web_cache;
-pub mod web_context;
 
 pub use executor::*;
 pub use registry::*;

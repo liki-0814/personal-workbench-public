@@ -222,6 +222,9 @@ pub struct AgentRunner<'a> {
     pub decision_reviewer: Option<&'a dyn crate::fusion::DecisionReviewer>,
     /// Optional durable audit target. Absence still emits structured tracing.
     pub audit_sink: Option<&'a dyn HarnessAuditSink>,
+    /// Explicit per-invocation tool context. Legacy callers may omit it while
+    /// ToolRegistry maintains compatibility task-local scopes.
+    pub tool_context: Option<&'a crate::tools::context::ToolExecutionContext>,
 }
 
 impl<'a> AgentRunner<'a> {
@@ -327,6 +330,7 @@ impl<'a> AgentRunner<'a> {
             decision_reviewer: self.decision_reviewer,
             harness_fingerprint: &fingerprint,
             audit_sink: self.audit_sink,
+            tool_context: self.tool_context,
         };
 
         // 5. Run
@@ -524,6 +528,7 @@ mod tests {
             harness: None,
             decision_reviewer: None,
             audit_sink: None,
+            tool_context: None,
         };
 
         let mut msgs = vec![ChatMessage {
@@ -603,6 +608,7 @@ mod tests {
             harness: Some(&harness),
             decision_reviewer: None,
             audit_sink: None,
+            tool_context: None,
         };
         let mut messages = vec![ChatMessage {
             role: "user".into(),
@@ -698,6 +704,7 @@ mod tests {
             harness: None,
             decision_reviewer: None,
             audit_sink: None,
+            tool_context: None,
         };
 
         let mut msgs = vec![ChatMessage {
@@ -796,6 +803,7 @@ mod tests {
             harness: None,
             decision_reviewer: None,
             audit_sink: None,
+            tool_context: None,
         };
         let mut messages = vec![ChatMessage {
             role: "user".into(),
@@ -882,6 +890,7 @@ mod tests {
             harness: None,
             decision_reviewer: None,
             audit_sink: None,
+            tool_context: None,
         };
         let mut messages = vec![ChatMessage {
             role: "user".into(),
@@ -957,6 +966,7 @@ mod tests {
             harness: None,
             decision_reviewer: None,
             audit_sink: None,
+            tool_context: None,
         };
         let mut messages = vec![ChatMessage {
             role: "user".into(),
@@ -1027,6 +1037,7 @@ mod tests {
             harness: None,
             decision_reviewer: None,
             audit_sink: None,
+            tool_context: None,
         };
 
         let mut msgs = vec![ChatMessage {

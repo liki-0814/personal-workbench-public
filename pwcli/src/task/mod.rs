@@ -2762,6 +2762,15 @@ impl TaskBroker {
         request: SubmitTaskBatch,
         bound_workspace: &Path,
     ) -> Result<TaskBatchAccepted> {
+        self.submit_batch_in_workspace_with_model(request, bound_workspace, None)
+    }
+
+    pub fn submit_batch_in_workspace_with_model(
+        &self,
+        request: SubmitTaskBatch,
+        bound_workspace: &Path,
+        publisher_model_context: Option<DelegatedModelSnapshot>,
+    ) -> Result<TaskBatchAccepted> {
         let workspace_root = self.current_workspace_root()?;
         let bound_workspace = bound_workspace.canonicalize().with_context(|| {
             format!(
@@ -2780,23 +2789,20 @@ impl TaskBroker {
                 anyhow::bail!("task workspace must stay inside the root session workspace");
             }
         }
-        self.submit_root_batch(request)
+        self.submit_root_batch(request, publisher_model_context)
     }
 
     #[cfg(test)]
     fn submit_batch(&self, request: SubmitTaskBatch) -> Result<TaskBatchAccepted> {
-        self.submit_root_batch(request)
+        self.submit_root_batch(request, None)
     }
 
-    fn submit_root_batch(&self, request: SubmitTaskBatch) -> Result<TaskBatchAccepted> {
+    fn submit_root_batch(
+        &self,
+        request: SubmitTaskBatch,
+        publisher_model_context: Option<DelegatedModelSnapshot>,
+    ) -> Result<TaskBatchAccepted> {
         let mut request = request;
-        let publisher_model_context =
-            crate::llm::model_context::try_current().map(|context| DelegatedModelSnapshot {
-                provider_id: context.provider_id,
-                model: context.model_id,
-                effort: context.effort,
-                thinking: context.thinking,
-            });
         // External callers may choose what to execute, but lineage and resolved
         // execution snapshots are daemon-owned and cannot be forged to bypass
         // recursion/budget limits or misrepresent the selected executor.

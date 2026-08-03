@@ -83,72 +83,66 @@ async fn run_oneshot_inner(
         crate::task::WorkerDispatchSignal,
     )>,
 ) -> Result<String> {
-    use crate::agent_runner::{AgentRunner, PermissionDecision, ToolEventSink};
-    use crate::backend::BackendClient;
+    use crate::agent_runner::{PermissionDecision, ToolEventSink};
     use crate::commands::{
         get_system_prompt_with_catalog, handle_command, memory_injection_opts_from_features,
     };
-    use crate::config::RuntimeConfig;
-    use crate::hooks::HookRunner;
-    use crate::llm::{ChatMessage, LlmClient};
-    use crate::permissions::PermissionEngine;
+    use crate::llm::ChatMessage;
     use crate::session::{ConversationMessage, Session};
-    use crate::tools::register::{register_all_tools, register_memory_tools};
-    use crate::tools::registry::ToolRegistry;
     use crate::usage::UsageTracker;
     use std::io::Write;
 
     // 1) config.json + backend cache overlay
-    let mut config = RuntimeConfig::load();
-    let backend = std::sync::Arc::new(BackendClient::new(&config.backend_url));
-    let _ = config.override_providers_from_backend(&backend).await;
-    if let Some(snapshot) = model_snapshot.as_ref() {
-        apply_delegated_model_snapshot(&mut config, snapshot)?;
-    }
+    let factory = crate::composition::RuntimeFactory::load_local().await?;
 
     // 2) 内置 slash command 短路，不进入 LLM。
-    let cmd_result = handle_command(&prompt, &backend, &config).await;
+    let cmd_result = handle_command(&prompt, factory.backend(), factory.config()).await;
     if !cmd_result.output.is_empty() {
         return Ok(cmd_result.output);
     }
 
-    // 3) LLM oneshot
-    let llm = Arc::new(if model_snapshot.is_some() {
-        let provider = config
-            .active_provider()
-            .ok_or_else(|| anyhow::anyhow!("委派任务的 provider 快照已不可用"))?
-            .clone();
-        LlmClient::with_provider(provider, config.backend_url.clone())
-    } else {
-        LlmClient::from_config(&config)
-            .map_err(|e| anyhow::anyhow!("AI Provider 未配置（{}）。运行 `pwcli config`。", e))?
-    });
-
-    let mut tool_registry = ToolRegistry::new();
-    register_all_tools(&mut tool_registry, std::sync::Arc::clone(&backend));
-    let user_slug = config
+    // 3) RuntimeFactory composition for CLI/internal worker.
+    let thinking = model_snapshot
+        .as_ref()
+        .is_some_and(|snapshot| snapshot.thinking);
+    let user_slug = factory
+        .config()
         .user
         .as_ref()
-        .and_then(|u| u.slug.clone())
+        .and_then(|user| user.slug.clone())
         .unwrap_or_else(|| "local".to_string());
-    register_memory_tools(&mut tool_registry, user_slug.clone());
-    let tool_registry = Arc::new(tool_registry);
-    crate::tools::register::register_runtime_tools(Arc::clone(&tool_registry), Arc::clone(&llm))
-        .await;
-    if let Some((context, signal)) = worker_dispatch {
-        crate::task::register_worker_dispatch_tool(&tool_registry, context, signal);
-    }
-    let tool_schemas = tool_registry.to_schemas();
-    let permission_engine = PermissionEngine::default_engine();
-    let hook_runner = HookRunner::new();
     let mut system_prompt = get_system_prompt_with_catalog(
-        &backend,
+        factory.backend(),
         &user_slug,
-        &memory_injection_opts_from_features(&config.features, Some(prompt.clone())),
+        &memory_injection_opts_from_features(&factory.config().features, Some(prompt.clone())),
     )
     .await;
     append_web_search_note(&mut system_prompt);
     append_response_language_policy(&mut system_prompt);
+    let runtime = factory
+        .create(crate::composition::RuntimeRequest {
+            profile: if model_snapshot.is_some() {
+                crate::composition::RuntimeProfile::InternalWorker
+            } else {
+                crate::composition::RuntimeProfile::CliOneshot
+            },
+            provider_override: model_snapshot
+                .as_ref()
+                .map(crate::composition::ProviderSelection::from),
+            workspace: std::env::current_dir()?,
+            permission_mode: if allow_mutation {
+                crate::permissions::AgentPermissionMode::Full
+            } else {
+                crate::permissions::AgentPermissionMode::Risk
+            },
+            thinking,
+            session_id: None,
+            worker_dispatch,
+            system_prompt,
+            harness: None,
+            tool_context: crate::tools::context::ToolExecutionContext::default(),
+        })
+        .await?;
 
     let mut messages: Vec<ChatMessage> = vec![ChatMessage {
         images: Vec::new(),
@@ -230,156 +224,28 @@ async fn run_oneshot_inner(
         allow_mutation,
         progress,
     };
-    let harness = crate::harness::HarnessControl::default();
-    let decision_reviewer =
-        crate::fusion::moa::active_runtime(&backend, config.backend_url.clone()).await?;
-    let runner = AgentRunner {
-        llm: &llm,
-        tool_registry: &tool_registry,
-        permission_engine: &permission_engine,
-        hook_runner: &hook_runner,
-        tool_schemas: &tool_schemas,
-        system_prompt: &system_prompt,
-        config: &config,
-        run_options: crate::agent_runner::HarnessRunOptions::oneshot_with_thinking(
-            allow_mutation,
-            model_snapshot
-                .as_ref()
-                .is_some_and(|snapshot| snapshot.thinking),
-        ),
-        sink: Some(&sink),
-        cancel_token: None,
-        background_tasks: None,
-        session_id: None,
-        tool_registry_arc: Some(Arc::clone(&tool_registry)),
-        web_cache: None,
-        harness: Some(&harness),
-        decision_reviewer: decision_reviewer
-            .as_ref()
-            .map(|reviewer| reviewer as &dyn crate::fusion::DecisionReviewer),
-        audit_sink: audit_sink.as_deref(),
-    };
-
-    let summary = {
-        let active_model_ctx = build_active_model_context_local(
-            &config,
-            model_snapshot
-                .as_ref()
-                .is_some_and(|snapshot| snapshot.thinking),
-        );
-        crate::llm::model_context::with_active_model(active_model_ctx, async {
-            runner
-                .run_turn(&mut messages, &mut session, &mut usage)
-                .await
-        })
-        .await?
-    };
+    let summary = runtime
+        .run_turn(
+            &mut messages,
+            &mut session,
+            &mut usage,
+            &sink,
+            audit_sink.as_deref(),
+        )
+        .await?;
 
     Ok(summary.map(|value| value.content).unwrap_or_default())
 }
 
+#[cfg(test)]
 fn apply_delegated_model_snapshot(
     config: &mut RuntimeConfig,
     snapshot: &crate::task::DelegatedModelSnapshot,
 ) -> Result<()> {
-    let provider_id = snapshot
-        .provider_id
-        .as_deref()
-        .or(config.active_provider.as_deref())
-        .ok_or_else(|| anyhow::anyhow!("委派任务没有可恢复的 provider 快照"))?
-        .to_string();
-    config.active_provider = Some(provider_id.clone());
-    let providers = config
-        .providers
-        .as_mut()
-        .ok_or_else(|| anyhow::anyhow!("委派任务的 provider `{provider_id}` 已不可用"))?;
-    let provider = providers
-        .iter_mut()
-        .find(|provider| provider.name == provider_id)
-        .ok_or_else(|| anyhow::anyhow!("委派任务的 provider `{provider_id}` 已不可用"))?;
-    if !snapshot.model.trim().is_empty() {
-        provider.model = snapshot.model.clone();
-    }
-    if let Some(effort) = snapshot
-        .effort
-        .as_deref()
-        .map(str::trim)
-        .filter(|effort| !effort.is_empty())
-    {
-        let model_id = provider.model.clone();
-        if !provider.models.iter().any(|model| model.id == model_id) {
-            provider.models.push(crate::config::provider::ModelEntry {
-                id: model_id.clone(),
-                name: model_id.clone(),
-                enabled: None,
-                max_output: None,
-                context_window: None,
-                capabilities: None,
-                request_params: None,
-                thinking_params: None,
-                deferred_tools_mode: None,
-            });
-        }
-        let model = provider
-            .models
-            .iter_mut()
-            .find(|model| model.id == model_id)
-            .expect("the selected model entry was inserted above");
-        model
-            .request_params
-            .get_or_insert_with(serde_json::Map::new)
-            .insert(
-                "reasoning_effort".to_string(),
-                serde_json::Value::String(effort.to_string()),
-            );
-        if snapshot.thinking {
-            model
-                .thinking_params
-                .get_or_insert_with(serde_json::Map::new)
-                .insert(
-                    "reasoning_effort".to_string(),
-                    serde_json::Value::String(effort.to_string()),
-                );
-        }
-    }
-    Ok(())
-}
-
-/// REPL/TUI/oneshot 用：从 RuntimeConfig 的 active provider
-/// 推导 ActiveModelContext。每轮调用一次，让 /provider /model 切换立即反映。
-///
-/// 与 service 模式 `routes.rs::build_active_model_context` 行为对齐：
-/// - 未配置 active provider → model_id 空、supports_vision=false（安全默认）
-/// - 普通 model → 在本机 providers 列表查 capabilities.vision
-fn build_active_model_context_local(
-    config: &crate::config::RuntimeConfig,
-    thinking: bool,
-) -> crate::llm::model_context::ActiveModelContext {
-    let Some(active) = config.active_provider() else {
-        return crate::llm::model_context::ActiveModelContext {
-            provider_id: None,
-            model_id: String::new(),
-            effort: None,
-            thinking,
-            supports_vision: false,
-        };
-    };
-    let provider_id = Some(active.name.clone());
-    let model_id = active.model.clone();
-    let effort = crate::llm::model_context::effort_for_provider(active, thinking);
-    let providers = config.providers.clone().unwrap_or_default();
-    let supports_vision = if model_id.is_empty() {
-        false
-    } else {
-        crate::llm::model_context::compute_vision_support_for(&providers, &model_id)
-    };
-    crate::llm::model_context::ActiveModelContext {
-        provider_id,
-        model_id,
-        effort,
-        thinking,
-        supports_vision,
-    }
+    crate::composition::apply_provider_selection(
+        config,
+        Some(&crate::composition::ProviderSelection::from(snapshot)),
+    )
 }
 
 /// `/compact` 与自动压缩共用的结果类型

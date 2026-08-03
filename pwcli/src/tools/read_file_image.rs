@@ -5,16 +5,12 @@
 //! - 支持 → 本地 fs 读字节 → base64 → 返回特殊标记 `<image_data mime="...">BASE64</image_data>`
 //! - llm/openai.rs + llm/anthropic.rs 在构建 tool message 时检测此标记，转成各自 provider 的多模态格式
 //!
-//! 模型识别（按优先级）：
-//! 1. `llm::model_context` task-local 注入（service 模式下 per-request 真实 model）→ 直接用
-//! 2. fallback：load `~/.pwcli/config.json` 的 active_provider → 在 models 列表中找 model id →
-//!    看 `capabilities.vision == Some(true)`
-//! - load 失败 / model 不在列表 → 保守返 false
+//! 模型能力只能来自本次 ToolExecutionContext；缺失时保守拒绝图片读取。
 
 use anyhow::{anyhow, Result};
 use base64::Engine;
 
-use crate::config::RuntimeConfig;
+use crate::llm::model_context::ActiveModelContext;
 
 const MAX_IMAGE_BYTES: u64 = 5 * 1024 * 1024;
 
@@ -40,44 +36,17 @@ pub fn ext_to_mime(ext: &str) -> &'static str {
     }
 }
 
-/// 当前 active model 是否支持 vision。两层：
-/// 1. service 模式注入的 [`crate::llm::model_context`] task-local → 直接用
-/// 2. fallback：查 `~/.pwcli/config.json` 的 active_provider → models[id].capabilities.vision
-///    - 失败一律返 false（保守）
-pub fn current_model_supports_vision() -> bool {
-    if let Some(v) = crate::llm::model_context::try_current_supports_vision() {
-        return v;
-    }
-    fallback_supports_vision_from_config()
+/// 缺失 acting model 时 fail-closed，避免直接调用 ToolRegistry 绕过视觉门禁。
+pub fn model_supports_vision(model: Option<&ActiveModelContext>) -> bool {
+    model.is_some_and(|model| model.supports_vision)
 }
 
-fn fallback_supports_vision_from_config() -> bool {
-    let cfg = RuntimeConfig::load();
-    let Some(provider) = cfg.active_provider() else {
-        return false;
-    };
-    provider
-        .models
-        .iter()
-        .find(|m| m.id == provider.model)
-        .and_then(|m| m.capabilities.as_ref())
-        .and_then(|c| c.vision)
-        .unwrap_or(false)
-}
-
-/// 拿到当前 active model id（用于错误提示）。优先 task-local 注入，回退 config.json。
-pub fn current_model_label() -> String {
-    if let Some(id) = crate::llm::model_context::try_current_model_id() {
-        return id;
-    }
-    RuntimeConfig::load()
-        .active_provider()
-        .map(|p| p.model.clone())
-        .unwrap_or_else(|| "<未配置>".to_string())
+pub fn model_label(model: Option<&ActiveModelContext>) -> &str {
+    model.map_or("<未配置>", |model| model.model_id.as_str())
 }
 
 /// 读 image 文件返回 `<image_data>` 标记字符串。
-/// 调用方先调 [`current_model_supports_vision`] 把关。
+/// 调用方先调 [`model_supports_vision`] 把关。
 pub async fn read_image_as_marker(path: &str) -> Result<String> {
     let meta = tokio::fs::metadata(path)
         .await
@@ -123,9 +92,8 @@ mod tests {
         assert_eq!(ext_to_mime("webp"), "image/webp");
     }
 
-    #[tokio::test]
-    async fn task_local_overrides_config_fallback() {
-        use crate::llm::model_context::{with_active_model, ActiveModelContext};
+    #[test]
+    fn explicit_model_context_controls_vision_and_missing_context_fails_closed() {
         let ctx = ActiveModelContext {
             provider_id: Some("openai".to_string()),
             model_id: "gpt-4o".to_string(),
@@ -133,14 +101,8 @@ mod tests {
             thinking: false,
             supports_vision: true,
         };
-        let (vision_yes, label) = with_active_model(ctx, async {
-            (current_model_supports_vision(), current_model_label())
-        })
-        .await;
-        assert!(
-            vision_yes,
-            "task-local supports_vision=true 应直接返回 true"
-        );
+        assert!(model_supports_vision(Some(&ctx)));
+        let label = model_label(Some(&ctx));
         assert_eq!(label, "gpt-4o");
 
         let ctx_no = ActiveModelContext {
@@ -150,10 +112,8 @@ mod tests {
             thinking: false,
             supports_vision: false,
         };
-        let vision_no = with_active_model(ctx_no, async { current_model_supports_vision() }).await;
-        assert!(
-            !vision_no,
-            "task-local supports_vision=false 应直接返回 false，不回退 config"
-        );
+        assert!(!model_supports_vision(Some(&ctx_no)));
+        assert!(!model_supports_vision(None));
+        assert_eq!(model_label(None), "<未配置>");
     }
 }
