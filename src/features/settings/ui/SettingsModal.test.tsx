@@ -41,6 +41,7 @@ vi.mock('@/core/config', () => ({
   useAppConfig: vi.fn(() => mocks.appConfig),
   useLocalConfig: vi.fn(() => mocks.localConfig),
   useMoaConfig: vi.fn(() => mocks.moaConfig),
+  useProviderStore: vi.fn(() => ({ providers: [], catalog: [], loading: false, loaded: true })),
   validateMoaConfig: vi.fn(() => []),
 }));
 

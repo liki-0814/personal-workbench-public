@@ -1,4 +1,5 @@
 export * from './aiProviders';
+export * from './providerStore';
 export { getBackendUrl } from './backendUrl';
 export { useAiModels, useChatModels, useMoaConfig, useAppConfig, useLocalConfig } from './hooks';
 export * from './moa';

@@ -232,6 +232,8 @@ export interface AiModelInfo {
   baseUrl: string;
   apiKey: string;
   providerIndex: number;
+  /** Stable server provider identity. Prefer this over positional indexes. */
+  providerId?: string;
   /** Configured provider name (distinct from protocol in `provider`). */
   providerName?: string;
   useProxy?: boolean;
@@ -278,6 +280,7 @@ function rebuildModels(): AiModelInfo[] {
       baseUrl: p.baseUrl,
       apiKey: p.apiKey,
       providerIndex,
+      providerId: p.id,
       providerName: p.name,
       useProxy: p.useProxy,
       enabled: m.enabled,
@@ -299,7 +302,13 @@ function reloadProviders(): void {
 }
 
 if (typeof window !== 'undefined') {
-  window.addEventListener(STORAGE_SYNC_EVENT, reloadProviders);
+  window.addEventListener(STORAGE_SYNC_EVENT, event => {
+    const reason = (event as CustomEvent<{ reason?: string }>).detail?.reason;
+    // ProviderStore has already replaced the in-memory projection and only
+    // emits this event so hooks rerender. Reloading the intentionally removed
+    // legacy localStorage value would immediately erase the server models.
+    if (reason !== 'provider-api') reloadProviders();
+  });
 }
 
 export function getProviders(): AiProvider[] {
@@ -320,6 +329,21 @@ export function setProviders(providers: AiProvider[]): void {
   _providers = providers.map(provider => normalizeProviderConfig(provider));
   _models = rebuildModels();
   save(KEYS.AI_PROVIDERS, _providers);
+}
+
+/** Update the compatibility model view from the server-backed ProviderStore.
+ * Unlike setProviders this intentionally never writes provider configuration or
+ * credentials to localStorage. */
+export function replaceProvidersFromServer(providers: AiProvider[]): void {
+  _providers = providers.map(provider => normalizeProviderConfig(provider));
+  _models = rebuildModels();
+  // The dedicated Provider API is authoritative and returns a redacted view.
+  // Remove the legacy full-config cache after the first successful refresh so
+  // API keys (including old unmasked values) cannot remain in browser storage.
+  if (typeof localStorage !== 'undefined') localStorage.removeItem(PROVIDERS_STORAGE_KEY);
+  if (typeof window !== 'undefined') {
+    window.dispatchEvent(new CustomEvent(STORAGE_SYNC_EVENT, { detail: { reason: 'provider-api' } }));
+  }
 }
 
 export function needsProxy(provider: AiProvider): boolean {

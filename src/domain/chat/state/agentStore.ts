@@ -52,6 +52,7 @@ function buildProviderOverride(model?: string) {
   const info = getModelInfo(model);
   if (!info) return undefined;
   return {
+    provider_id: info.providerId,
     provider_index: info.providerIndex,
     name: info.providerName,
     model: info.id,

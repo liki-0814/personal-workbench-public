@@ -1,24 +1,15 @@
-import { useState, useEffect, useCallback, useRef } from 'react';
-import Sortable from 'sortablejs';
-import { X, Plus, Trash2, Settings, Server, CheckCircle, AlertCircle, GripVertical, ArrowUp, ArrowDown, Sparkles, Plug, RotateCcw, MonitorSmartphone, Eye, EyeOff, FolderOpen } from 'lucide-react';
+import { useState, useEffect, useCallback } from 'react';
+import { X, Plus, Trash2, Settings, Server, CheckCircle, AlertCircle, Sparkles, Plug, RotateCcw, MonitorSmartphone, Eye, EyeOff, FolderOpen } from 'lucide-react';
 import { MemorySettingsPanel } from '@/features/memory';
-import type { AiProvider, FeatureModelKey, AppConfig, LocalConfig, LocalConfigGenImageModel, LocalConfigSshServer, ResponseLanguage, VisualScene, ProviderProtocol } from '@/core/config';
+import type { FeatureModelKey, AppConfig, LocalConfig, LocalConfigGenImageModel, LocalConfigSshServer, ResponseLanguage, VisualScene } from '@/core/config';
 import {
-  getProviders, setProviders, useAiModels, FEATURE_MODELS, getFeatureModel, setFeatureModel,
+  useAiModels, FEATURE_MODELS, getFeatureModel, setFeatureModel,
   useAppConfig, setAppConfig,
   useLocalConfig, saveLocalConfig, LOCAL_CONFIG_TOKEN_MASK, normalizeFsBase,
   useMoaConfig, saveMoaConfig, getMoaConfig, getProviderModelOptions, validateMoaConfig,
-  normalizeProviderProtocol,
-  protocolLabel,
-  protocolDescription,
-  PROVIDER_PROTOCOL_OPTIONS,
-  templatesForProtocol,
-  validateProviderConfig,
-  type ModelParamTemplate,
 } from '@/core/config';
 import HarnessMoaSettingsPanel from './HarnessMoaSettingsPanel';
-import { getDefaultMaxOutput } from '@/core/llm/client';
-import { getModelMeta } from '@/core/config/modelMetadata';
+import ProviderSettingsPanel from './ProviderSettingsPanel';
 import { useStorageSync } from '@/core/storage';
 
 import { SelectField, showToast, useModalDialog } from '@/shell';
@@ -109,69 +100,6 @@ function capabilityOverride(value: string): boolean | undefined {
   return value === 'auto' ? undefined : value === 'true';
 }
 
-function emptyProvider(): AiProvider {
-  return {
-    name: '',
-    baseUrl: '',
-    apiKey: '',
-    protocol: 'openai_chat',
-    models: [],
-  };
-}
-
-function JsonParamsEditor({
-  label,
-  value,
-  placeholder,
-  onChange,
-}: {
-  label: string;
-  value?: Record<string, unknown>;
-  placeholder: string;
-  onChange: (value: Record<string, unknown> | undefined) => void;
-}) {
-  const [draft, setDraft] = useState(() => value ? JSON.stringify(value, null, 2) : '');
-  const [error, setError] = useState('');
-
-  const handleChange = (raw: string) => {
-    setDraft(raw);
-    if (!raw.trim()) {
-      setError('');
-      onChange(undefined);
-      return;
-    }
-    try {
-      const parsed: unknown = JSON.parse(raw);
-      if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
-        setError('必须是 JSON 对象');
-        return;
-      }
-      setError('');
-      onChange(parsed as Record<string, unknown>);
-    } catch {
-      setError('JSON 格式不正确');
-    }
-  };
-
-  return (
-    <label className="block min-w-0">
-      <span className="block text-[11px] text-gray-500 dark:text-gray-400 mb-1">{label}</span>
-      <textarea
-        value={draft}
-        onChange={event => handleChange(event.target.value)}
-        placeholder={placeholder}
-        rows={3}
-        spellCheck={false}
-        aria-invalid={!!error}
-        data-json-invalid={error ? 'true' : 'false'}
-        className={`input-field w-full resize-y text-[11px] leading-4 font-mono dark:bg-white/5 dark:text-white ${
-          error ? 'border-red-400 dark:border-red-500/70' : 'dark:border-white/10'
-        }`}
-      />
-      {error && <span className="block mt-1 text-[10px] text-red-500">{error}</span>}
-    </label>
-  );
-}
 export default function SettingsModal({ open, onClose }: Props) {
   const [tab, setTab] = useState<Tab>('ai');
   const aiModels = useAiModels();
@@ -180,14 +108,7 @@ export default function SettingsModal({ open, onClose }: Props) {
   const [localMoaConfig, setLocalMoaConfig] = useState(moaConfig);
   const moaConfigErrors = validateMoaConfig(localMoaConfig, providerModelOptions);
   const isMoaConfigDirty = JSON.stringify(localMoaConfig) !== JSON.stringify(moaConfig);
-  const [providers, setLocalProviders] = useState<AiProvider[]>([]);
-  const [editingIndex, setEditingIndex] = useState<number | null>(null);
   const settingsDialogRef = useModalDialog({ open, onClose });
-  const providerDialogRef = useModalDialog({
-    open: open && editingIndex !== null,
-    onClose: () => setEditingIndex(null),
-  });
-  const [editForm, setEditForm] = useState<AiProvider>(emptyProvider());
   const [daemonStatus, setDaemonStatus] = useState<DaemonStatus | null>(null);
   const [daemonCheckFailed, setDaemonCheckFailed] = useState(false);
   const [codeAgentBackends, setCodeAgentBackends] = useState<CodeAgentBackend[]>([]);
@@ -320,87 +241,6 @@ export default function SettingsModal({ open, onClose }: Props) {
     localAppConfig.genImageDefaultModel !== mergedAppConfig.genImageDefaultModel ||
     JSON.stringify(localAppConfig.genImageModels ?? []) !== JSON.stringify(mergedAppConfig.genImageModels ?? []);
 
-  // Model list drag-to-reorder
-  const modelListRef = useRef<HTMLDivElement>(null);
-  const modelSortableRef = useRef<Sortable | null>(null);
-  const modelRowKeysRef = useRef<string[]>([]);
-  const modelRowKeyCounterRef = useRef(0);
-  const providerListRef = useRef<HTMLDivElement>(null);
-  const providerSortableRef = useRef<Sortable | null>(null);
-  const providersRef = useRef(providers);
-  providersRef.current = providers;
-
-  const reorderProviders = useCallback((fromIndex: number, toIndex: number) => {
-    const current = providersRef.current;
-    if (
-      fromIndex === toIndex ||
-      fromIndex < 0 ||
-      toIndex < 0 ||
-      fromIndex >= current.length ||
-      toIndex >= current.length
-    ) {
-      return;
-    }
-    const next = [...current];
-    const [moved] = next.splice(fromIndex, 1);
-    next.splice(toIndex, 0, moved);
-    providersRef.current = next;
-    setLocalProviders(next);
-    setProviders(next);
-  }, []);
-
-  useEffect(() => {
-    if (!open || tab !== 'ai' || !providerListRef.current) {
-      providerSortableRef.current?.destroy();
-      providerSortableRef.current = null;
-      return;
-    }
-    providerSortableRef.current = new Sortable(providerListRef.current, {
-      handle: '.provider-drag-handle',
-      animation: 150,
-      ghostClass: 'opacity-40',
-      onEnd: (event) => {
-        const { oldIndex, newIndex } = event;
-        if (oldIndex == null || newIndex == null || oldIndex === newIndex) return;
-        reorderProviders(oldIndex, newIndex);
-        showToast({ message: 'Provider 优先级已更新', type: 'success' });
-      },
-    });
-    return () => {
-      providerSortableRef.current?.destroy();
-      providerSortableRef.current = null;
-    };
-  }, [open, reorderProviders, tab]);
-
-  useEffect(() => {
-    if (!modelListRef.current || editingIndex === null) {
-      modelSortableRef.current?.destroy();
-      modelSortableRef.current = null;
-      return;
-    }
-    modelSortableRef.current = new Sortable(modelListRef.current, {
-      handle: '.model-drag-handle',
-      animation: 150,
-      ghostClass: 'opacity-40',
-      onEnd: (evt) => {
-        const { oldIndex, newIndex } = evt;
-        if (oldIndex == null || newIndex == null || oldIndex === newIndex) return;
-        const [movedKey] = modelRowKeysRef.current.splice(oldIndex, 1);
-        modelRowKeysRef.current.splice(newIndex, 0, movedKey);
-        setEditForm(prev => {
-          const models = [...prev.models];
-          const [moved] = models.splice(oldIndex, 1);
-          models.splice(newIndex, 0, moved);
-          return { ...prev, models };
-        });
-      },
-    });
-    return () => {
-      modelSortableRef.current?.destroy();
-      modelSortableRef.current = null;
-    };
-  }, [editingIndex]);
-
   const handleToggleMermaid = (next: boolean) => {
     setMermaidEnabledState(next);
     setMermaidEnabled(next);
@@ -446,7 +286,6 @@ export default function SettingsModal({ open, onClose }: Props) {
 
   useEffect(() => {
     if (open) {
-      setLocalProviders(getProviders());
       setFeatureModelMap(
         Object.fromEntries(FEATURE_MODELS.map(f => [f.key, getFeatureModel(f.key)])) as Record<FeatureModelKey, string>
       );
@@ -615,172 +454,13 @@ export default function SettingsModal({ open, onClose }: Props) {
 
 
 
-  // Refresh when another browser/tab pushes provider/model changes via SSE.
+  // Refresh model selections when another browser/tab pushes configuration changes.
   useStorageSync(() => {
     if (!open) return;
-    setLocalProviders(getProviders());
     setFeatureModelMap(
       Object.fromEntries(FEATURE_MODELS.map(f => [f.key, getFeatureModel(f.key)])) as Record<FeatureModelKey, string>
     );
   });
-
-  const handleAddProvider = () => {
-    modelRowKeysRef.current = [];
-    setEditForm(emptyProvider());
-    setEditingIndex(-1);
-  };
-
-  const handleEditProvider = (index: number) => {
-    modelRowKeysRef.current = providers[index].models.map(
-      () => `model-row-${modelRowKeyCounterRef.current++}`,
-    );
-    setEditForm({ ...providers[index], protocol: normalizeProviderProtocol(providers[index].protocol) });
-    setEditingIndex(index);
-  };
-
-  const handleDeleteProvider = (index: number) => {
-    const next = providers.filter((_, i) => i !== index);
-    providersRef.current = next;
-    setLocalProviders(next);
-    setProviders(next);
-    showToast({ message: 'Provider 已删除', type: 'success' });
-  };
-
-  const handleMoveProvider = (index: number, direction: -1 | 1) => {
-    reorderProviders(index, index + direction);
-    showToast({ message: 'Provider 优先级已更新', type: 'success' });
-  };
-
-  const handleSaveEdit = () => {
-    if (!editForm.name.trim() || !editForm.baseUrl.trim() || !editForm.apiKey.trim()) {
-      showToast({ message: '请填写完整信息', type: 'error' });
-      return;
-    }
-    if (providerDialogRef.current?.querySelector('[data-json-invalid="true"]')) {
-      showToast({ message: '请先修正自定义请求参数的 JSON 格式', type: 'error' });
-      return;
-    }
-    const warnings = validateProviderConfig(editForm);
-    const next = [...providers];
-    if (editingIndex === -1) {
-      next.push(editForm);
-    } else if (editingIndex !== null && editingIndex >= 0) {
-      next[editingIndex] = editForm;
-    }
-    providersRef.current = next;
-    setLocalProviders(next);
-    setProviders(next);
-    setEditingIndex(null);
-    if (warnings.length > 0) {
-      showToast({
-        message: `Provider 已保存（${warnings.length} 条个性化配置提示）：${warnings[0]}`,
-        type: 'info',
-      });
-    } else {
-      showToast({ message: 'Provider 已保存', type: 'success' });
-    }
-  };
-
-  const applyModelTemplate = (idx: number, template: ModelParamTemplate) => {
-    const next = [...editForm.models];
-    next[idx] = template.apply(next[idx]);
-    setEditForm({ ...editForm, models: next });
-    showToast({ message: `已应用模板：${template.label}`, type: 'success' });
-  };
-
-  // Model editor helpers
-  const addModel = () => {
-    modelRowKeysRef.current.push(`model-row-${modelRowKeyCounterRef.current++}`);
-    setEditForm({
-      ...editForm,
-      models: [
-        ...editForm.models,
-        { id: '', name: '', enabled: true, capabilities: { vision: false, thinking: false } },
-      ],
-    });
-  };
-
-  const updateModel = (idx: number, field: 'id' | 'name', value: string) => {
-    const next = [...editForm.models];
-    next[idx] = { ...next[idx], [field]: value };
-    setEditForm({ ...editForm, models: next });
-  };
-
-  const updateModelCapability = (idx: number, key: 'vision' | 'thinking', value: boolean) => {
-    const next = [...editForm.models];
-    const prevCaps = next[idx].capabilities || { vision: false, thinking: false };
-    next[idx] = {
-      ...next[idx],
-      capabilities: { ...prevCaps, [key]: value },
-    };
-    setEditForm({ ...editForm, models: next });
-  };
-
-  const updateModelEnabled = (idx: number, value: boolean) => {
-    const next = [...editForm.models];
-    next[idx] = { ...next[idx], enabled: value };
-    setEditForm({ ...editForm, models: next });
-  };
-
-  const updateModelDeferredTools = (idx: number, value: boolean) => {
-    const next = [...editForm.models];
-    if (value) {
-      next[idx] = { ...next[idx], deferredToolsMode: 'enabled' };
-    } else {
-      const { deferredToolsMode: _omit, ...rest } = next[idx];
-      next[idx] = rest;
-    }
-    setEditForm({ ...editForm, models: next });
-  };
-
-  const updateModelMaxOutput = (idx: number, value: string) => {
-    const next = [...editForm.models];
-    const trimmed = value.trim();
-    if (trimmed === '') {
-      const { maxOutput: _omit, ...rest } = next[idx];
-      next[idx] = rest;
-    } else {
-      const num = Number(trimmed);
-      if (!Number.isFinite(num) || num <= 0) return;
-      next[idx] = { ...next[idx], maxOutput: Math.floor(num) };
-    }
-    setEditForm({ ...editForm, models: next });
-  };
-
-  const updateModelContextWindow = (idx: number, value: string) => {
-    const next = [...editForm.models];
-    const trimmed = value.trim();
-    if (trimmed === '') {
-      const { contextWindow: _omit, ...rest } = next[idx];
-      next[idx] = rest;
-    } else {
-      const num = Number(trimmed);
-      if (!Number.isFinite(num) || num <= 0) return;
-      next[idx] = { ...next[idx], contextWindow: Math.floor(num) };
-    }
-    setEditForm({ ...editForm, models: next });
-  };
-
-  const updateModelParams = (
-    idx: number,
-    field: 'requestParams' | 'thinkingParams',
-    value: Record<string, unknown> | undefined,
-  ) => {
-    const next = [...editForm.models];
-    if (value) {
-      next[idx] = { ...next[idx], [field]: value };
-    } else {
-      const { [field]: _omit, ...rest } = next[idx];
-      next[idx] = rest;
-    }
-    setEditForm({ ...editForm, models: next });
-  };
-
-  const removeModel = (idx: number) => {
-    modelRowKeysRef.current.splice(idx, 1);
-    const next = editForm.models.filter((_, i) => i !== idx);
-    setEditForm({ ...editForm, models: next });
-  };
 
   if (!open) return null;
 
@@ -833,101 +513,7 @@ export default function SettingsModal({ open, onClose }: Props) {
         {/* Content */}
         <div className="flex-1 overflow-y-auto p-6">
           {tab === 'ai' && (
-            <div className="space-y-4">
-              <div className="flex items-center justify-between">
-                <div>
-                  <p className="text-sm text-gray-600 dark:text-gray-300">
-                    配置 AI Provider 以使用 AI 对话、任务拆解、笔记编辑等功能
-                  </p>
-                  <p className="text-xs text-gray-400 dark:text-gray-500 mt-0.5">
-                    从上到下为 fallback 优先级；配置仅在当前设备生效，不会随 App 分发
-                  </p>
-                </div>
-                <button
-                  onClick={handleAddProvider}
-                  className="flex items-center gap-1.5 px-3 py-2 text-xs font-medium rounded-lg bg-purple-500 text-white hover:bg-purple-600 transition-colors"
-                >
-                  <Plus size={14} />
-                  添加 Provider
-                </button>
-              </div>
-
-              {providers.length === 0 && (
-                <div className="text-center py-10 text-gray-400 dark:text-gray-500 bg-gray-50 dark:bg-white/[0.03] rounded-xl">
-                  <p className="text-sm">尚未配置任何 AI Provider</p>
-                  <p className="text-xs mt-1">点击上方按钮添加，或从其他设备导入配置</p>
-                </div>
-              )}
-
-              <div ref={providerListRef} className="space-y-3">
-                {providers.map((p, i) => (
-                  <div
-                    key={`${p.name}-${p.baseUrl}`}
-                    className="rounded-xl border border-gray-200 dark:border-white/10 p-4 bg-white dark:bg-white/[0.02] hover:border-gray-300 dark:hover:border-white/20 transition-colors"
-                  >
-                    <div className="flex items-center justify-between gap-3">
-                      <div className="flex min-w-0 items-center gap-2.5">
-                        <button
-                          type="button"
-                          className="provider-drag-handle -ml-1 shrink-0 cursor-grab touch-none rounded-md p-1 text-gray-300 hover:bg-gray-100 hover:text-gray-500 active:cursor-grabbing dark:text-gray-600 dark:hover:bg-white/10 dark:hover:text-gray-300"
-                          aria-label={`拖动调整 ${p.name} 的优先级`}
-                          title="拖动调整优先级"
-                        >
-                          <GripVertical size={16} />
-                        </button>
-                        <span className="shrink-0 text-[10px] font-medium tabular-nums text-purple-600 dark:text-purple-400">
-                          {i + 1}
-                        </span>
-                        <span className="truncate text-sm font-medium text-gray-900 dark:text-white">{p.name}</span>
-                        <span className="shrink-0 text-[10px] px-2 py-0.5 rounded-md bg-gray-100 dark:bg-white/10 text-gray-500 dark:text-gray-400 border border-gray-200 dark:border-white/10">
-                          {protocolLabel(p.protocol)}
-                        </span>
-                        <span className="shrink-0 text-[10px] px-2 py-0.5 rounded-md bg-gray-100 dark:bg-white/10 text-gray-500 dark:text-gray-400 border border-gray-200 dark:border-white/10">
-                          {p.models.length} 个模型
-                        </span>
-                      </div>
-                      <div className="flex shrink-0 items-center gap-1">
-                        <button
-                          type="button"
-                          onClick={() => handleMoveProvider(i, -1)}
-                          disabled={i === 0}
-                          className="p-1.5 rounded-md text-gray-400 hover:bg-gray-100 hover:text-gray-700 disabled:cursor-not-allowed disabled:opacity-25 dark:hover:bg-white/10 dark:hover:text-gray-200 transition-colors"
-                          aria-label={`上移 ${p.name}`}
-                          title="上移"
-                        >
-                          <ArrowUp size={14} />
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => handleMoveProvider(i, 1)}
-                          disabled={i === providers.length - 1}
-                          className="p-1.5 rounded-md text-gray-400 hover:bg-gray-100 hover:text-gray-700 disabled:cursor-not-allowed disabled:opacity-25 dark:hover:bg-white/10 dark:hover:text-gray-200 transition-colors"
-                          aria-label={`下移 ${p.name}`}
-                          title="下移"
-                        >
-                          <ArrowDown size={14} />
-                        </button>
-                        <button
-                          onClick={() => handleEditProvider(i)}
-                          className="px-2.5 py-1 rounded-md text-xs text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-white/10 transition-colors"
-                        >
-                          编辑
-                        </button>
-                        <button
-                          onClick={() => handleDeleteProvider(i)}
-                          className="p-1.5 rounded-md hover:bg-red-50 dark:hover:bg-red-500/10 text-red-500 transition-colors"
-                          title="删除"
-                          aria-label={`删除 ${p.name}`}
-                        >
-                          <Trash2 size={14} />
-                        </button>
-                      </div>
-                    </div>
-                    <p className="ml-9 text-xs text-gray-400 dark:text-gray-500 font-mono truncate mt-1.5">{p.baseUrl}</p>
-                  </div>
-                ))}
-              </div>
-            </div>
+            <ProviderSettingsPanel />
           )}
 
           {tab === 'models' && (
@@ -1702,7 +1288,7 @@ export default function SettingsModal({ open, onClose }: Props) {
               <p className="text-sm text-gray-500 dark:text-gray-400">版本 0.1.0</p>
               <p className="text-xs text-gray-400 dark:text-gray-500 max-w-sm mx-auto leading-relaxed mt-2">
                 基于 React + TypeScript + Vite + Rust 构建的个人效率工具。
-                数据本地存储，AI 配置仅保存在当前设备。
+                数据本地存储，AI 凭据由本机 daemon 安全管理。
               </p>
               <p className="text-xs text-gray-400 dark:text-gray-500">AGPL-3.0-only · 公开发行版随对应 commit 提供完整源码</p>
               <div className="flex items-center justify-center gap-3 text-xs">
@@ -1713,302 +1299,6 @@ export default function SettingsModal({ open, onClose }: Props) {
         </div>
       </div>
 
-      {/* Edit Provider Modal */}
-      {editingIndex !== null && (
-        <div className="settings-overlay fixed inset-0 z-[110] flex items-center justify-center">
-          <div className="absolute inset-0 bg-black/50 backdrop-blur-sm dark:bg-black/70" onClick={() => setEditingIndex(null)} />
-          <div
-            ref={providerDialogRef}
-            className="provider-dialog relative w-[620px] max-h-[90vh] flex flex-col rounded-2xl border shadow-2xl overflow-hidden bg-white dark:bg-[#1a1a1a]"
-            role="dialog"
-            aria-modal="true"
-            aria-label={editingIndex === -1 ? '添加 AI Provider' : '编辑 AI Provider'}
-            tabIndex={-1}
-            style={{ borderColor: 'rgba(0,0,0,0.08)' }}
-          >
-            <div className="flex items-center justify-between px-6 py-4 border-b border-gray-200 dark:border-white/10">
-              <h3 className="text-base font-semibold text-gray-900 dark:text-white">
-                {editingIndex === -1 ? '添加 Provider' : '编辑 Provider'}
-              </h3>
-              <button onClick={() => setEditingIndex(null)} className="p-1.5 rounded-lg hover:bg-gray-100 dark:hover:bg-white/10 transition-colors" aria-label="关闭 Provider 编辑">
-                <X size={18} className="text-gray-400 dark:text-gray-500" />
-              </button>
-            </div>
-
-            <div className="flex-1 overflow-y-auto p-6 space-y-5">
-              {/* Basic Info */}
-              <div className="grid grid-cols-2 gap-4">
-                <div>
-                  <label className="block text-xs font-medium text-gray-600 dark:text-gray-300 mb-1.5">名称 <span className="text-red-500">*</span></label>
-                  <input
-                    type="text"
-                    value={editForm.name}
-                    onChange={e => setEditForm({ ...editForm, name: e.target.value })}
-                    placeholder="例如：OpenAI"
-                    className="input-field w-full text-sm dark:bg-white/5 dark:border-white/10 dark:text-white"
-                  />
-                </div>
-                <div>
-                  <label className="block text-xs font-medium text-gray-600 dark:text-gray-300 mb-1.5">协议 <span className="text-red-500">*</span></label>
-                  <SelectField
-                    value={normalizeProviderProtocol(editForm.protocol)}
-                    onValueChange={value => {
-                      const nextProtocol = value as ProviderProtocol;
-                      const prev = normalizeProviderProtocol(editForm.protocol);
-                      setEditForm({ ...editForm, protocol: nextProtocol });
-                      if (prev !== nextProtocol) {
-                        showToast({
-                          message: '协议已切换：已有 requestParams/thinkingParams 会保留，但部分参数可能仅对原协议生效',
-                          type: 'info',
-                        });
-                      }
-                    }}
-                    options={PROVIDER_PROTOCOL_OPTIONS.map(option => ({
-                      value: option.value,
-                      label: option.label,
-                    }))}
-                    className="w-full text-sm"
-                    ariaLabel="Provider 协议"
-                  />
-                  <p className="text-[11px] text-gray-400 dark:text-gray-500 mt-1">
-                    {protocolDescription(editForm.protocol)}
-                  </p>
-                </div>
-              </div>
-
-              <div>
-                <label className="block text-xs font-medium text-gray-600 dark:text-gray-300 mb-1.5">Base URL <span className="text-red-500">*</span></label>
-                <input
-                  type="text"
-                  value={editForm.baseUrl}
-                  onChange={e => setEditForm({ ...editForm, baseUrl: e.target.value })}
-                  placeholder="https://api.openai.com/v1"
-                  className="input-field w-full text-sm dark:bg-white/5 dark:border-white/10 dark:text-white"
-                />
-                <p className="text-[11px] text-gray-400 dark:text-gray-500 mt-1">末尾不要带斜杠，例如 https://api.openai.com/v1</p>
-                <label className="mt-2 inline-flex items-center gap-1.5 text-xs text-gray-600 dark:text-gray-300 cursor-pointer select-none">
-                  <input
-                    type="checkbox"
-                    checked={Boolean(editForm.useProxy)}
-                    onChange={e => setEditForm({ ...editForm, useProxy: e.target.checked || undefined })}
-                    className="w-3.5 h-3.5 accent-purple-500 cursor-pointer"
-                  />
-                  <span>通过本地代理访问（useProxy）</span>
-                </label>
-              </div>
-
-              <div>
-                <label className="block text-xs font-medium text-gray-600 dark:text-gray-300 mb-1.5">API Key <span className="text-red-500">*</span></label>
-                <input
-                  type="password"
-                  value={editForm.apiKey}
-                  onChange={e => setEditForm({ ...editForm, apiKey: e.target.value })}
-                  placeholder="sk-..."
-                  className="input-field w-full text-sm dark:bg-white/5 dark:border-white/10 dark:text-white"
-                />
-                <p className="text-[11px] text-gray-400 dark:text-gray-500 mt-1">仅保存在本地，不会上传或分发</p>
-              </div>
-
-              {/* Model List Editor */}
-              <div>
-                <div className="flex items-center justify-between mb-2">
-                  <label className="block text-xs font-medium text-gray-600 dark:text-gray-300">模型列表</label>
-                  <div className="flex items-center gap-1.5">
-                    <button
-                      onClick={addModel}
-                      className="flex items-center gap-1 px-2 py-1 text-[11px] font-medium rounded-md bg-purple-500/10 text-purple-600 dark:text-purple-400 hover:bg-purple-500/20 transition-colors"
-                    >
-                      <Plus size={12} />
-                      添加模型
-                    </button>
-                  </div>
-                </div>
-
-                {editForm.models.length === 0 && (
-                  <div className="text-center py-6 text-gray-400 dark:text-gray-500 bg-gray-50 dark:bg-white/[0.03] rounded-xl border border-dashed border-gray-200 dark:border-white/10">
-                    <p className="text-sm">还没有模型</p>
-                    <p className="text-xs mt-0.5">点击上方按钮添加</p>
-                  </div>
-                )}
-
-                <div className="space-y-3" ref={modelListRef}>
-                  {editForm.models.map((m, idx) => (
-                    <div key={modelRowKeysRef.current[idx]} className="space-y-1.5">
-                      <div className="flex items-center gap-2">
-                        <GripVertical size={14} className="model-drag-handle text-gray-300 dark:text-gray-600 shrink-0 cursor-grab active:cursor-grabbing" />
-                        <input
-                          type="text"
-                          value={m.id}
-                          onChange={e => updateModel(idx, 'id', e.target.value)}
-                          placeholder="模型 ID，如 gpt-4"
-                          className="input-field flex-1 text-sm dark:bg-white/5 dark:border-white/10 dark:text-white"
-                        />
-                        <input
-                          type="text"
-                          value={m.name}
-                          onChange={e => updateModel(idx, 'name', e.target.value)}
-                          placeholder="显示名称，如 GPT-4"
-                          className="input-field flex-1 text-sm dark:bg-white/5 dark:border-white/10 dark:text-white"
-                        />
-                        <button
-                          onClick={() => removeModel(idx)}
-                          className="p-1.5 rounded-md hover:bg-red-50 dark:hover:bg-red-500/10 text-red-500 transition-colors shrink-0"
-                          title="删除"
-                        >
-                          <Trash2 size={14} />
-                        </button>
-                      </div>
-                      <div className="flex items-center gap-4 ml-6 text-xs text-gray-500 dark:text-gray-400 flex-wrap">
-                        <label className="inline-flex items-center gap-1.5 cursor-pointer select-none hover:text-gray-700 dark:hover:text-gray-200 transition-colors">
-                          <input
-                            type="checkbox"
-                            checked={m.enabled !== false}
-                            onChange={e => updateModelEnabled(idx, e.target.checked)}
-                            className="w-3.5 h-3.5 accent-purple-500 cursor-pointer"
-                          />
-                          <span>显示在选择器</span>
-                        </label>
-                        <label className="inline-flex items-center gap-1.5 cursor-pointer select-none hover:text-gray-700 dark:hover:text-gray-200 transition-colors">
-                          <input
-                            type="checkbox"
-                            checked={!!m.capabilities?.vision}
-                            onChange={e => updateModelCapability(idx, 'vision', e.target.checked)}
-                            className="w-3.5 h-3.5 accent-purple-500 cursor-pointer"
-                          />
-                          <span>视觉（图片输入）</span>
-                        </label>
-                        <label className="inline-flex items-center gap-1.5 cursor-pointer select-none hover:text-gray-700 dark:hover:text-gray-200 transition-colors">
-                          <input
-                            type="checkbox"
-                            checked={!!m.capabilities?.thinking}
-                            onChange={e => updateModelCapability(idx, 'thinking', e.target.checked)}
-                            className="w-3.5 h-3.5 accent-purple-500 cursor-pointer"
-                          />
-                          <span>思考（深度推理）</span>
-                        </label>
-                        <label className="inline-flex items-center gap-1.5 cursor-pointer select-none hover:text-gray-700 dark:hover:text-gray-200 transition-colors">
-                          <input
-                            type="checkbox"
-                            checked={Boolean(m.deferredToolsMode)}
-                            onChange={e => updateModelDeferredTools(idx, e.target.checked)}
-                            className="w-3.5 h-3.5 accent-purple-500 cursor-pointer"
-                          />
-                          <span>延迟加载工具</span>
-                        </label>
-                        <label className="inline-flex items-center gap-1.5 select-none">
-                          <span>最大输出</span>
-                          <input
-                            type="number"
-                            min={1}
-                            value={m.maxOutput ?? ''}
-                            placeholder={String(getDefaultMaxOutput(m.id))}
-                            onChange={e => updateModelMaxOutput(idx, e.target.value)}
-                            className="input-field w-24 text-xs px-2 py-1 dark:bg-white/5 dark:border-white/10 dark:text-white"
-                          />
-                          <span className="text-gray-400 dark:text-gray-500">tokens</span>
-                          <button
-                            type="button"
-                            disabled={!getModelMeta(m.id)}
-                            title={
-                              getModelMeta(m.id)
-                                ? `按已知模型规格自动填入 ${getModelMeta(m.id)!.maxOutput} tokens`
-                                : '该模型不在已知静态表中，无法自动填入'
-                            }
-                            onClick={() => {
-                              const meta = getModelMeta(m.id);
-                              if (meta) updateModelMaxOutput(idx, String(meta.maxOutput));
-                            }}
-                            className="px-1.5 py-0.5 text-[10px] rounded border border-purple-400/40 text-purple-500 dark:text-purple-300 hover:bg-purple-500/10 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
-                          >
-                            自动
-                          </button>
-                        </label>
-                        <label className="inline-flex items-center gap-1.5 select-none">
-                          <span>上下文窗口</span>
-                          <input
-                            type="number"
-                            min={1}
-                            value={m.contextWindow ?? ''}
-                            placeholder={String(getModelMeta(m.id)?.contextWindow ?? 200000)}
-                            onChange={e => updateModelContextWindow(idx, e.target.value)}
-                            className="input-field w-28 text-xs px-2 py-1 dark:bg-white/5 dark:border-white/10 dark:text-white"
-                          />
-                          <span className="text-gray-400 dark:text-gray-500">tokens</span>
-                          <button
-                            type="button"
-                            disabled={!getModelMeta(m.id)}
-                            title={getModelMeta(m.id)
-                              ? `按已知模型规格自动填入 ${getModelMeta(m.id)!.contextWindow} tokens`
-                              : '该模型不在已知静态表中，请手动填写'}
-                            onClick={() => {
-                              const meta = getModelMeta(m.id);
-                              if (meta) updateModelContextWindow(idx, String(meta.contextWindow));
-                            }}
-                            className="px-1.5 py-0.5 text-[10px] rounded border border-purple-400/40 text-purple-500 dark:text-purple-300 hover:bg-purple-500/10 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
-                          >
-                            自动
-                          </button>
-                        </label>
-                      </div>
-                      <div className="ml-6 space-y-2">
-                        <div className="flex flex-wrap gap-1.5">
-                          {templatesForProtocol(editForm.protocol).map(template => (
-                            <button
-                              key={template.id}
-                              type="button"
-                              title={template.description}
-                              onClick={() => applyModelTemplate(idx, template)}
-                              className="px-2 py-1 text-[11px] rounded-md border border-purple-400/30 text-purple-600 dark:text-purple-300 hover:bg-purple-500/10 transition-colors"
-                            >
-                              {template.label}
-                            </button>
-                          ))}
-                        </div>
-                        <div className="grid grid-cols-2 gap-2">
-                          <JsonParamsEditor
-                            label="每次请求参数（JSON）"
-                            value={m.requestParams}
-                            placeholder={'{"top_p": 0.95}'}
-                            onChange={value => updateModelParams(idx, 'requestParams', value)}
-                          />
-                          <JsonParamsEditor
-                            label="开启思考时参数（JSON）"
-                            value={m.thinkingParams}
-                            placeholder={'{"reasoning_effort": "max"}'}
-                            onChange={value => updateModelParams(idx, 'thinkingParams', value)}
-                          />
-                        </div>
-                        <p className="text-[11px] text-gray-400 dark:text-gray-500">
-                          协议负责共性能力；个性化请用上方模板或 JSON knobs（requestParams / thinkingParams）。
-                        </p>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-
-                <p className="text-[11px] text-gray-400 dark:text-gray-500 mt-2">
-                  模型 ID 用于 API 调用，显示名称用于下拉选择。协议层求同、个性化靠 knobs。所有修改会同步写回 <code className="px-1 rounded bg-purple-500/10 text-purple-400 font-mono">~/.pwcli/config.json</code>。
-                </p>
-              </div>
-            </div>
-
-            <div className="flex justify-end gap-2 px-6 py-4 border-t border-gray-200 dark:border-white/10 bg-gray-50 dark:bg-white/[0.02]">
-              <button
-                onClick={() => setEditingIndex(null)}
-                className="px-4 py-2 text-sm rounded-lg border border-gray-200 dark:border-white/10 hover:bg-gray-100 dark:hover:bg-white/10 text-gray-700 dark:text-gray-300 transition-colors"
-              >
-                取消
-              </button>
-              <button
-                onClick={handleSaveEdit}
-                className="px-4 py-2 text-sm rounded-lg bg-purple-500 text-white hover:bg-purple-600 transition-colors"
-              >
-                保存
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
     </div>
   );
 }

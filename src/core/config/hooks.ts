@@ -5,6 +5,7 @@ import { getMoaConfig } from './moaStore';
 import type { MoaConfig } from './moa';
 import { getAppConfig, type AppConfig } from './appConfig';
 import { getLocalConfig, type LocalConfig } from './localConfig';
+import { useProviderStore } from './providerStore';
 
 function useSyncedValue<T>(getter: () => T): T {
   const [value, setValue] = useState<T>(getter);
@@ -17,10 +18,12 @@ function useSyncedValue<T>(getter: () => T): T {
 }
 
 export function useAiModels(): AiModelInfo[] {
+  useProviderStore();
   return useSyncedValue(getModels);
 }
 
 export function useChatModels(): AiModelInfo[] {
+  useProviderStore();
   return useSyncedValue(getModels);
 }
 
