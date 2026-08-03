@@ -69,6 +69,7 @@ function Modal({ title, onClose, children }: { title: string; onClose: () => voi
 export default function ProviderSettingsPanel({ onManageModels }: { onManageModels?: () => void }) {
   const { providers, catalog, loading, error } = useProviderStore();
   const [adding, setAdding] = useState(false);
+  const [selectedBuiltinKind, setSelectedBuiltinKind] = useState('');
   const [custom, setCustom] = useState<CustomProviderInput | null>(null);
   const [customId, setCustomId] = useState<string>();
   const [advanced, setAdvanced] = useState(false);
@@ -120,7 +121,7 @@ export default function ProviderSettingsPanel({ onManageModels }: { onManageMode
       }
       if (!resolved) throw new Error('服务已创建，但尚未出现在 Provider 列表中');
       setAuthProvider(resolved);
-      setAuthMethod(entry.kind === 'openai-codex' ? 'browser' : 'device');
+      setAuthMethod(entry.kind === 'openai-codex' || entry.kind === 'google-antigravity' ? 'browser' : 'device');
       setAuthFlow(undefined);
       setAdding(false);
     });
@@ -205,7 +206,7 @@ export default function ProviderSettingsPanel({ onManageModels }: { onManageMode
             </div>
           </div>
           <div className="mt-3 flex flex-wrap gap-2 border-t border-gray-100 pt-3 dark:border-white/5">
-            {provider.auth.method === 'oauth' && provider.auth.status !== 'connected' && <button onClick={() => { setAuthProvider(provider); setAuthMethod(provider.kind === 'openai-codex' ? 'browser' : 'device'); setAuthFlow(undefined); }} className="rounded-md bg-purple-500/10 px-2.5 py-1 text-xs text-purple-600 dark:text-purple-300"><KeyRound size={12} className="mr-1 inline" />登录</button>}
+            {provider.auth.method === 'oauth' && provider.auth.status !== 'connected' && <button onClick={() => { setAuthProvider(provider); setAuthMethod(provider.kind === 'openai-codex' || provider.kind === 'google-antigravity' ? 'browser' : 'device'); setAuthFlow(undefined); }} className="rounded-md bg-purple-500/10 px-2.5 py-1 text-xs text-purple-600 dark:text-purple-300"><KeyRound size={12} className="mr-1 inline" />登录</button>}
             <button onClick={onManageModels} className="rounded-md px-2.5 py-1 text-xs text-gray-600 hover:bg-gray-100 dark:text-gray-300 dark:hover:bg-white/10">管理模型</button>
             <button onClick={() => void perform(() => testProvider(provider.id), '连接测试成功')} className="rounded-md px-2.5 py-1 text-xs text-gray-600 hover:bg-gray-100 dark:text-gray-300 dark:hover:bg-white/10"><RefreshCw size={12} className="mr-1 inline" />测试连接</button>
             {!provider.builtin && <button onClick={() => openCustom(provider)} className="rounded-md px-2.5 py-1 text-xs text-gray-600 hover:bg-gray-100 dark:text-gray-300 dark:hover:bg-white/10">编辑</button>}
@@ -216,12 +217,9 @@ export default function ProviderSettingsPanel({ onManageModels }: { onManageMode
       })}
     </div>
 
-    {adding && <Modal title="添加 AI 服务" onClose={() => setAdding(false)}><div className="grid gap-3 overflow-y-auto p-5 sm:grid-cols-2">
-      {catalog.map(entry => <button key={entry.kind} disabled={connectedKinds.has(entry.kind)} onClick={() => void beginBuiltin(entry)} className="rounded-xl border border-gray-200 p-4 text-left hover:border-purple-400 hover:bg-purple-500/[0.03] disabled:cursor-not-allowed disabled:opacity-45 dark:border-white/10">
-        <span className="flex items-center gap-2 text-sm font-medium text-gray-900 dark:text-white"><Server size={16} className="text-purple-500" />{entry.name}</span>
-        <span className="mt-2 block text-xs leading-5 text-gray-400">{connectedKinds.has(entry.kind) ? '已添加' : entry.description}</span>
-      </button>)}
-      <button onClick={() => openCustom()} className="rounded-xl border border-gray-200 p-4 text-left hover:border-purple-400 hover:bg-purple-500/[0.03] dark:border-white/10"><span className="flex items-center gap-2 text-sm font-medium text-gray-900 dark:text-white"><Plus size={16} className="text-purple-500" />自定义 Provider</span><span className="mt-2 block text-xs leading-5 text-gray-400">OpenAI、Anthropic、Gemini 或兼容网关</span></button>
+    {adding && <Modal title="添加 AI 服务" onClose={() => setAdding(false)}><div className="space-y-4 p-5">
+      <div className="rounded-xl bg-gray-50 p-4 dark:bg-white/[0.03]"><label className="block text-xs font-medium text-gray-700 dark:text-gray-200">登录服务<select autoFocus value={selectedBuiltinKind} onChange={event => setSelectedBuiltinKind(event.target.value)} className="input-field mt-2 w-full dark:border-white/10 dark:bg-white/5 dark:text-white"><option value="">选择要连接的服务</option>{catalog.map(entry => <option key={entry.kind} value={entry.kind} disabled={connectedKinds.has(entry.kind)}>{entry.name}{connectedKinds.has(entry.kind) ? '（已添加）' : ''}</option>)}</select></label>{selectedBuiltinKind && <p className="mt-2 text-xs leading-5 text-gray-400">{catalog.find(entry => entry.kind === selectedBuiltinKind)?.description}</p>}</div>
+      <div className="flex items-center justify-between border-t border-gray-100 pt-4 dark:border-white/5"><button onClick={() => openCustom()} className="flex items-center gap-1.5 rounded-lg px-3 py-2 text-xs text-gray-600 hover:bg-gray-100 dark:text-gray-300 dark:hover:bg-white/10"><Server size={14} />自定义 Provider</button><div className="flex gap-2"><button onClick={() => setAdding(false)} className="rounded-lg border px-4 py-2 text-sm dark:border-white/10">取消</button><button disabled={!selectedBuiltinKind || busy} onClick={() => { const entry = catalog.find(item => item.kind === selectedBuiltinKind); if (entry) void beginBuiltin(entry); }} className="rounded-lg bg-purple-500 px-4 py-2 text-sm text-white disabled:opacity-40">继续</button></div></div>
     </div></Modal>}
 
     {qwenEntry && <Modal title={`连接 ${qwenEntry.name}`} onClose={() => { setQwenEntry(undefined); setQwenKey(''); }}><div className="space-y-4 p-5"><label className="block text-xs text-gray-600 dark:text-gray-300">API Key<input autoFocus type="password" value={qwenKey} onChange={event => setQwenKey(event.target.value)} className="input-field mt-1.5 w-full dark:bg-white/5 dark:border-white/10 dark:text-white" placeholder="sk-..." /></label><p className="text-xs text-gray-400">密钥将直接提交给本机 daemon，不会写入浏览器存储。</p><div className="flex justify-end gap-2"><button onClick={() => setQwenEntry(undefined)} className="rounded-lg border px-4 py-2 text-sm dark:border-white/10">取消</button><button disabled={!qwenKey.trim() || busy} onClick={() => void perform(async () => { await createBuiltinProvider(qwenEntry.kind, qwenKey); setQwenEntry(undefined); setQwenKey(''); }, 'Qwen Token Plan CN 已连接')} className="rounded-lg bg-purple-500 px-4 py-2 text-sm text-white disabled:opacity-50">保存并连接</button></div></div></Modal>}
@@ -240,7 +238,7 @@ export default function ProviderSettingsPanel({ onManageModels }: { onManageMode
       {!authFlow && <><p className="text-sm text-gray-600 dark:text-gray-300">{authMethod === 'browser' ? '将在浏览器中完成授权。回调失败时可粘贴跳转地址或授权码。' : '生成设备码后，在登录页面完成授权，本页会自动刷新。'}</p><button onClick={() => void beginAuth()} disabled={busy} className="w-full rounded-lg bg-purple-500 py-2.5 text-sm text-white disabled:opacity-50">开始登录</button></>}
       {authFlow && <div className="space-y-4">
         {authFlow.status === 'connected' ? <div className="flex items-center gap-2 rounded-xl bg-emerald-500/10 p-4 text-sm text-emerald-600"><CheckCircle2 size={18} />登录成功</div> : authFlow.status === 'error' || authFlow.status === 'expired' ? <div className="rounded-xl bg-red-500/10 p-4 text-sm text-red-600"><AlertCircle size={18} className="mr-2 inline" />{authFlow.error || '授权已过期，请重试'}</div> : <div className="rounded-xl bg-purple-500/5 p-4 text-center"><p className="text-xs text-gray-500">请在登录页面输入验证码</p>{authFlow.userCode && <button onClick={() => void navigator.clipboard.writeText(authFlow.userCode!)} className="mt-2 font-mono text-2xl font-semibold tracking-widest text-gray-900 dark:text-white">{authFlow.userCode}<Copy size={14} className="ml-2 inline text-gray-400" /></button>}{authFlow.verificationUri && <a href={authFlow.verificationUri} target="_blank" rel="noreferrer" className="mt-3 flex items-center justify-center gap-1 text-xs text-purple-600">打开登录页面<ExternalLink size={12} /></a>}<p className="mt-3 flex items-center justify-center gap-2 text-xs text-gray-400"><Loader2 size={13} className="animate-spin" />等待授权</p></div>}
-        {authProvider.kind === 'openai-codex' && authFlow.status === 'pending' && <div className="space-y-2"><label className="block text-xs text-gray-500">浏览器没有自动返回？粘贴回调地址或授权码<input value={manualCode} onChange={e => setManualCode(e.target.value)} className="input-field mt-1.5 w-full dark:bg-white/5 dark:border-white/10 dark:text-white" /></label><button disabled={!manualCode.trim()} onClick={() => void perform(async () => setAuthFlow(await completeProviderAuth(authProvider.id, authFlow.flowId, manualCode)))} className="rounded-lg border px-3 py-1.5 text-xs disabled:opacity-40 dark:border-white/10">提交</button></div>}
+        {(authProvider.kind === 'openai-codex' || authProvider.kind === 'google-antigravity') && authFlow.status === 'pending' && <div className="space-y-2"><label className="block text-xs text-gray-500">浏览器没有自动返回？粘贴回调地址或授权码<input value={manualCode} onChange={e => setManualCode(e.target.value)} className="input-field mt-1.5 w-full dark:bg-white/5 dark:border-white/10 dark:text-white" /></label><button disabled={!manualCode.trim()} onClick={() => void perform(async () => setAuthFlow(await completeProviderAuth(authProvider.id, authFlow.flowId, manualCode)))} className="rounded-lg border px-3 py-1.5 text-xs disabled:opacity-40 dark:border-white/10">提交</button></div>}
         {(authFlow.status === 'error' || authFlow.status === 'expired') && <button onClick={() => setAuthFlow(undefined)} className="w-full rounded-lg bg-purple-500 py-2 text-sm text-white">重新登录</button>}
       </div>}
     </div></Modal>}

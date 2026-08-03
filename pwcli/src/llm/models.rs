@@ -297,6 +297,7 @@ pub enum ProviderProtocol {
     OpenAiCodexResponses,
     AnthropicMessages,
     GoogleGenerative,
+    GoogleAntigravity,
 }
 
 impl ProviderProtocol {
@@ -307,6 +308,7 @@ impl ProviderProtocol {
             Self::OpenAiCodexResponses => "openai_codex_responses",
             Self::AnthropicMessages => "anthropic_messages",
             Self::GoogleGenerative => "google_generative",
+            Self::GoogleAntigravity => "google_antigravity",
         }
     }
 
@@ -322,6 +324,9 @@ impl ProviderProtocol {
             "anthropic_messages" | "anthropic" => Ok(Self::AnthropicMessages),
             "google_generative" | "google" | "gemini" | "generative_language" => {
                 Ok(Self::GoogleGenerative)
+            }
+            "google_antigravity" | "antigravity" | "cloud_code_assist" => {
+                Ok(Self::GoogleAntigravity)
             }
             other if other.is_empty() => Err("protocol is required".into()),
             other => Err(format!("unsupported protocol '{other}'")),

@@ -46,7 +46,7 @@ pub fn create_adapter(
         ProviderProtocol::OpenAiCodexResponses => {
             Box::new(OpenAiCodexResponsesAdapter::new(provider, session_id))
         }
-        ProviderProtocol::GoogleGenerative => {
+        ProviderProtocol::GoogleGenerative | ProviderProtocol::GoogleAntigravity => {
             Box::new(GoogleGenerativeAdapter::new(provider, backend_url))
         }
     })
@@ -79,6 +79,7 @@ mod tests {
             "openai_responses",
             "openai_codex_responses",
             "google_generative",
+            "google_antigravity",
         ] {
             create_adapter(provider(protocol), "http://127.0.0.1:9".into(), None).unwrap();
         }

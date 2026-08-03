@@ -29,6 +29,8 @@ const OPENAI_CODEX_CLIENT_ID: &str = "app_EMoamEEZ73f0CkXaXp7hrann";
 const OPENAI_AUTH_BASE: &str = "https://auth.openai.com";
 const OPENAI_CODEX_REDIRECT: &str = "http://localhost:1455/auth/callback";
 const OPENAI_CODEX_DEVICE_REDIRECT: &str = "https://auth.openai.com/deviceauth/callback";
+const ANTIGRAVITY_REDIRECT: &str = "http://127.0.0.1:51121/callback";
+const ANTIGRAVITY_SCOPES: &str = "https://www.googleapis.com/auth/cloud-platform https://www.googleapis.com/auth/userinfo.email https://www.googleapis.com/auth/userinfo.profile https://www.googleapis.com/auth/cclog https://www.googleapis.com/auth/experimentsandconfigs";
 const REFRESH_SKEW_SECONDS: i64 = 5 * 60;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -81,6 +83,7 @@ pub struct ResolvedAuth {
     pub api_key: String,
     pub source: &'static str,
     pub account_id: Option<String>,
+    pub project_id: Option<String>,
 }
 
 enum FlowSecret {
@@ -90,9 +93,11 @@ enum FlowSecret {
         interval: Duration,
         expires_at: chrono::DateTime<chrono::Utc>,
     },
-    CodexBrowser {
+    Browser {
+        kind: ProviderKind,
         verifier: String,
         state: String,
+        redirect_uri: String,
     },
 }
 
@@ -188,6 +193,7 @@ impl AuthManager {
                     api_key: key,
                     source: "credential_store",
                     account_id: None,
+                    project_id: None,
                 }),
                 Credential::OAuth(value) => self.resolve_oauth(provider, &reference, value).await,
             };
@@ -197,6 +203,7 @@ impl AuthManager {
                 api_key: provider.api_key.clone(),
                 source: "legacy_config",
                 account_id: None,
+                project_id: None,
             });
         }
         if let Some(env_key) = ProviderCatalog
@@ -209,6 +216,7 @@ impl AuthManager {
                         api_key: value,
                         source: "environment",
                         account_id: None,
+                        project_id: None,
                     });
                 }
             }
@@ -223,6 +231,14 @@ impl AuthManager {
         let mut resolved = ProviderCatalog.materialize(provider);
         let auth = self.resolve(&resolved).await?;
         resolved.api_key = auth.api_key;
+        if let Some(project_id) = auth.project_id {
+            let marker = format!("project:{project_id}");
+            let profile = resolved.compat_profile.get_or_insert_with(String::new);
+            if !profile.is_empty() {
+                profile.push(';');
+            }
+            profile.push_str(&marker);
+        }
         Ok(resolved)
     }
 
@@ -269,6 +285,7 @@ impl AuthManager {
             api_key: credential.access,
             source: "oauth",
             account_id: credential.account_id,
+            project_id: credential.project_id,
         })
     }
 
@@ -284,6 +301,9 @@ impl AuthManager {
             }
             (ProviderKind::OpenAiCodex, AuthFlowMethod::Browser) => {
                 self.start_codex_browser_flow(provider).await
+            }
+            (ProviderKind::GoogleAntigravity, AuthFlowMethod::Browser) => {
+                self.start_antigravity_browser_flow(provider).await
             }
             _ => anyhow::bail!("selected authentication method is not supported"),
         }
@@ -307,18 +327,26 @@ impl AuthManager {
     }
 
     pub async fn complete_flow(&self, flow_id: &str, input: &str) -> Result<AuthFlowSnapshot> {
-        let (provider_id, verifier, state) = {
+        let (provider_id, kind, verifier, state, redirect_uri) = {
             let flows = self.flows.read().await;
             let entry = flows
                 .get(flow_id)
                 .context("authentication flow not found")?;
-            let FlowSecret::CodexBrowser { verifier, state } = &entry.secret else {
+            let FlowSecret::Browser {
+                kind,
+                verifier,
+                state,
+                redirect_uri,
+            } = &entry.secret
+            else {
                 anyhow::bail!("this authentication flow does not accept a manual code");
             };
             (
                 entry.snapshot.provider_id.clone(),
+                *kind,
                 verifier.clone(),
                 state.clone(),
+                redirect_uri.clone(),
             )
         };
         let (code, received_state) = parse_authorization_input(input)?;
@@ -327,10 +355,18 @@ impl AuthManager {
                 anyhow::bail!("OAuth state mismatch");
             }
         }
-        match self
-            .exchange_codex_code(&code, &verifier, OPENAI_CODEX_REDIRECT)
-            .await
-        {
+        let exchange = match kind {
+            ProviderKind::OpenAiCodex => {
+                self.exchange_codex_code(&code, &verifier, &redirect_uri)
+                    .await
+            }
+            ProviderKind::GoogleAntigravity => {
+                self.exchange_antigravity_code(&code, &verifier, &redirect_uri)
+                    .await
+            }
+            _ => anyhow::bail!("provider does not support browser OAuth"),
+        };
+        match exchange {
             Ok(credential) => {
                 self.store
                     .write(&provider_id, Credential::OAuth(credential))?;
@@ -643,23 +679,86 @@ impl AuthManager {
             flow_id.clone(),
             FlowEntry {
                 snapshot: snapshot.clone(),
-                secret: FlowSecret::CodexBrowser {
+                secret: FlowSecret::Browser {
+                    kind: ProviderKind::OpenAiCodex,
                     verifier,
                     state: state.clone(),
+                    redirect_uri: OPENAI_CODEX_REDIRECT.to_string(),
                 },
             },
         );
-        self.spawn_codex_callback(flow_id, state).await;
+        self.spawn_browser_callback(flow_id, state, 1455, "OpenAI")
+            .await;
         Ok(snapshot)
     }
 
-    async fn spawn_codex_callback(&self, flow_id: String, expected_state: String) {
+    async fn start_antigravity_browser_flow(
+        &self,
+        provider: &ProviderConfig,
+    ) -> Result<AuthFlowSnapshot> {
+        let (client_id, _) = antigravity_oauth_config()?;
+        let mut verifier_bytes = [0_u8; 32];
+        rand::thread_rng().fill_bytes(&mut verifier_bytes);
+        let verifier = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(verifier_bytes);
+        let challenge = base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .encode(Sha256::digest(verifier.as_bytes()));
+        let mut state_bytes = [0_u8; 16];
+        rand::thread_rng().fill_bytes(&mut state_bytes);
+        let state = hex::encode(state_bytes);
+        let mut url = reqwest::Url::parse("https://accounts.google.com/o/oauth2/v2/auth")?;
+        url.query_pairs_mut()
+            .append_pair("response_type", "code")
+            .append_pair("client_id", &client_id)
+            .append_pair("redirect_uri", ANTIGRAVITY_REDIRECT)
+            .append_pair("scope", ANTIGRAVITY_SCOPES)
+            .append_pair("code_challenge", &challenge)
+            .append_pair("code_challenge_method", "S256")
+            .append_pair("access_type", "offline")
+            .append_pair("prompt", "consent select_account")
+            .append_pair("state", &state);
+        let flow_id = format!("auth_{}", uuid::Uuid::now_v7().simple());
+        let expires_at = chrono::Utc::now() + chrono::Duration::minutes(15);
+        let snapshot = AuthFlowSnapshot {
+            flow_id: flow_id.clone(),
+            provider_id: provider_id(provider).to_string(),
+            method: AuthFlowMethod::Browser,
+            state: AuthFlowState::Pending,
+            verification_uri: Some(url.to_string()),
+            user_code: None,
+            expires_at: Some(expires_at),
+            poll_interval_ms: None,
+            error: None,
+        };
+        self.flows.write().await.insert(
+            flow_id.clone(),
+            FlowEntry {
+                snapshot: snapshot.clone(),
+                secret: FlowSecret::Browser {
+                    kind: ProviderKind::GoogleAntigravity,
+                    verifier,
+                    state: state.clone(),
+                    redirect_uri: ANTIGRAVITY_REDIRECT.to_string(),
+                },
+            },
+        );
+        self.spawn_browser_callback(flow_id, state, 51121, "Google Antigravity")
+            .await;
+        Ok(snapshot)
+    }
+
+    async fn spawn_browser_callback(
+        &self,
+        flow_id: String,
+        expected_state: String,
+        port: u16,
+        provider_name: &'static str,
+    ) {
         let manager = self.clone();
         tokio::spawn(async move {
-            let listener = match tokio::net::TcpListener::bind(("127.0.0.1", 1455)).await {
+            let listener = match tokio::net::TcpListener::bind(("127.0.0.1", port)).await {
                 Ok(listener) => listener,
                 Err(error) => {
-                    tracing::info!(%error, "Codex OAuth callback port unavailable; manual completion remains available");
+                    tracing::info!(%error, %provider_name, "OAuth callback port unavailable; manual completion remains available");
                     return;
                 }
             };
@@ -673,7 +772,7 @@ impl AuthManager {
             let count = stream.read(&mut buffer).await.unwrap_or_default();
             let request = String::from_utf8_lossy(&buffer[..count]);
             let target = request.split_whitespace().nth(1).unwrap_or_default();
-            let input = format!("http://localhost:1455{target}");
+            let input = format!("http://127.0.0.1:{port}{target}");
             let state_matches = reqwest::Url::parse(&input)
                 .ok()
                 .and_then(|url| {
@@ -691,12 +790,12 @@ impl AuthManager {
             let (status, body) = if result.is_ok() {
                 (
                     "200 OK",
-                    "OpenAI authentication completed. You can close this window.",
+                    "Authentication completed. You can close this window.",
                 )
             } else {
                 (
                     "400 Bad Request",
-                    "OpenAI authentication failed. Return to PWCLI for details.",
+                    "Authentication failed. Return to PWCLI for details.",
                 )
             };
             let response = format!(
@@ -731,11 +830,118 @@ impl AuthManager {
         parse_oauth_credential(ProviderKind::OpenAiCodex, &value, None)
     }
 
+    async fn exchange_antigravity_code(
+        &self,
+        code: &str,
+        verifier: &str,
+        redirect_uri: &str,
+    ) -> Result<OAuthCredential> {
+        let (client_id, client_secret) = antigravity_oauth_config()?;
+        let value = self
+            .http
+            .post("https://oauth2.googleapis.com/token")
+            .form(&[
+                ("grant_type", "authorization_code"),
+                ("client_id", client_id.as_str()),
+                ("client_secret", client_secret.as_str()),
+                ("code", code),
+                ("code_verifier", verifier),
+                ("redirect_uri", redirect_uri),
+            ])
+            .send()
+            .await?
+            .error_for_status()?
+            .json::<Value>()
+            .await?;
+        let mut credential = parse_oauth_credential(ProviderKind::GoogleAntigravity, &value, None)?;
+        credential.account_label = extract_google_email(&value);
+        credential.project_id = Some(
+            self.discover_antigravity_project(&credential.access)
+                .await
+                .context("Google account has no Antigravity / Cloud Code Assist project")?,
+        );
+        Ok(credential)
+    }
+
+    async fn discover_antigravity_project(&self, access: &str) -> Result<String> {
+        let response = self
+            .http
+            .post("https://cloudcode-pa.googleapis.com/v1internal:loadCodeAssist")
+            .bearer_auth(access)
+            .header("User-Agent", "antigravity/cli/1.21.9")
+            .json(&serde_json::json!({"metadata": {"ideType": "ANTIGRAVITY"}}))
+            .send()
+            .await?;
+        if response.status().is_success() {
+            let value = response.json::<Value>().await?;
+            if let Some(project) = extract_antigravity_project(&value) {
+                return Ok(project);
+            }
+        }
+        for _ in 0..5 {
+            let response = self
+                .http
+                .post("https://daily-cloudcode-pa.googleapis.com/v1internal:onboardUser")
+                .bearer_auth(access)
+                .header("User-Agent", "antigravity/cli/1.21.9")
+                .header("x-goog-api-client", "gl-rust/1.0 antigravity/1.21.9")
+                .json(&serde_json::json!({
+                    "tier_id": "free-tier",
+                    "metadata": {
+                        "ide_type": "ANTIGRAVITY",
+                        "ide_name": "antigravity",
+                        "ide_version": "1.21.9"
+                    }
+                }))
+                .send()
+                .await?;
+            if response.status().is_success() {
+                let value = response.json::<Value>().await.unwrap_or(Value::Null);
+                if let Some(project) = value
+                    .get("response")
+                    .and_then(extract_antigravity_project)
+                    .or_else(|| extract_antigravity_project(&value))
+                {
+                    return Ok(project);
+                }
+            } else if response.status().as_u16() != 429 && !response.status().is_server_error() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_secs(2)).await;
+        }
+        anyhow::bail!("Cloud Code Assist project discovery failed")
+    }
+
     async fn refresh(
         &self,
         kind: ProviderKind,
         current: &OAuthCredential,
     ) -> Result<OAuthCredential> {
+        if kind == ProviderKind::GoogleAntigravity {
+            let (client_id, client_secret) = antigravity_oauth_config()?;
+            let value = self
+                .http
+                .post("https://oauth2.googleapis.com/token")
+                .form(&[
+                    ("client_id", client_id.as_str()),
+                    ("client_secret", client_secret.as_str()),
+                    ("grant_type", "refresh_token"),
+                    ("refresh_token", current.refresh.as_str()),
+                ])
+                .send()
+                .await?
+                .error_for_status()?
+                .json::<Value>()
+                .await?;
+            let mut credential = parse_oauth_credential(kind, &value, Some(current))?;
+            if credential.project_id.is_none() {
+                credential.project_id = self
+                    .discover_antigravity_project(&credential.access)
+                    .await
+                    .ok();
+            }
+            return Ok(credential);
+        }
         let (url, fields): (&str, Vec<(&str, &str)>) = match kind {
             ProviderKind::KimiCoding => (
                 "https://auth.kimi.com/api/oauth/token",
@@ -772,8 +978,26 @@ impl AuthManager {
             .error_for_status()?
             .json::<Value>()
             .await?;
-        parse_oauth_credential(kind, &value, Some(current))
+        let mut credential = parse_oauth_credential(kind, &value, Some(current))?;
+        if kind == ProviderKind::GoogleAntigravity && credential.project_id.is_none() {
+            credential.project_id = self
+                .discover_antigravity_project(&credential.access)
+                .await
+                .ok();
+        }
+        Ok(credential)
     }
+}
+
+fn antigravity_oauth_config() -> Result<(String, String)> {
+    let client_id = std::env::var("GOOGLE_ANTIGRAVITY_CLIENT_ID")
+        .context("Google Antigravity login requires GOOGLE_ANTIGRAVITY_CLIENT_ID")?;
+    let client_secret = std::env::var("GOOGLE_ANTIGRAVITY_CLIENT_SECRET")
+        .context("Google Antigravity login requires GOOGLE_ANTIGRAVITY_CLIENT_SECRET")?;
+    if client_id.trim().is_empty() || client_secret.trim().is_empty() {
+        anyhow::bail!("Google Antigravity OAuth client configuration cannot be empty");
+    }
+    Ok((client_id, client_secret))
 }
 
 fn required_string(value: &Value, field: &str) -> Result<String> {
@@ -816,7 +1040,37 @@ fn parse_oauth_credential(
         expires_at: chrono::Utc::now() + chrono::Duration::seconds(expires_in as i64),
         account_id,
         account_label: previous.and_then(|value| value.account_label.clone()),
+        project_id: previous.and_then(|value| value.project_id.clone()),
     })
+}
+
+fn extract_google_email(value: &Value) -> Option<String> {
+    let token = value.get("id_token")?.as_str()?;
+    let payload = token.split('.').nth(1)?;
+    let bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .decode(payload)
+        .ok()?;
+    serde_json::from_slice::<Value>(&bytes)
+        .ok()?
+        .get("email")?
+        .as_str()
+        .map(str::to_string)
+}
+
+fn extract_antigravity_project(value: &Value) -> Option<String> {
+    for key in ["cloudaicompanionProject", "projectId", "project"] {
+        if let Some(project) = value.get(key).and_then(Value::as_str) {
+            if !project.is_empty() {
+                return Some(project.to_string());
+            }
+        }
+        if let Some(project) = value.pointer(&format!("/{key}/id")).and_then(Value::as_str) {
+            if !project.is_empty() {
+                return Some(project.to_string());
+            }
+        }
+    }
+    None
 }
 
 pub fn extract_codex_account_id(token: &str) -> Result<String> {
@@ -887,5 +1141,21 @@ mod tests {
     #[test]
     fn rejects_non_http_verification_urls() {
         assert!(validate_http_url("file:///tmp/nope").is_err());
+    }
+
+    #[test]
+    fn extracts_antigravity_project_shapes() {
+        assert_eq!(
+            extract_antigravity_project(&serde_json::json!({
+                "cloudaicompanionProject": "project-a"
+            })),
+            Some("project-a".into())
+        );
+        assert_eq!(
+            extract_antigravity_project(&serde_json::json!({
+                "project": {"id": "project-b"}
+            })),
+            Some("project-b".into())
+        );
     }
 }

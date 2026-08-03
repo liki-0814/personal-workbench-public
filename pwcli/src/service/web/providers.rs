@@ -723,6 +723,7 @@ fn provider_kind_from_value(value: &Value) -> ProviderKind {
             "kimi-coding" => ProviderKind::KimiCoding,
             "xai" => ProviderKind::Xai,
             "openai-codex" => ProviderKind::OpenAiCodex,
+            "google-antigravity" => ProviderKind::GoogleAntigravity,
             "qwen-token-plan-cn" => ProviderKind::QwenTokenPlanCn,
             _ => ProviderKind::Custom,
         })

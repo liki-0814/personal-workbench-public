@@ -30,6 +30,7 @@ export type ProviderProtocol =
   | 'openai_responses'
   | 'anthropic_messages'
   | 'google_generative'
+  | 'google_antigravity'
   // legacy aliases accepted when reading saved config
   | 'openai'
   | 'anthropic';
@@ -59,6 +60,8 @@ export function normalizeProviderProtocol(protocol: string | undefined | null): 
     case 'google_generative':
     case 'generative_language':
       return 'google_generative';
+    case 'google_antigravity':
+      return 'google_antigravity';
     default:
       return 'openai_chat';
   }

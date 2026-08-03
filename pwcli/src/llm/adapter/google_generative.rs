@@ -25,6 +25,30 @@ impl GoogleGenerativeAdapter {
         }
     }
 
+    fn is_antigravity(&self) -> bool {
+        self.provider.protocol == "google_antigravity"
+    }
+
+    fn antigravity_project(&self) -> Result<String> {
+        self.provider
+            .compat_profile
+            .as_deref()
+            .into_iter()
+            .flat_map(|value| value.split(';'))
+            .find_map(|value| value.strip_prefix("project:"))
+            .filter(|value| !value.is_empty())
+            .map(str::to_string)
+            .context("Antigravity credential has no Cloud Code Assist project; log in again")
+    }
+
+    fn antigravity_wire_model(&self) -> &str {
+        match self.provider.model.as_str() {
+            "gemini-3.6-flash" => "gemini-3.6-flash-medium",
+            "gemini-3.1-pro" => "gemini-pro-agent",
+            model => model,
+        }
+    }
+
     fn model_path(&self, action: &str) -> String {
         let base = self.provider.base_url.trim_end_matches('/');
         // Accept either full generateContent URL template or Generative Language root.
@@ -50,6 +74,22 @@ impl GoogleGenerativeAdapter {
         };
         let mut headers = reqwest::header::HeaderMap::new();
         headers.insert("Content-Type", "application/json".parse()?);
+        if self.is_antigravity() {
+            let suffix = if stream { "?alt=sse" } else { "" };
+            let url = format!(
+                "{}/v1internal:{action}{suffix}",
+                self.provider.base_url.trim_end_matches('/')
+            );
+            headers.insert(
+                reqwest::header::AUTHORIZATION,
+                format!("Bearer {}", self.provider.api_key).parse()?,
+            );
+            headers.insert(
+                reqwest::header::USER_AGENT,
+                "antigravity/cli/1.21.9 (aidev_client)".parse()?,
+            );
+            return Ok((url, headers));
+        }
         if self.provider.uses_proxy() {
             let url = format!("{}/api/proxy/openai", self.backend_url);
             headers.insert("X-Base-Url", self.model_path(action).parse()?);
@@ -196,10 +236,26 @@ impl GoogleGenerativeAdapter {
                 }
             }
         }
+        if self.is_antigravity() {
+            payload["sessionId"] = json!(format!("-{}", uuid::Uuid::now_v7().as_u128()));
+            if self.provider.model == "gemini-3.6-flash" && request.thinking {
+                payload["generationConfig"]["thinkingConfig"] =
+                    json!({"thinkingLevel": "medium", "includeThoughts": true});
+            }
+            return Ok(json!({
+                "model": self.antigravity_wire_model(),
+                "userAgent": "antigravity",
+                "requestType": "agent",
+                "project": self.antigravity_project()?,
+                "requestId": format!("agent-{}", uuid::Uuid::now_v7()),
+                "request": payload,
+            }));
+        }
         Ok(payload)
     }
 
     fn parse_candidate(value: &Value) -> Result<AiResponse> {
+        let value = value.get("response").unwrap_or(value);
         let mut content = String::new();
         let mut tool_calls = Vec::new();
         let parts = value
@@ -269,7 +325,11 @@ impl GoogleGenerativeAdapter {
 #[async_trait]
 impl LlmAdapter for GoogleGenerativeAdapter {
     fn protocol(&self) -> ProviderProtocol {
-        ProviderProtocol::GoogleGenerative
+        if self.is_antigravity() {
+            ProviderProtocol::GoogleAntigravity
+        } else {
+            ProviderProtocol::GoogleGenerative
+        }
     }
 
     async fn chat(&self, request: &LlmRequest) -> Result<AiResponse> {
@@ -376,7 +436,8 @@ impl LlmAdapter for GoogleGenerativeAdapter {
                         Ok(value) => value,
                         Err(_) => continue,
                     };
-                    let parts = value
+                    let response_value = value.get("response").unwrap_or(&value);
+                    let parts = response_value
                         .pointer("/candidates/0/content/parts")
                         .and_then(Value::as_array)
                         .cloned()
@@ -417,7 +478,7 @@ impl LlmAdapter for GoogleGenerativeAdapter {
                             emitted_tool = true;
                         }
                     }
-                    if let Some(usage) = value.get("usageMetadata") {
+                    if let Some(usage) = response_value.get("usageMetadata") {
                         yield StreamEvent::Done(Some(TokenUsage {
                             prompt_tokens: usage
                                 .get("promptTokenCount")
@@ -446,6 +507,26 @@ impl LlmAdapter for GoogleGenerativeAdapter {
 mod tests {
     use super::*;
 
+    fn request() -> LlmRequest {
+        LlmRequest {
+            messages: vec![ChatMessage {
+                role: "user".into(),
+                content: "hello".into(),
+                images: Vec::new(),
+                generated_images: Vec::new(),
+                tool_calls: None,
+                tool_call_id: None,
+            }],
+            system_prompt: Some("be helpful".into()),
+            tools: None,
+            stream: true,
+            tool_choice: None,
+            thinking: true,
+            max_tokens: None,
+            temperature: None,
+        }
+    }
+
     #[test]
     fn parses_function_call_and_text() {
         let value = serde_json::json!({
@@ -469,5 +550,38 @@ mod tests {
         assert_eq!(tools[0].function.name, "list_directory");
         assert!(tools[0].function.arguments.contains("path"));
         assert_eq!(response.usage.unwrap().total_tokens, 3);
+    }
+
+    #[test]
+    fn builds_antigravity_cloud_code_assist_envelope() {
+        let adapter = GoogleGenerativeAdapter::new(
+            ProviderConfig {
+                name: "Google Antigravity".into(),
+                base_url: "https://daily-cloudcode-pa.googleapis.com".into(),
+                api_key: "oauth-token".into(),
+                protocol: "google_antigravity".into(),
+                model: "gemini-3.6-flash".into(),
+                models: Vec::new(),
+                use_proxy: None,
+                compat_profile: Some(
+                    "builtin:google-antigravity;credential:p;project:project-a".into(),
+                ),
+            },
+            "http://127.0.0.1:9".into(),
+        );
+        let payload = adapter.build_payload(&request()).unwrap();
+        assert_eq!(payload["model"], "gemini-3.6-flash-medium");
+        assert_eq!(payload["project"], "project-a");
+        assert_eq!(payload["requestType"], "agent");
+        assert_eq!(payload["request"]["contents"][0]["role"], "user");
+    }
+
+    #[test]
+    fn parses_antigravity_response_envelope() {
+        let response = GoogleGenerativeAdapter::parse_candidate(&serde_json::json!({
+            "response": {"candidates": [{"content": {"parts": [{"text": "hi"}]}}]}
+        }))
+        .unwrap();
+        assert_eq!(response.content, "hi");
     }
 }

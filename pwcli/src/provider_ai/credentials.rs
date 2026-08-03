@@ -38,6 +38,9 @@ pub struct OAuthCredential {
     pub account_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub account_label: Option<String>,
+    /// Cloud Code Assist project discovered during Google Antigravity login.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project_id: Option<String>,
 }
 
 #[derive(Clone, Default, Serialize, Deserialize)]

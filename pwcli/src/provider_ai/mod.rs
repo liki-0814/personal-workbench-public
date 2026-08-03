@@ -25,6 +25,7 @@ pub enum ProviderKind {
     Xai,
     #[serde(rename = "openai-codex", alias = "open-ai-codex")]
     OpenAiCodex,
+    GoogleAntigravity,
     QwenTokenPlanCn,
     #[default]
     Custom,
@@ -53,6 +54,7 @@ impl ProviderKind {
             Self::KimiCoding => "kimi-coding",
             Self::Xai => "xai",
             Self::OpenAiCodex => "openai-codex",
+            Self::GoogleAntigravity => "google-antigravity",
             Self::QwenTokenPlanCn => "qwen-token-plan-cn",
             Self::Custom => "custom",
         }
@@ -74,6 +76,7 @@ pub fn provider_kind(provider: &ProviderConfig) -> ProviderKind {
         Some("builtin:kimi-coding") => ProviderKind::KimiCoding,
         Some("builtin:xai") => ProviderKind::Xai,
         Some("builtin:openai-codex") => ProviderKind::OpenAiCodex,
+        Some("builtin:google-antigravity") => ProviderKind::GoogleAntigravity,
         Some("builtin:qwen-token-plan-cn") => ProviderKind::QwenTokenPlanCn,
         _ => ProviderKind::Custom,
     }

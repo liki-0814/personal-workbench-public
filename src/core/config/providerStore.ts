@@ -9,7 +9,7 @@ import {
   type ProviderProtocol,
 } from './aiProviders';
 
-export type ProviderKind = 'kimi-coding' | 'xai' | 'openai-codex' | 'qwen-token-plan-cn' | 'custom';
+export type ProviderKind = 'kimi-coding' | 'xai' | 'openai-codex' | 'google-antigravity' | 'qwen-token-plan-cn' | 'custom';
 export type ProviderAuthMethod = 'oauth' | 'api_key';
 export type ProviderAuthStatus = 'disconnected' | 'pending' | 'connected' | 'expired' | 'error';
 
@@ -78,6 +78,7 @@ const BUILTIN_CATALOG: ProviderCatalogEntry[] = [
   { kind: 'kimi-coding', name: 'Kimi Coding', description: '使用 Kimi Coding 订阅登录', authMethod: 'oauth', models: [] },
   { kind: 'xai', name: 'Grok / xAI', description: '使用 SuperGrok 或 X Premium 登录', authMethod: 'oauth', models: [] },
   { kind: 'openai-codex', name: 'OpenAI Codex', description: '使用 ChatGPT Plus / Pro 登录', authMethod: 'oauth', models: [] },
+  { kind: 'google-antigravity', name: 'Google Antigravity', description: '使用 Google Cloud Code Assist 登录', authMethod: 'oauth', models: [] },
   { kind: 'qwen-token-plan-cn', name: 'Qwen Token Plan CN', description: '使用阿里云 Token Plan API Key', authMethod: 'api_key', models: [] },
 ];
 
@@ -112,6 +113,7 @@ function normalizeProvider(raw: unknown, index: number): ProviderView {
     'kimi-coding': 'anthropic_messages',
     xai: 'openai_chat',
     'openai-codex': 'openai_responses',
+    'google-antigravity': 'google_antigravity',
     'qwen-token-plan-cn': 'openai_chat',
   };
   const protocol = read<string>(endpoint, 'protocol', 'protocol') ?? builtinProtocols[kind];

@@ -23,6 +23,7 @@ impl ProviderCatalog {
             self.get(ProviderKind::KimiCoding).unwrap(),
             self.get(ProviderKind::Xai).unwrap(),
             self.get(ProviderKind::OpenAiCodex).unwrap(),
+            self.get(ProviderKind::GoogleAntigravity).unwrap(),
             self.get(ProviderKind::QwenTokenPlanCn).unwrap(),
         ]
     }
@@ -83,6 +84,24 @@ impl ProviderCatalog {
                     model("gpt-5.6-luna", true, true, 372_000),
                 ],
             },
+            ProviderKind::GoogleAntigravity => BuiltinProvider {
+                kind,
+                name: "Google Antigravity",
+                base_url: "https://daily-cloudcode-pa.googleapis.com",
+                protocol: "google_antigravity",
+                env_key: None,
+                default_model: "gemini-3.6-flash",
+                // Cloud Code Assist has no general-purpose /models endpoint. This
+                // maintained picker catalog mirrors the IDs exposed by Antigravity.
+                models: vec![
+                    model("gemini-3.6-flash", true, true, 1_048_576),
+                    model("gemini-3.1-pro", true, true, 1_048_576),
+                    model("gemini-3.1-flash-image", true, true, 1_048_576),
+                    model("claude-sonnet-4-6", true, true, 200_000),
+                    model("claude-opus-4-6-thinking", true, true, 1_000_000),
+                    model("gpt-oss-120b-medium", false, true, 131_072),
+                ],
+            },
             ProviderKind::QwenTokenPlanCn => BuiltinProvider {
                 kind,
                 name: "Qwen Token Plan CN",
@@ -122,7 +141,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn catalog_contains_the_four_supported_builtins() {
+    fn catalog_contains_the_supported_builtins() {
         let catalog = ProviderCatalog;
         let ids = catalog
             .all()
@@ -131,7 +150,13 @@ mod tests {
             .collect::<Vec<_>>();
         assert_eq!(
             ids,
-            vec!["kimi-coding", "xai", "openai-codex", "qwen-token-plan-cn"]
+            vec![
+                "kimi-coding",
+                "xai",
+                "openai-codex",
+                "google-antigravity",
+                "qwen-token-plan-cn",
+            ]
         );
     }
 }
