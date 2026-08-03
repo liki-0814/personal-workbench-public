@@ -23,10 +23,28 @@ use serde::{Deserialize, Serialize};
 pub enum ProviderKind {
     KimiCoding,
     Xai,
+    #[serde(rename = "openai-codex", alias = "open-ai-codex")]
     OpenAiCodex,
     QwenTokenPlanCn,
     #[default]
     Custom,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ProviderKind;
+
+    #[test]
+    fn codex_kind_uses_stable_wire_name_and_accepts_legacy_name() {
+        assert_eq!(
+            serde_json::to_string(&ProviderKind::OpenAiCodex).unwrap(),
+            "\"openai-codex\""
+        );
+        assert_eq!(
+            serde_json::from_str::<ProviderKind>("\"open-ai-codex\"").unwrap(),
+            ProviderKind::OpenAiCodex
+        );
+    }
 }
 
 impl ProviderKind {
