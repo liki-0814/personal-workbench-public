@@ -31,6 +31,10 @@ const OPENAI_CODEX_REDIRECT: &str = "http://localhost:1455/auth/callback";
 const OPENAI_CODEX_DEVICE_REDIRECT: &str = "https://auth.openai.com/deviceauth/callback";
 const ANTIGRAVITY_REDIRECT: &str = "http://127.0.0.1:51121/callback";
 const ANTIGRAVITY_SCOPES: &str = "https://www.googleapis.com/auth/cloud-platform https://www.googleapis.com/auth/userinfo.email https://www.googleapis.com/auth/userinfo.profile https://www.googleapis.com/auth/cclog https://www.googleapis.com/auth/experimentsandconfigs";
+const BUILT_IN_ANTIGRAVITY_CLIENT_ID: Option<&str> =
+    option_env!("PWCLI_GOOGLE_ANTIGRAVITY_CLIENT_ID");
+const BUILT_IN_ANTIGRAVITY_CLIENT_SECRET: Option<&str> =
+    option_env!("PWCLI_GOOGLE_ANTIGRAVITY_CLIENT_SECRET");
 const REFRESH_SKEW_SECONDS: i64 = 5 * 60;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -991,9 +995,15 @@ impl AuthManager {
 
 fn antigravity_oauth_config() -> Result<(String, String)> {
     let client_id = std::env::var("GOOGLE_ANTIGRAVITY_CLIENT_ID")
-        .context("Google Antigravity login requires GOOGLE_ANTIGRAVITY_CLIENT_ID")?;
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+        .or_else(|| BUILT_IN_ANTIGRAVITY_CLIENT_ID.map(str::to_string))
+        .context("this PWCLI build does not include a Google Antigravity OAuth client")?;
     let client_secret = std::env::var("GOOGLE_ANTIGRAVITY_CLIENT_SECRET")
-        .context("Google Antigravity login requires GOOGLE_ANTIGRAVITY_CLIENT_SECRET")?;
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+        .or_else(|| BUILT_IN_ANTIGRAVITY_CLIENT_SECRET.map(str::to_string))
+        .context("this PWCLI build does not include a Google Antigravity OAuth client")?;
     if client_id.trim().is_empty() || client_secret.trim().is_empty() {
         anyhow::bail!("Google Antigravity OAuth client configuration cannot be empty");
     }
