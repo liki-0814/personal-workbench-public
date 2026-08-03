@@ -260,6 +260,18 @@ export async function saveCustomProvider(input: CustomProviderInput, id?: string
   await refreshProviders();
 }
 
+export async function updateProviderModels(
+  id: string,
+  models: ModelEntry[],
+  defaultModel: string,
+): Promise<void> {
+  await apiFetch(`/api/providers/${encodeURIComponent(id)}`, {
+    method: 'PATCH',
+    body: JSON.stringify({ models, defaultModel }),
+  });
+  await refreshProviders();
+}
+
 export async function deleteProvider(id: string): Promise<void> {
   await apiFetch(`/api/providers/${encodeURIComponent(id)}`, { method: 'DELETE' });
   await refreshProviders();

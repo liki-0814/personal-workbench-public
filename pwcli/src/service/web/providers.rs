@@ -231,6 +231,7 @@ async fn update(
     Json(request): Json<PatchProviderRequest>,
 ) -> ApiResult {
     migrate_legacy(&state).map_err(internal)?;
+    let validate_models = request.models.is_some() || request.default_model.is_some();
     let key = request
         .api_key
         .clone()
@@ -269,6 +270,9 @@ async fn update(
                     provider["protocol"] = json!(normalize_protocol(&protocol));
                 }
             }
+            if validate_models {
+                validate_model_selection(provider)?;
+            }
             Ok(())
         })
         .map_err(bad_request)?;
@@ -284,6 +288,42 @@ async fn update(
     Ok(success(
         provider_view(&state, &value).await.map_err(internal)?,
     ))
+}
+
+fn validate_model_selection(provider: &Value) -> Result<()> {
+    let models = provider
+        .get("models")
+        .and_then(Value::as_array)
+        .context("at least one model is required")?;
+    if models.is_empty() {
+        anyhow::bail!("at least one model is required");
+    }
+    let mut ids = std::collections::HashSet::new();
+    let mut enabled_ids = std::collections::HashSet::new();
+    for model in models {
+        let id = model.get("id").and_then(Value::as_str).unwrap_or("").trim();
+        if id.is_empty() {
+            anyhow::bail!("model id cannot be empty");
+        }
+        if !ids.insert(id) {
+            anyhow::bail!("duplicate model id: {id}");
+        }
+        if model.get("enabled").and_then(Value::as_bool) != Some(false) {
+            enabled_ids.insert(id);
+        }
+    }
+    if enabled_ids.is_empty() {
+        anyhow::bail!("at least one model must be enabled");
+    }
+    let default_model = provider
+        .get("model")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .trim();
+    if !enabled_ids.contains(default_model) {
+        anyhow::bail!("default model must exist and be enabled");
+    }
+    Ok(())
 }
 
 async fn remove(State(state): State<AppState>, Path(id): Path<String>) -> ApiResult {
@@ -757,5 +797,25 @@ mod tests {
         assert_eq!(normalize_protocol("openai-responses"), "openai_responses");
         assert_eq!(normalize_protocol("anthropic"), "anthropic_messages");
         assert_eq!(normalize_protocol("google_generative"), "google_generative");
+    }
+
+    #[test]
+    fn model_selection_requires_an_enabled_default() {
+        assert!(validate_model_selection(&json!({
+            "model": "model-a",
+            "models": [
+                { "id": "model-a", "name": "A", "enabled": true },
+                { "id": "model-b", "name": "B", "enabled": false }
+            ]
+        }))
+        .is_ok());
+        assert!(validate_model_selection(&json!({
+            "model": "model-b",
+            "models": [
+                { "id": "model-a", "name": "A", "enabled": true },
+                { "id": "model-b", "name": "B", "enabled": false }
+            ]
+        }))
+        .is_err());
     }
 }

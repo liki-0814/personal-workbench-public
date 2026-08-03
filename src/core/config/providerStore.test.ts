@@ -9,6 +9,7 @@ import {
   refreshProviders,
   reorderProviderIds,
   startProviderAuth,
+  updateProviderModels,
 } from './providerStore';
 import { getModels } from './aiProviders';
 
@@ -66,6 +67,26 @@ describe('providerStore', () => {
     await reorderProviderIds(['a', 'b']);
     expect(apiFetch).toHaveBeenCalledWith('/api/providers/priorities', {
       method: 'PUT', body: JSON.stringify({ providerIds: ['a', 'b'] }),
+    });
+  });
+
+  it('updates the enabled model list and default model through the provider API', async () => {
+    const models = [
+      { id: 'grok-4.5', name: 'Grok 4.5', enabled: true },
+      { id: 'grok-fast', name: 'Grok Fast', enabled: false },
+    ];
+    apiFetch.mockImplementation(async (path: string) => {
+      if (path === '/api/providers/provider-1') return { success: true, data: {} };
+      if (path === '/api/providers') return { success: true, data: [] };
+      if (path === '/api/providers/catalog') return { success: true, data: [] };
+      throw new Error(`unexpected ${path}`);
+    });
+
+    await updateProviderModels('provider-1', models, 'grok-4.5');
+
+    expect(apiFetch).toHaveBeenNthCalledWith(1, '/api/providers/provider-1', {
+      method: 'PATCH',
+      body: JSON.stringify({ models, defaultModel: 'grok-4.5' }),
     });
   });
 });

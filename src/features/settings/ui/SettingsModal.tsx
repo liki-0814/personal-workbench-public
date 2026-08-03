@@ -10,6 +10,7 @@ import {
 } from '@/core/config';
 import HarnessMoaSettingsPanel from './HarnessMoaSettingsPanel';
 import ProviderSettingsPanel from './ProviderSettingsPanel';
+import ProviderModelSettingsPanel from './ProviderModelSettingsPanel';
 import { useStorageSync } from '@/core/storage';
 
 import { SelectField, showToast, useModalDialog } from '@/shell';
@@ -469,7 +470,7 @@ export default function SettingsModal({ open, onClose }: Props) {
       <div className="absolute inset-0 bg-black/40 backdrop-blur-sm dark:bg-black/60" onClick={onClose} />
       <div
         ref={settingsDialogRef}
-        className="settings-dialog relative w-[720px] max-h-[85vh] flex flex-col rounded-2xl border shadow-2xl overflow-hidden bg-white dark:bg-[#1a1a1a]"
+        className={`settings-dialog relative ${tab === 'models' ? 'w-[1120px]' : 'w-[720px]'} max-w-[96vw] max-h-[90vh] flex flex-col rounded-2xl border shadow-2xl overflow-hidden bg-white dark:bg-[#1a1a1a] transition-[width]`}
         role="dialog"
         aria-modal="true"
         aria-label="设置"
@@ -513,14 +514,16 @@ export default function SettingsModal({ open, onClose }: Props) {
         {/* Content */}
         <div className="flex-1 overflow-y-auto p-6">
           {tab === 'ai' && (
-            <ProviderSettingsPanel />
+            <ProviderSettingsPanel onManageModels={() => setTab('models')} />
           )}
 
           {tab === 'models' && (
-            <div className="space-y-3">
+            <div className="space-y-8">
+              <ProviderModelSettingsPanel />
+              <div className="border-t border-gray-200 pt-6 dark:border-white/10">
               <div>
-                <p className="text-sm text-gray-600 dark:text-gray-300">
-                  为各 AI 固定流程链路单独指定模型
+                <p className="text-sm font-medium text-gray-800 dark:text-gray-200">
+                  功能模型
                 </p>
                 <p className="text-xs text-gray-400 dark:text-gray-500 mt-0.5">
                   AI 对话主输入框等保留独立模型选择能力，不受此配置影响
@@ -597,6 +600,7 @@ export default function SettingsModal({ open, onClose }: Props) {
                   errors={moaConfigErrors}
                 />
               )}
+              </div>
             </div>
           )}
 

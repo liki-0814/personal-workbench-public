@@ -66,7 +66,7 @@ function Modal({ title, onClose, children }: { title: string; onClose: () => voi
   </div>;
 }
 
-export default function ProviderSettingsPanel() {
+export default function ProviderSettingsPanel({ onManageModels }: { onManageModels?: () => void }) {
   const { providers, catalog, loading, error } = useProviderStore();
   const [adding, setAdding] = useState(false);
   const [custom, setCustom] = useState<CustomProviderInput | null>(null);
@@ -197,7 +197,7 @@ export default function ProviderSettingsPanel() {
                 <span className={`rounded-md px-2 py-0.5 text-[10px] ${status.tone}`}>{status.text}</span>
                 {!provider.builtin && <span className="rounded-md bg-gray-100 px-2 py-0.5 text-[10px] text-gray-500 dark:bg-white/10">自定义</span>}
               </div>
-              <p className="mt-1.5 text-xs text-gray-400">{provider.defaultModel || provider.models[0]?.name || '尚未选择模型'} · {provider.models.length} 个模型{provider.auth.accountLabel ? ` · ${provider.auth.accountLabel}` : ''}</p>
+              <p className="mt-1.5 text-xs text-gray-400">{provider.defaultModel || provider.models[0]?.name || '尚未选择模型'} · 已启用 {provider.models.filter(model => model.enabled !== false).length}/{provider.models.length} 个模型{provider.auth.accountLabel ? ` · ${provider.auth.accountLabel}` : ''}</p>
             </div>
             <div className="flex shrink-0 items-center gap-1">
               <button onClick={() => move(index, -1)} disabled={index === 0 || busy} className="rounded p-1.5 text-gray-400 hover:bg-gray-100 disabled:opacity-25 dark:hover:bg-white/10" aria-label={`上移 ${provider.name}`}><ArrowUp size={14} /></button>
@@ -206,6 +206,7 @@ export default function ProviderSettingsPanel() {
           </div>
           <div className="mt-3 flex flex-wrap gap-2 border-t border-gray-100 pt-3 dark:border-white/5">
             {provider.auth.method === 'oauth' && provider.auth.status !== 'connected' && <button onClick={() => { setAuthProvider(provider); setAuthMethod(provider.kind === 'openai-codex' ? 'browser' : 'device'); setAuthFlow(undefined); }} className="rounded-md bg-purple-500/10 px-2.5 py-1 text-xs text-purple-600 dark:text-purple-300"><KeyRound size={12} className="mr-1 inline" />登录</button>}
+            <button onClick={onManageModels} className="rounded-md px-2.5 py-1 text-xs text-gray-600 hover:bg-gray-100 dark:text-gray-300 dark:hover:bg-white/10">管理模型</button>
             <button onClick={() => void perform(() => testProvider(provider.id), '连接测试成功')} className="rounded-md px-2.5 py-1 text-xs text-gray-600 hover:bg-gray-100 dark:text-gray-300 dark:hover:bg-white/10"><RefreshCw size={12} className="mr-1 inline" />测试连接</button>
             {!provider.builtin && <button onClick={() => openCustom(provider)} className="rounded-md px-2.5 py-1 text-xs text-gray-600 hover:bg-gray-100 dark:text-gray-300 dark:hover:bg-white/10">编辑</button>}
             {provider.auth.method === 'oauth' && provider.auth.status === 'connected' && <button onClick={() => void perform(() => logoutProvider(provider.id), '已退出登录')} className="rounded-md px-2.5 py-1 text-xs text-gray-500 hover:bg-gray-100 dark:hover:bg-white/10"><LogOut size={12} className="mr-1 inline" />退出</button>}
