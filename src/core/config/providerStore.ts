@@ -20,12 +20,20 @@ export interface ProviderAuthView {
   error?: string;
 }
 
+export interface ProviderModelChanges {
+  added: ModelEntry[];
+  removed: ModelEntry[];
+}
+
 export interface ProviderView {
   id: string;
   kind: ProviderKind;
   name: string;
   auth: ProviderAuthView;
   models: ModelEntry[];
+  /** 生图模型：与聊天模型分开管理，不进聊天选择器，生图工具自动联动。 */
+  imageModels: ModelEntry[];
+  modelChanges?: ProviderModelChanges;
   defaultModel?: string;
   enabled: boolean;
   priority: number;
@@ -41,8 +49,11 @@ export interface ProviderCatalogEntry {
   description: string;
   authMethod: ProviderAuthMethod;
   models: ModelEntry[];
+  imageModels: ModelEntry[];
   defaultModel?: string;
   connected?: boolean;
+  available?: boolean;
+  unavailableReason?: string;
 }
 
 export interface ProviderAuthFlow {
@@ -72,14 +83,16 @@ interface ProviderSnapshot {
   loading: boolean;
   loaded: boolean;
   error?: string;
+  /** Timestamp of the last explicit full-diff check; re-opens the update dialog. */
+  fullDiffAt?: number;
 }
 
 const BUILTIN_CATALOG: ProviderCatalogEntry[] = [
-  { kind: 'kimi-coding', name: 'Kimi Coding', description: '使用 Kimi Coding 订阅登录', authMethod: 'oauth', models: [] },
-  { kind: 'xai', name: 'Grok / xAI', description: '使用 SuperGrok 或 X Premium 登录', authMethod: 'oauth', models: [] },
-  { kind: 'openai-codex', name: 'OpenAI Codex', description: '使用 ChatGPT Plus / Pro 登录', authMethod: 'oauth', models: [] },
-  { kind: 'google-antigravity', name: 'Google Antigravity', description: '使用 Google Cloud Code Assist 登录', authMethod: 'oauth', models: [] },
-  { kind: 'qwen-token-plan-cn', name: 'Qwen Token Plan CN', description: '使用阿里云 Token Plan API Key', authMethod: 'api_key', models: [] },
+  { kind: 'kimi-coding', name: 'Kimi Coding', description: '使用 Kimi Coding 订阅登录', authMethod: 'oauth', models: [], imageModels: [] },
+  { kind: 'xai', name: 'Grok / xAI', description: '使用 SuperGrok 或 X Premium 登录', authMethod: 'oauth', models: [], imageModels: [] },
+  { kind: 'openai-codex', name: 'OpenAI Codex', description: '使用 ChatGPT Plus / Pro 登录', authMethod: 'oauth', models: [], imageModels: [] },
+  { kind: 'google-antigravity', name: 'Google Antigravity', description: '使用 Google Cloud Code Assist 登录', authMethod: 'oauth', models: [], imageModels: [] },
+  { kind: 'qwen-token-plan-cn', name: 'Qwen Token Plan CN', description: '使用阿里云 Token Plan API Key', authMethod: 'api_key', models: [], imageModels: [] },
 ];
 
 let snapshot: ProviderSnapshot = { providers: [], catalog: BUILTIN_CATALOG, loading: false, loaded: false };
@@ -117,12 +130,19 @@ function normalizeProvider(raw: unknown, index: number): ProviderView {
     'qwen-token-plan-cn': 'openai_chat',
   };
   const protocol = read<string>(endpoint, 'protocol', 'protocol') ?? builtinProtocols[kind];
+  const rawChanges = read<Record<string, unknown>>(value, 'modelChanges', 'model_changes');
   return {
     id: String(value.id ?? `provider-${index}`),
     kind,
     name: String(value.name ?? BUILTIN_CATALOG.find(item => item.kind === kind)?.name ?? 'Provider'),
     auth: normalizeAuth(value.auth, kind === 'qwen-token-plan-cn' || kind === 'custom' ? 'api_key' : 'oauth'),
     models: Array.isArray(value.models) ? value.models as ModelEntry[] : [],
+    imageModels: Array.isArray(value.imageModels) ? value.imageModels as ModelEntry[]
+      : Array.isArray(value.image_models) ? value.image_models as ModelEntry[] : [],
+    modelChanges: rawChanges ? {
+      added: Array.isArray(rawChanges.added) ? rawChanges.added as ModelEntry[] : [],
+      removed: Array.isArray(rawChanges.removed) ? rawChanges.removed as ModelEntry[] : [],
+    } : undefined,
     defaultModel: read<string>(value, 'defaultModel', 'default_model'),
     enabled: value.enabled !== false,
     priority: Number(value.priority ?? index),
@@ -147,8 +167,12 @@ function normalizeCatalog(raw: unknown): ProviderCatalogEntry[] {
       description: String(value.description ?? ''),
       authMethod: read<ProviderAuthMethod>(value, 'authMethod', 'auth_method') ?? 'oauth',
       models: Array.isArray(value.models) ? value.models as ModelEntry[] : [],
+      imageModels: Array.isArray(value.imageModels) ? value.imageModels as ModelEntry[]
+        : Array.isArray(value.image_models) ? value.image_models as ModelEntry[] : [],
       defaultModel: read<string>(value, 'defaultModel', 'default_model'),
       connected: value.connected as boolean | undefined,
+      available: read<boolean>(value, 'available', 'available'),
+      unavailableReason: read<string>(value, 'unavailableReason', 'unavailable_reason'),
     } satisfies ProviderCatalogEntry;
   }).filter(item => BUILTIN_CATALOG.some(entry => entry.kind === item.kind));
   return BUILTIN_CATALOG.map(fallback => {
@@ -198,17 +222,20 @@ export function subscribeProviders(listener: () => void): () => void {
   return () => listeners.delete(listener);
 }
 
-export async function refreshProviders(): Promise<void> {
-  if (refreshPromise) return refreshPromise;
+export async function refreshProviders(fullDiff = false): Promise<void> {
+  if (refreshPromise && !fullDiff) return refreshPromise;
   emit({ ...snapshot, loading: true, error: undefined });
   refreshPromise = (async () => {
     try {
       const [providersRaw, catalogRaw] = await Promise.all([
-        apiFetch('/api/providers'),
-        apiFetch('/api/providers/catalog'),
+        apiFetch(fullDiff ? '/api/providers?fullDiff=true' : '/api/providers'),
+        // Model discovery is additive.  A missing, slow, or temporarily
+        // unavailable catalog must not hide configured providers or block
+        // OAuth login controls.
+        fullDiff ? Promise.resolve(undefined) : apiFetch('/api/providers/catalog').catch(() => undefined),
       ]);
       const providers = unwrapList(providersRaw).map(normalizeProvider).sort((a, b) => a.priority - b.priority);
-      emit({ providers, catalog: normalizeCatalog(catalogRaw), loading: false, loaded: true });
+      emit({ providers, catalog: fullDiff ? snapshot.catalog : normalizeCatalog(catalogRaw), loading: false, loaded: true, ...(fullDiff ? { fullDiffAt: Date.now() } : {}) });
     } catch (error) {
       emit({ ...snapshot, loading: false, loaded: true, error: error instanceof Error ? error.message : 'AI 服务加载失败' });
       throw error;
@@ -217,6 +244,11 @@ export async function refreshProviders(): Promise<void> {
     }
   })();
   return refreshPromise;
+}
+
+/** Explicit user-triggered full diff (includes previously dismissed models). */
+export function checkModelUpdates(): Promise<void> {
+  return refreshProviders(true);
 }
 
 export function useProviderStore(active = true): ProviderSnapshot {
@@ -265,13 +297,39 @@ export async function saveCustomProvider(input: CustomProviderInput, id?: string
 export async function updateProviderModels(
   id: string,
   models: ModelEntry[],
+  imageModels: ModelEntry[],
   defaultModel: string,
 ): Promise<void> {
   await apiFetch(`/api/providers/${encodeURIComponent(id)}`, {
     method: 'PATCH',
-    body: JSON.stringify({ models, defaultModel }),
+    body: JSON.stringify({ models, imageModels, defaultModel }),
   });
   await refreshProviders();
+}
+
+async function postModelChanges(id: string, action: 'adopt' | 'prune' | 'dismiss', body?: Record<string, unknown>): Promise<void> {
+  await apiFetch(`/api/providers/${encodeURIComponent(id)}/model-changes/${action}`, {
+    method: 'POST',
+    body: JSON.stringify(body ?? {}),
+  });
+  await refreshProviders();
+}
+
+/**
+ * Adds newly discovered models to the provider config, enabled by default.
+ * Pass `modelIds` to adopt only a selected subset; omit to adopt all.
+ */
+export function adoptModelChanges(id: string, modelIds?: string[]): Promise<void> {
+  return postModelChanges(id, 'adopt', modelIds ? { modelIds } : undefined);
+}
+
+/** Removes retired models from the provider config. */
+export function pruneModelChanges(id: string): Promise<void> {
+  return postModelChanges(id, 'prune');
+}
+/** Clears discovery notifications; scope to `added`/`removed` when provided. */
+export function dismissModelChanges(id: string, scope?: { added?: boolean; removed?: boolean }): Promise<void> {
+  return postModelChanges(id, 'dismiss', scope);
 }
 
 export async function deleteProvider(id: string): Promise<void> {

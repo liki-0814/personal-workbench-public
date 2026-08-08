@@ -1,12 +1,13 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useMemo } from 'react';
 import { X, Plus, Trash2, Settings, Server, CheckCircle, AlertCircle, Sparkles, Plug, RotateCcw, MonitorSmartphone, Eye, EyeOff, FolderOpen } from 'lucide-react';
 import { MemorySettingsPanel } from '@/features/memory';
-import type { FeatureModelKey, AppConfig, LocalConfig, LocalConfigGenImageModel, LocalConfigSshServer, ResponseLanguage, VisualScene } from '@/core/config';
+import type { FeatureModelKey, AppConfig, LocalConfig, LocalConfigSshServer, ResponseLanguage } from '@/core/config';
 import {
   useAiModels, FEATURE_MODELS, getFeatureModel, setFeatureModel,
   useAppConfig, setAppConfig,
   useLocalConfig, saveLocalConfig, LOCAL_CONFIG_TOKEN_MASK, normalizeFsBase,
   useMoaConfig, saveMoaConfig, getMoaConfig, getProviderModelOptions, validateMoaConfig,
+  useProviderStore,
 } from '@/core/config';
 import HarnessMoaSettingsPanel from './HarnessMoaSettingsPanel';
 import ProviderSettingsPanel from './ProviderSettingsPanel';
@@ -46,7 +47,6 @@ interface FormFields {
   anySearchApiKey?: string;
   genImageEnabled?: boolean;
   genImageDefaultModel?: string;
-  genImageModels?: LocalConfigGenImageModel[];
 }
 
 interface SshServer extends LocalConfigSshServer {
@@ -63,43 +63,11 @@ const normalizeSshServer = (server: LocalConfigSshServer): SshServer => ({
   tags: server.tags ?? [],
 });
 
-const VISUAL_SCENES: Array<{ value: VisualScene; label: string }> = [
-  { value: 'photo', label: '照片' },
-  { value: 'illustration', label: '插画' },
-  { value: 'poster', label: '海报' },
-  { value: 'infographic', label: '信息图' },
-  { value: 'scientific', label: '科研图' },
-  { value: 'product', label: '产品图' },
-  { value: 'ui-mockup', label: 'UI' },
-  { value: 'asset', label: '素材' },
-];
-
-const CAPABILITY_OPTIONS = [
-  { value: 'auto', label: '协议默认' },
-  { value: 'true', label: '支持' },
-  { value: 'false', label: '不支持' },
-];
-
 const CODE_AGENT_LABELS: Record<string, string> = {
   qoder: 'Qoder CLI',
   codex: 'Codex CLI',
   kimi: 'Kimi Code',
 };
-
-let genImageRowKeySequence = 0;
-
-function createGenImageRowKey(): string {
-  genImageRowKeySequence += 1;
-  return `gen-image-row-${genImageRowKeySequence}`;
-}
-
-function capabilityValue(value: boolean | undefined): string {
-  return value === undefined ? 'auto' : String(value);
-}
-
-function capabilityOverride(value: string): boolean | undefined {
-  return value === 'auto' ? undefined : value === 'true';
-}
 
 export default function SettingsModal({ open, onClose }: Props) {
   const [tab, setTab] = useState<Tab>('ai');
@@ -191,45 +159,16 @@ export default function SettingsModal({ open, onClose }: Props) {
     anySearchApiKey: lcTools?.anySearch?.apiKey ?? '',
     genImageEnabled: lcTools?.genImage?.enabled ?? false,
     genImageDefaultModel: lcTools?.genImage?.defaultModel ?? '',
-    genImageModels: lcTools?.genImage?.models ?? [],
   };
   const [localAppConfig, setLocalAppConfig] = useState<AppConfig & FormFields>(mergedAppConfig);
-  const [genImageRowKeys, setGenImageRowKeys] = useState(() =>
-    (mergedAppConfig.genImageModels ?? []).map(createGenImageRowKey)
+  // gen-image is auto-linked to connected providers: their discovered image
+  // models (id contains image/imagine) are the only selectable models here.
+  const { providers } = useProviderStore();
+  const providerImageModels = useMemo(
+    () => providers.flatMap(provider =>
+      provider.imageModels.map(model => ({ providerName: provider.name, model }))),
+    [providers],
   );
-  const updateGenImageModel = useCallback((index: number, patch: Partial<LocalConfigGenImageModel>) => {
-    setLocalAppConfig(prev => ({
-      ...prev,
-      genImageModels: (prev.genImageModels ?? []).map((model, modelIndex) =>
-        modelIndex === index ? { ...model, ...patch } : model
-      ),
-    }));
-  }, []);
-  const removeGenImageModel = useCallback((index: number) => {
-    setGenImageRowKeys(previous => previous.filter((_, itemIndex) => itemIndex !== index));
-    setLocalAppConfig(prev => ({
-      ...prev,
-      genImageModels: (prev.genImageModels ?? []).filter((_, itemIndex) => itemIndex !== index),
-    }));
-  }, []);
-  const addGenImageModel = useCallback(() => {
-    setGenImageRowKeys(previous => [...previous, createGenImageRowKey()]);
-    setLocalAppConfig(prev => ({
-      ...prev,
-      genImageModels: [
-        ...(prev.genImageModels ?? []),
-        {
-          id: `image-model-${(prev.genImageModels ?? []).length + 1}`,
-          name: '',
-          enabled: true,
-          protocol: 'openai-images',
-          url: '',
-          apiKey: '',
-          model: '',
-        },
-      ],
-    }));
-  }, []);
   const isAppConfigDirty =
     !(lcTools?.fsBase ?? '').trim() ||
     (localAppConfig.fsBase ?? '') !== (mergedAppConfig.fsBase ?? '') ||
@@ -239,8 +178,7 @@ export default function SettingsModal({ open, onClose }: Props) {
     (localAppConfig.mineruToken ?? '') !== (mergedAppConfig.mineruToken ?? '') ||
     (localAppConfig.anySearchApiKey ?? '') !== (mergedAppConfig.anySearchApiKey ?? '') ||
     localAppConfig.genImageEnabled !== mergedAppConfig.genImageEnabled ||
-    localAppConfig.genImageDefaultModel !== mergedAppConfig.genImageDefaultModel ||
-    JSON.stringify(localAppConfig.genImageModels ?? []) !== JSON.stringify(mergedAppConfig.genImageModels ?? []);
+    localAppConfig.genImageDefaultModel !== mergedAppConfig.genImageDefaultModel;
 
   const handleToggleMermaid = (next: boolean) => {
     setMermaidEnabledState(next);
@@ -291,7 +229,6 @@ export default function SettingsModal({ open, onClose }: Props) {
         Object.fromEntries(FEATURE_MODELS.map(f => [f.key, getFeatureModel(f.key)])) as Record<FeatureModelKey, string>
       );
       setLocalAppConfig(mergedAppConfig);
-      setGenImageRowKeys((mergedAppConfig.genImageModels ?? []).map(createGenImageRowKey));
       setLocalMoaConfig(moaConfig);
       checkDaemon();
     }
@@ -304,7 +241,6 @@ export default function SettingsModal({ open, onClose }: Props) {
   useEffect(() => {
     if (open && !isAppConfigDirty) {
       setLocalAppConfig(mergedAppConfig);
-      setGenImageRowKeys((mergedAppConfig.genImageModels ?? []).map(createGenImageRowKey));
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [appConfig, localConfig, open]);
@@ -360,7 +296,10 @@ export default function SettingsModal({ open, onClose }: Props) {
     const enabledDelegationClis = (localAppConfig.codeAgentEnabledBackends ?? [])
       .filter((executor): executor is 'codex' | 'qoder' | 'kimi' =>
         executor === 'codex' || executor === 'qoder' || executor === 'kimi');
-    const genImageModels = (localAppConfig.genImageModels ?? []).map(model => ({
+    // Legacy manually-configured gen-image models are no longer editable in
+    // the UI (gen-image auto-links to providers now), but pass them through
+    // untouched so existing setups keep working; they still take precedence.
+    const genImageModels = (lcTools?.genImage?.models ?? []).map(model => ({
       ...model,
       id: (model.id ?? '').trim(),
       name: (model.name ?? '').trim(),
@@ -418,10 +357,6 @@ export default function SettingsModal({ open, onClose }: Props) {
     //   - 刚清空（空字符串）            → 服务端 GET 返 ''
     const localMineru = mineruRaw === '' ? '' : LOCAL_CONFIG_TOKEN_MASK;
     const localAnySearch = anySearchRaw === '' ? '' : LOCAL_CONFIG_TOKEN_MASK;
-    const localGenImageModels = genImageModels.map(model => ({
-      ...model,
-      apiKey: model.apiKey === '' ? '' : LOCAL_CONFIG_TOKEN_MASK,
-    }));
     setLocalAppConfig({
       ...configBackedAppConfig,
       fsBase: normalizeFsBase(localAppConfig.fsBase),
@@ -430,7 +365,6 @@ export default function SettingsModal({ open, onClose }: Props) {
       anySearchApiKey: localAnySearch,
       genImageEnabled: localAppConfig.genImageEnabled ?? false,
       genImageDefaultModel: (localAppConfig.genImageDefaultModel ?? '').trim(),
-      genImageModels: localGenImageModels,
     });
     showToast({ message: '已保存。所有字段立即生效，无需重启', type: 'success' });
   };
@@ -771,167 +705,45 @@ export default function SettingsModal({ open, onClose }: Props) {
                     tools.genImage
                   </code>
                 </div>
-                <div className="grid grid-cols-2 gap-3 mb-4">
-                  <SelectField
-                    value={localAppConfig.genImageEnabled ? 'true' : 'false'}
-                    onValueChange={value => setLocalAppConfig(prev => ({ ...prev, genImageEnabled: value === 'true' }))}
-                    options={[{ value: 'true', label: '启用' }, { value: 'false', label: '停用' }]}
-                    className="w-full text-sm"
-                    ariaLabel="生图工具开关"
-                  />
+                <p className="text-[11px] text-gray-400 dark:text-gray-500 mb-4 leading-relaxed">
+                  自动联动：已连接 Provider 中的生图模型（模型 ID 含 image/imagine）会自动提供给生图工具，无需单独配置。模型的启用与停用在「模型目录」中管理。
+                </p>
+                <div className="mb-4">
+                  <span className="mb-1.5 block text-[11px] font-medium text-gray-600 dark:text-gray-300">默认生图模型</span>
                   <SelectField
                     value={localAppConfig.genImageDefaultModel ?? ''}
                     onValueChange={value => setLocalAppConfig(prev => ({ ...prev, genImageDefaultModel: value }))}
-                    options={(localAppConfig.genImageModels ?? []).map(model => ({
-                      value: model.id ?? '',
-                      label: model.name || model.model || model.id || '未命名模型',
-                    }))}
+                    options={[
+                      { value: '', label: '自动选择（第一个可用模型）' },
+                      ...providerImageModels
+                        .filter(({ model }) => model.enabled !== false)
+                        .map(({ providerName, model }) => ({
+                          value: `${providerName}:${model.id}`,
+                          label: `${providerName} · ${model.id}`,
+                        })),
+                    ]}
                     className="w-full text-sm"
                     ariaLabel="默认生图模型"
                   />
                 </div>
-                {(localAppConfig.genImageModels ?? []).map((model, index) => (
-                  <div key={genImageRowKeys[index]} className="mt-3 rounded-lg border border-gray-100 dark:border-white/10 p-3">
-                    <div className="mb-2 flex items-center justify-between">
-                      <span className="text-xs font-medium text-gray-700 dark:text-gray-200">{model.name || model.model || '生图模型'}</span>
-                      <div className="flex items-center gap-2">
-                        <button
-                          type="button"
-                          onClick={() => updateGenImageModel(index, { enabled: !model.enabled })}
-                          className={`rounded-full px-2.5 py-1 text-[10px] ${model.enabled ? 'bg-purple-100 text-purple-700 dark:bg-purple-500/20 dark:text-purple-300' : 'bg-gray-100 text-gray-500 dark:bg-white/10 dark:text-gray-400'}`}
-                        >
-                          {model.enabled ? '已启用' : '未启用'}
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => removeGenImageModel(index)}
-                          className="text-gray-400 hover:text-red-500"
-                          aria-label="删除生图模型"
-                        >
-                          <Trash2 size={13} />
-                        </button>
-                      </div>
-                    </div>
-                    <div className="grid gap-2">
-                      <input
-                        type="text"
-                        value={model.id ?? ''}
-                        onChange={event => updateGenImageModel(index, { id: event.target.value })}
-                        placeholder="本地模型 ID（唯一）"
-                        className="input-field w-full text-xs font-mono dark:bg-white/5 dark:border-white/10 dark:text-white"
-                      />
-                      <SelectField
-                        value={model.protocol ?? 'openai-images'}
-                        onValueChange={value => updateGenImageModel(index, { protocol: value })}
-                        options={[
-                          { value: 'openai-images', label: 'OpenAI Images' },
-                          { value: 'qwen-openai-images', label: 'Qwen OpenAI Images' },
-                          { value: 'gemini-generate-content', label: 'Gemini GenerateContent' },
-                        ]}
-                        className="w-full text-xs"
-                        ariaLabel="生图协议"
-                      />
-                      <input
-                        type="text"
-                        value={model.url ?? ''}
-                        onChange={event => updateGenImageModel(index, { url: event.target.value })}
-                        placeholder="完整接口 URL，可使用 {model}"
-                        className="input-field w-full text-xs font-mono dark:bg-white/5 dark:border-white/10 dark:text-white"
-                      />
-                      <div className="grid grid-cols-2 gap-2">
-                        <input
-                          type="text"
-                          value={model.model ?? ''}
-                          onChange={event => updateGenImageModel(index, { model: event.target.value })}
-                          placeholder="上游模型名"
-                          className="input-field w-full text-xs font-mono dark:bg-white/5 dark:border-white/10 dark:text-white"
-                        />
-                        <input
-                          type="password"
-                          value={model.apiKey ?? ''}
-                          onChange={event => updateGenImageModel(index, { apiKey: event.target.value })}
-                        placeholder="API Key"
-                        autoComplete="off"
-                        className="input-field w-full text-xs font-mono dark:bg-white/5 dark:border-white/10 dark:text-white"
-                        />
-                      </div>
-                      <details className="rounded-lg border border-gray-100 px-3 py-2 dark:border-white/10">
-                        <summary className="cursor-pointer text-[11px] font-medium text-gray-600 dark:text-gray-300">
-                          高级能力与编辑端点
-                        </summary>
-                        <div className="mt-3 grid gap-3">
-                          <input
-                            type="text"
-                            value={model.editUrl ?? ''}
-                            onChange={event => updateGenImageModel(index, { editUrl: event.target.value })}
-                            placeholder="可选编辑接口 URL；标准协议可自动推导"
-                            className="input-field w-full text-xs font-mono dark:bg-white/5 dark:border-white/10 dark:text-white"
-                          />
-                          <div className="grid grid-cols-3 gap-2">
-                            {(['generate', 'reference', 'edit'] as const).map(capability => (
-                              <label key={capability} className="min-w-0">
-                                <span className="mb-1 block text-[10px] text-gray-500 dark:text-gray-400">
-                                  {capability === 'generate' ? '新图' : capability === 'reference' ? '参考图' : '编辑'}
-                                </span>
-                                <SelectField
-                                  value={capabilityValue(model.capabilities?.[capability])}
-                                  onValueChange={value => updateGenImageModel(index, {
-                                    capabilities: {
-                                      ...model.capabilities,
-                                      [capability]: capabilityOverride(value),
-                                    },
-                                  })}
-                                  options={CAPABILITY_OPTIONS}
-                                  className="w-full text-xs"
-                                  ariaLabel={`${capability} 能力`}
-                                />
-                              </label>
-                            ))}
-                          </div>
-                          <div>
-                            <span className="mb-1.5 block text-[10px] text-gray-500 dark:text-gray-400">偏好场景（可选）</span>
-                            <div className="flex flex-wrap gap-1.5">
-                              {VISUAL_SCENES.map(scene => {
-                                const selected = model.capabilities?.preferredScenes?.includes(scene.value) ?? false;
-                                return (
-                                  <button
-                                    key={scene.value}
-                                    type="button"
-                                    onClick={() => {
-                                      const previous = model.capabilities?.preferredScenes ?? [];
-                                      updateGenImageModel(index, {
-                                        capabilities: {
-                                          ...model.capabilities,
-                                          preferredScenes: selected
-                                            ? previous.filter(value => value !== scene.value)
-                                            : [...previous, scene.value],
-                                        },
-                                      });
-                                    }}
-                                    className={`rounded-full px-2 py-1 text-[10px] ${selected
-                                      ? 'bg-purple-100 text-purple-700 dark:bg-purple-500/20 dark:text-purple-300'
-                                      : 'bg-gray-100 text-gray-500 dark:bg-white/10 dark:text-gray-400'}`}
-                                  >
-                                    {scene.label}
-                                  </button>
-                                );
-                              })}
-                            </div>
-                          </div>
-                        </div>
-                      </details>
-                    </div>
+                {providerImageModels.length === 0 ? (
+                  <div className="rounded-xl border border-dashed border-gray-300 py-8 text-center text-xs text-gray-400 dark:border-white/15">
+                    未识别到生图模型：请连接带有生图模型（模型 ID 含 image/imagine）的 Provider，并在模型目录中采纳
                   </div>
-                ))}
-                <button
-                  type="button"
-                  onClick={addGenImageModel}
-                  className="mt-3 flex items-center gap-1.5 text-xs text-purple-600 hover:text-purple-700 dark:text-purple-300"
-                >
-                  <Plus size={13} /> 添加生图模型
-                </button>
+                ) : (
+                  <div className="divide-y divide-gray-100 rounded-xl border border-gray-100 dark:divide-white/5 dark:border-white/10">
+                    {providerImageModels.map(({ providerName, model }) => (
+                      <div key={`${providerName}:${model.id}`} className="flex items-center gap-3 px-3 py-2.5">
+                        <span className="min-w-0 flex-1 truncate font-mono text-xs text-gray-800 dark:text-gray-100">{providerName} · {model.id}</span>
+                        {model.enabled === false
+                          ? <span className="shrink-0 rounded bg-gray-100 px-1.5 py-0.5 text-[10px] text-gray-500 dark:bg-white/10 dark:text-gray-400">已停用</span>
+                          : <span className="shrink-0 rounded bg-pink-500/10 px-1.5 py-0.5 text-[10px] text-pink-600 dark:text-pink-300">已联动</span>}
+                      </div>
+                    ))}
+                  </div>
+                )}
                 <p className="text-[11px] text-gray-400 dark:text-gray-500 mt-3 leading-relaxed">
-                  所有模型走同一个 generate_image 工具；协议字段只负责适配上游请求格式。生图模型不会进入聊天 Provider 或顶部模型选择器。
+                  所有生图模型走同一个 generate_image 工具，凭据与接口地址自动取自对应 Provider。生图模型不会进入聊天 Provider 或顶部模型选择器。
                 </p>
               </div>
 
@@ -957,7 +769,15 @@ export default function SettingsModal({ open, onClose }: Props) {
                   className="input-field w-full text-sm font-mono dark:bg-white/5 dark:border-white/10 dark:text-white"
                 />
                 <p className="text-[11px] text-gray-400 dark:text-gray-500 mt-2 leading-relaxed">
-                  AnySearch 是唯一联网搜索服务，并用于网页正文提取。留空使用匿名额度；API Key 仅保存在本机配置文件中。
+                  AnySearch 是唯一联网搜索服务，并用于网页正文提取。留空使用匿名额度；API Key 仅保存在本机配置文件中。获取：
+                  <a
+                    href="https://www.anysearch.com/console/api-keys"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="ml-0.5 text-purple-600 dark:text-purple-400 hover:underline"
+                  >
+                    anysearch.com/console/api-keys
+                  </a>
                 </p>
               </div>
 

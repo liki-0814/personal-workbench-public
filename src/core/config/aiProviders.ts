@@ -5,6 +5,8 @@ export interface ModelCapabilities {
   vision?: boolean;
   /** Supports a togglable extended-thinking / reasoning mode. */
   thinking?: boolean;
+  /** 生图模型：用于图像生成而非聊天，不出现在聊天模型选择器。 */
+  image?: boolean;
 }
 
 export interface ModelEntry {
@@ -343,6 +345,7 @@ export function replaceProvidersFromServer(providers: AiProvider[]): void {
   // The dedicated Provider API is authoritative and returns a redacted view.
   // Remove the legacy full-config cache after the first successful refresh so
   // API keys (including old unmasked values) cannot remain in browser storage.
+  // eslint-disable-next-line no-restricted-syntax -- This removes a deprecated local-only credential cache; syncing a deletion would overwrite the authoritative Provider API.
   if (typeof localStorage !== 'undefined') localStorage.removeItem(PROVIDERS_STORAGE_KEY);
   if (typeof window !== 'undefined') {
     window.dispatchEvent(new CustomEvent(STORAGE_SYNC_EVENT, { detail: { reason: 'provider-api' } }));

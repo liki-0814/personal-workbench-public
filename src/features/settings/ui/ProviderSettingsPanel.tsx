@@ -37,7 +37,7 @@ import {
   type ProviderCatalogEntry,
   type ProviderView,
 } from '@/core/config';
-import { showToast } from '@/shell';
+import { SelectField, showToast } from '@/shell';
 
 const EMPTY_CUSTOM: CustomProviderInput = {
   name: '', baseUrl: '', protocol: 'openai_chat', apiKey: '', defaultModel: '', models: [],
@@ -83,6 +83,15 @@ export default function ProviderSettingsPanel({ onManageModels }: { onManageMode
   const [busy, setBusy] = useState(false);
 
   const connectedKinds = useMemo(() => new Set(providers.filter(p => p.builtin).map(p => p.kind)), [providers]);
+  const builtinOptions = useMemo(() => catalog.map(entry => {
+    const connected = connectedKinds.has(entry.kind);
+    const unavailable = entry.available === false;
+    return {
+      value: entry.kind,
+      label: `${entry.name}${connected ? '（已添加）' : unavailable ? '（不可用）' : ''}`,
+      disabled: connected || unavailable,
+    };
+  }), [catalog, connectedKinds]);
 
   useEffect(() => {
     if (!authProvider || !authFlow?.flowId || authFlow.status !== 'pending') return;
@@ -218,14 +227,40 @@ export default function ProviderSettingsPanel({ onManageModels }: { onManageMode
     </div>
 
     {adding && <Modal title="添加 AI 服务" onClose={() => setAdding(false)}><div className="space-y-4 p-5">
-      <div className="rounded-xl bg-gray-50 p-4 dark:bg-white/[0.03]"><label className="block text-xs font-medium text-gray-700 dark:text-gray-200">登录服务<select autoFocus value={selectedBuiltinKind} onChange={event => setSelectedBuiltinKind(event.target.value)} className="input-field mt-2 w-full dark:border-white/10 dark:bg-white/5 dark:text-white"><option value="">选择要连接的服务</option>{catalog.map(entry => <option key={entry.kind} value={entry.kind} disabled={connectedKinds.has(entry.kind)}>{entry.name}{connectedKinds.has(entry.kind) ? '（已添加）' : ''}</option>)}</select></label>{selectedBuiltinKind && <p className="mt-2 text-xs leading-5 text-gray-400">{catalog.find(entry => entry.kind === selectedBuiltinKind)?.description}</p>}</div>
+      <div className="rounded-xl bg-gray-50 p-4 dark:bg-white/[0.03]">
+        <p className="text-xs font-medium text-gray-700 dark:text-gray-200">登录服务</p>
+        <SelectField
+          autoFocus
+          value={selectedBuiltinKind}
+          options={builtinOptions}
+          onValueChange={setSelectedBuiltinKind}
+          placeholder="选择要连接的服务"
+          ariaLabel="登录服务"
+          className="mt-2 w-full dark:border-white/10 dark:bg-white/5 dark:text-white"
+          menuMinWidth={280}
+        />
+        {selectedBuiltinKind && <p className="mt-2 text-xs leading-5 text-gray-400">{catalog.find(entry => entry.kind === selectedBuiltinKind)?.description}</p>}
+        {catalog.some(entry => entry.available === false) && <div className="mt-2 space-y-1">{catalog.filter(entry => entry.available === false).map(entry => <p key={entry.kind} className="text-xs leading-5 text-amber-600 dark:text-amber-300">{entry.name}：{entry.unavailableReason || '当前版本不可用'}</p>)}</div>}
+      </div>
       <div className="flex items-center justify-between border-t border-gray-100 pt-4 dark:border-white/5"><button onClick={() => openCustom()} className="flex items-center gap-1.5 rounded-lg px-3 py-2 text-xs text-gray-600 hover:bg-gray-100 dark:text-gray-300 dark:hover:bg-white/10"><Server size={14} />自定义 Provider</button><div className="flex gap-2"><button onClick={() => setAdding(false)} className="rounded-lg border px-4 py-2 text-sm dark:border-white/10">取消</button><button disabled={!selectedBuiltinKind || busy} onClick={() => { const entry = catalog.find(item => item.kind === selectedBuiltinKind); if (entry) void beginBuiltin(entry); }} className="rounded-lg bg-purple-500 px-4 py-2 text-sm text-white disabled:opacity-40">继续</button></div></div>
     </div></Modal>}
 
     {qwenEntry && <Modal title={`连接 ${qwenEntry.name}`} onClose={() => { setQwenEntry(undefined); setQwenKey(''); }}><div className="space-y-4 p-5"><label className="block text-xs text-gray-600 dark:text-gray-300">API Key<input autoFocus type="password" value={qwenKey} onChange={event => setQwenKey(event.target.value)} className="input-field mt-1.5 w-full dark:bg-white/5 dark:border-white/10 dark:text-white" placeholder="sk-..." /></label><p className="text-xs text-gray-400">密钥将直接提交给本机 daemon，不会写入浏览器存储。</p><div className="flex justify-end gap-2"><button onClick={() => setQwenEntry(undefined)} className="rounded-lg border px-4 py-2 text-sm dark:border-white/10">取消</button><button disabled={!qwenKey.trim() || busy} onClick={() => void perform(async () => { await createBuiltinProvider(qwenEntry.kind, qwenKey); setQwenEntry(undefined); setQwenKey(''); }, 'Qwen Token Plan CN 已连接')} className="rounded-lg bg-purple-500 px-4 py-2 text-sm text-white disabled:opacity-50">保存并连接</button></div></div></Modal>}
 
     {custom && <Modal title={customId ? '编辑自定义 Provider' : '添加自定义 Provider'} onClose={() => setCustom(null)}><div className="space-y-4 overflow-y-auto p-5">
-      <div className="grid gap-3 sm:grid-cols-2"><label className="text-xs text-gray-600 dark:text-gray-300">名称<input value={custom.name} onChange={e => setCustom({ ...custom, name: e.target.value })} className="input-field mt-1.5 w-full dark:bg-white/5 dark:border-white/10 dark:text-white" /></label><label className="text-xs text-gray-600 dark:text-gray-300">API 类型<select value={custom.protocol} onChange={e => setCustom({ ...custom, protocol: e.target.value as CustomProviderInput['protocol'] })} className="input-field mt-1.5 w-full dark:bg-white/5 dark:border-white/10 dark:text-white">{PROVIDER_PROTOCOL_OPTIONS.map(option => <option key={option.value} value={option.value}>{option.label}</option>)}</select></label></div>
+      <div className="grid gap-3 sm:grid-cols-2">
+        <label className="text-xs text-gray-600 dark:text-gray-300">名称<input value={custom.name} onChange={e => setCustom({ ...custom, name: e.target.value })} className="input-field mt-1.5 w-full dark:bg-white/5 dark:border-white/10 dark:text-white" /></label>
+        <div>
+          <p className="text-xs text-gray-600 dark:text-gray-300">API 类型</p>
+          <SelectField
+            value={custom.protocol}
+            options={PROVIDER_PROTOCOL_OPTIONS.map(option => ({ value: option.value, label: option.label }))}
+            onValueChange={value => setCustom({ ...custom, protocol: value as CustomProviderInput['protocol'] })}
+            ariaLabel="API 类型"
+            className="mt-1.5 w-full dark:border-white/10 dark:bg-white/5 dark:text-white"
+          />
+        </div>
+      </div>
       <label className="block text-xs text-gray-600 dark:text-gray-300">API 地址<input value={custom.baseUrl} onChange={e => setCustom({ ...custom, baseUrl: e.target.value })} className="input-field mt-1.5 w-full dark:bg-white/5 dark:border-white/10 dark:text-white" placeholder="https://api.example.com/v1" /></label>
       <div className="grid gap-3 sm:grid-cols-2"><label className="text-xs text-gray-600 dark:text-gray-300">API Key<input type="password" value={custom.apiKey} onChange={e => setCustom({ ...custom, apiKey: e.target.value })} className="input-field mt-1.5 w-full dark:bg-white/5 dark:border-white/10 dark:text-white" placeholder={customId ? '留空表示不修改' : 'sk-...'} /></label><label className="text-xs text-gray-600 dark:text-gray-300">默认模型<input value={custom.defaultModel} onChange={e => setCustom({ ...custom, defaultModel: e.target.value })} className="input-field mt-1.5 w-full dark:bg-white/5 dark:border-white/10 dark:text-white" placeholder="模型 ID" /></label></div>
       <button onClick={() => setAdvanced(value => !value)} className="flex items-center gap-1 text-xs font-medium text-purple-600 dark:text-purple-300">{advanced ? <ChevronDown size={14} /> : <ChevronRight size={14} />}高级设置</button>
