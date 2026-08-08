@@ -26,6 +26,8 @@ export interface AgentChatOptions {
   requirePermissionApproval?: boolean;
   signal?: AbortSignal;
   onDelta?: (delta: string) => void;
+  onAssistantSegmentStart?: (round: number) => void;
+  onAssistantSegmentEnd?: (round: number, hasToolCalls: boolean) => void;
   onThinkingDelta?: (delta: string) => void;
   onStreamReset?: (reason: string) => void;
   onToolCall?: (toolCall: { id: string; name: string; arguments: string }) => void;
@@ -132,9 +134,19 @@ export function useAgentChat() {
               try {
                 const parsed = JSON.parse(data);
                 switch (currentEvent) {
+                  case 'assistant_segment_start':
+                    if (Number.isFinite(parsed.round)) {
+                      options.onAssistantSegmentStart?.(parsed.round);
+                    }
+                    break;
                   case 'text_delta':
                     if (parsed.delta) {
                       options.onDelta?.(parsed.delta);
+                    }
+                    break;
+                  case 'assistant_segment_end':
+                    if (Number.isFinite(parsed.round)) {
+                      options.onAssistantSegmentEnd?.(parsed.round, !!parsed.has_tool_calls);
                     }
                     break;
                   case 'thinking_delta':

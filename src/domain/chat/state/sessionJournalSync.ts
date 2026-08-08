@@ -22,22 +22,30 @@ function commonPrefixLength(left: ChatMessage[], right: ChatMessage[]): number {
   return index;
 }
 
-/** Collapse daemon-native assistant/tool cycles into the one assistant bubble used by Chat. */
+/** Project a provider-valid daemon transcript into the semantic conversation
+ * shown by Chat. Tool-producing assistant messages stay in the durable
+ * execution transcript, while only the last answer message in each user cycle
+ * becomes conversational history. */
 export function projectDurableSessionMessages(messages: ChatMessage[]): ChatMessage[] {
   const projected: ChatMessage[] = [];
-  let assistantParts: ChatMessage[] = [];
+  let fallbackAssistant: ChatMessage | undefined;
+  let finalAssistant: ChatMessage | undefined;
+  let generatedImages: string[] = [];
   const flushAssistant = () => {
-    if (assistantParts.length === 0) return;
-    const content = assistantParts.map(message => message.content).join('');
-    const generatedImages = assistantParts.flatMap(message => message.generatedImages ?? []);
-    if (content || generatedImages.length > 0) {
+    const selected = finalAssistant ?? fallbackAssistant;
+    if (selected && (selected.content || generatedImages.length > 0)) {
       projected.push({
+        ...selected,
         role: 'assistant',
-        content,
+        content: selected.content,
+        tool_calls: undefined,
+        tool_call_id: undefined,
         ...(generatedImages.length > 0 ? { generatedImages: [...new Set(generatedImages)] } : {}),
       });
     }
-    assistantParts = [];
+    fallbackAssistant = undefined;
+    finalAssistant = undefined;
+    generatedImages = [];
   };
 
   messages.forEach(message => {
@@ -45,7 +53,9 @@ export function projectDurableSessionMessages(messages: ChatMessage[]): ChatMess
       flushAssistant();
       projected.push(message);
     } else if (message.role === 'assistant') {
-      assistantParts.push(message);
+      fallbackAssistant = message;
+      generatedImages.push(...(message.generatedImages ?? []));
+      if (!message.tool_calls?.length) finalAssistant = message;
     }
   });
   flushAssistant();

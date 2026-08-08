@@ -100,6 +100,14 @@ function MessageBubbleInner({
     <div className={`precision-message-row flex gap-3 justify-start group ${loading && isLastAssistant ? 'is-streaming' : ''}`}>
       <div className={`${avatarSize} ${loading && isLastAssistant ? 'is-streaming' : ''}`} aria-hidden>AI</div>
       <div className={`flex flex-col ${assistantMaxWidth} min-w-0 flex-1`}>
+        {msg.progressText && msg.progressText.length > 0 && (
+          <details className="mb-2 rounded-lg border border-black/5 bg-black/[0.02] px-3 py-2 text-xs text-black/55 dark:border-white/10 dark:bg-white/[0.03] dark:text-white/55">
+            <summary className="cursor-pointer select-none">执行过程</summary>
+            <div className="mt-2 space-y-1.5 whitespace-pre-wrap">
+              {msg.progressText.map((text, index) => <p key={`${index}:${text.slice(0, 24)}`}>{text}</p>)}
+            </div>
+          </details>
+        )}
         {msg.thinking && msg.thinking.length > 0 && (
           <ThinkingBlock thinking={msg.thinking} streaming={loading && isLastAssistant && !msgContent} />
         )}

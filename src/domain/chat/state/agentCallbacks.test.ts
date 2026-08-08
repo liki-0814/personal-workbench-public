@@ -85,3 +85,27 @@ describe('document tool projection', () => {
     expect(messages[0].decisionPrompt?.options).toHaveLength(2);
   });
 });
+
+describe('assistant segment projection', () => {
+  it('moves tool-round narration into progress and keeps only the final segment as content', () => {
+    let messages: ChatMessage[] = [{ role: 'assistant', content: '' }];
+    const callbacks = buildAgentStreamCallbacks({
+      getMessages: () => messages,
+      setMessages: next => { messages = next; },
+      assistantIndex: 0,
+      target: 'session',
+    });
+
+    callbacks.onAssistantSegmentStart?.(1);
+    callbacks.onDelta?.('我先检查仓库。');
+    callbacks.onAssistantSegmentEnd?.(1, true);
+    expect(messages[0].content).toBe('');
+    expect(messages[0].progressText).toEqual(['我先检查仓库。']);
+
+    callbacks.onAssistantSegmentStart?.(2);
+    callbacks.onDelta?.('问题来自事件边界缺失。');
+    callbacks.onAssistantSegmentEnd?.(2, false);
+    expect(messages[0].content).toBe('问题来自事件边界缺失。');
+    expect(messages[0].progressText).toEqual(['我先检查仓库。']);
+  });
+});

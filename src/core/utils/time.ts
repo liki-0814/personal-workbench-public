@@ -35,3 +35,39 @@ export function normalizeTimeInput(raw: string): string {
   }
   return '';
 }
+
+/** Format a millisecond duration compactly, e.g. "45s", "3m 20s", "2h 5m". */
+export function formatDuration(ms: number): string {
+  const s = Math.round(ms / 1000);
+  if (s < 60) return `${s}s`;
+  const m = Math.floor(s / 60);
+  const rs = s % 60;
+  if (m < 60) return `${m}m${rs > 0 ? ` ${rs}s` : ''}`;
+  const h = Math.floor(m / 60);
+  const rm = m % 60;
+  return `${h}h${rm > 0 ? ` ${rm}m` : ''}`;
+}
+
+/** Format an ISO timestamp as Chinese relative time, e.g. "刚刚", "5分钟前". */
+export function formatRelTime(iso: string): string {
+  const diff = Date.now() - new Date(iso).getTime();
+  const m = Math.floor(diff / 60000);
+  if (m < 1) return '刚刚';
+  if (m < 60) return `${m}分钟前`;
+  const h = Math.floor(m / 60);
+  if (h < 24) return `${h}小时前`;
+  const d = Math.floor(h / 24);
+  return `${d}天前`;
+}
+
+/** Format an ISO future timestamp as Chinese relative time, e.g. "即将", "5分钟后". */
+export function formatFutureRelTime(iso: string): string {
+  const diff = new Date(iso).getTime() - Date.now();
+  const m = Math.floor(diff / 60000);
+  if (m < 1) return '即将';
+  if (m < 60) return `${m}分钟后`;
+  const h = Math.floor(m / 60);
+  if (h < 24) return `${h}小时后`;
+  const d = Math.floor(h / 24);
+  return `${d}天后`;
+}

@@ -49,3 +49,10 @@ export async function batchSaveData(entries: Array<{ key: string; value: unknown
   });
   if (!result.success) throw new Error(result.error || 'Failed to batch save data');
 }
+
+export async function deleteData(key: string): Promise<void> {
+  const result = await request<ApiResponse<void>>(`/data/${key}`, {
+    method: 'DELETE',
+  });
+  if (!result.success) throw new Error(result.error || `Failed to delete key: ${key}`);
+}

@@ -44,6 +44,9 @@ export interface ChatMessage {
    * thinking_delta / OpenAI reasoning_content). UI shows it in a collapsible
    * block; not sent back to the LLM as conversation context. */
   thinking?: string;
+  /** Model narration from tool-producing rounds. Visible in a collapsible
+   * execution log, but excluded from the final answer and future LLM context. */
+  progressText?: string[];
   tool_calls?: { id: string; type: 'function'; function: { name: string; arguments: string } }[];
   tool_call_id?: string;
   /** Error message when the LLM request failed (persisted so it survives reload). */
@@ -268,6 +271,7 @@ export interface ChatSession {
 export interface LocalProject {
   id: string;
   name: string;
+  pinned?: boolean;
   canonicalPath: string;
   displayPath: string;
   availability: 'ready' | 'missing' | 'denied';

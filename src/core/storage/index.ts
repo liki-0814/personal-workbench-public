@@ -1,6 +1,8 @@
 export {
   load,
   save,
+  remove,
+  loadPrefixed,
   syncFromServer,
   syncToServer,
   requestSyncFromServer,

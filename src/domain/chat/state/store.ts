@@ -284,7 +284,7 @@ export function useAiChat({
               : '';
             parts.push(
               `[引用文件: ${a.path}${sizeHint}]\n` +
-              `请在需要时使用 read_file 工具查看内容。对于大文件，可先用 run_command 执行 head -n 20 或 wc -l 了解结构和行数。`
+              `请在需要时使用 read 工具查看内容（可用 offset/limit 按行号读片段）。对于大文件，可先读开头若干行，或用 bash 执行 wc -l 了解结构和行数。`
             );
           } else if (a.type === 'file' && !isAgent && a.path) {
             try {

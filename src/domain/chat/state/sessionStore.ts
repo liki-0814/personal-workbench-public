@@ -298,6 +298,13 @@ export function useChatSessions() {
     persistFolders(next);
   }, [persistFolders]);
 
+  const setFolderPinned = useCallback((id: string, pinned: boolean) => {
+    const next = foldersRef.current.map(folder =>
+      folder.id === id ? { ...folder, pinned } : folder
+    );
+    persistFolders(next);
+  }, [persistFolders]);
+
   const deleteFolder = useCallback((id: string) => {
     if (sessionsRef.current.some(session => session.projectId === id)) return;
     const nextFolders = foldersRef.current.filter(f => f.id !== id);
@@ -416,6 +423,7 @@ export function useChatSessions() {
     updateSessionMessages,
     createFolder,
     renameFolder,
+    setFolderPinned,
     deleteFolder,
     moveSessionToFolder,
     reorderSessions,

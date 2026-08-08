@@ -20,6 +20,9 @@ export {
   parseTimeToMinutes,
   formatMinutesToTime,
   normalizeTimeInput,
+  formatDuration,
+  formatRelTime,
+  formatFutureRelTime,
 } from './time';
 export {
   handleImagePaste,

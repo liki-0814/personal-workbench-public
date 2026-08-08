@@ -32,6 +32,8 @@ export function buildAgentStreamCallbacks(params: AgentStreamCallbackParams) {
 
   // Throttle progress lines: accumulate per-tool and flush every 150ms
   const pendingProgress = new Map<string, string[]>();
+  let activeSegmentRound: number | null = null;
+  let activeSegmentText = '';
   let progressFlushTimer: ReturnType<typeof setTimeout> | null = null;
 
   function flushProgress() {
@@ -58,9 +60,38 @@ export function buildAgentStreamCallbacks(params: AgentStreamCallbackParams) {
   }
 
   return {
+    onAssistantSegmentStart: (round: number) => {
+      activeSegmentRound = round;
+      activeSegmentText = '';
+      const updated = [...getMessages()];
+      const current = updated[assistantIndex];
+      // A new model call supersedes the previous working draft. Tool traces
+      // remain attached to the turn; only answer text is reset.
+      updated[assistantIndex] = { ...current, content: '', thinking: '' };
+      setMessages(updated);
+    },
     onDelta: (delta: string) => {
+      if (activeSegmentRound !== null) activeSegmentText += delta;
       const updated = [...getMessages()];
       updated[assistantIndex] = { ...updated[assistantIndex], content: updated[assistantIndex].content + delta };
+      setMessages(updated);
+    },
+    onAssistantSegmentEnd: (round: number, hasToolCalls: boolean) => {
+      if (activeSegmentRound !== round) return;
+      const segmentText = activeSegmentText.trim();
+      activeSegmentRound = null;
+      activeSegmentText = '';
+      if (!hasToolCalls) return;
+      const updated = [...getMessages()];
+      const current = updated[assistantIndex];
+      updated[assistantIndex] = {
+        ...current,
+        content: '',
+        thinking: '',
+        progressText: segmentText
+          ? [...(current.progressText ?? []), segmentText]
+          : current.progressText,
+      };
       setMessages(updated);
     },
     onThinkingDelta: (delta: string) => {

@@ -38,17 +38,30 @@ function deferred<T>() {
 }
 
 describe('mergeDurableSessionMessages', () => {
-  it('collapses daemon tool cycles to the assistant bubble shape used by Chat', () => {
+  it('keeps tool-round narration out of the semantic assistant answer', () => {
     const projected = projectDurableSessionMessages([
       message('user', '帮我检查文件'),
-      { ...message('assistant', '我先检查。'), tool_calls: [{ id: 'call-1', type: 'function', function: { name: 'read_file', arguments: '{}' } }] },
+      { ...message('assistant', '我先检查。'), tool_calls: [{ id: 'call-1', type: 'function', function: { name: 'read', arguments: '{}' } }] },
       { ...message('tool', '文件内容'), tool_call_id: 'call-1' },
       message('assistant', '检查完成。'),
     ]);
     expect(projected.map(item => [item.role, item.content])).toEqual([
       ['user', '帮我检查文件'],
-      ['assistant', '我先检查。检查完成。'],
+      ['assistant', '检查完成。'],
     ]);
+  });
+
+  it('falls back to a terminating tool round when no follow-up answer exists', () => {
+    const projected = projectDurableSessionMessages([
+      message('user', '创建文档'),
+      { ...message('assistant', '文档已创建。'), tool_calls: [{ id: 'call-1', type: 'function', function: { name: 'render_document', arguments: '{}' } }] },
+      { ...message('tool', 'ok'), tool_call_id: 'call-1' },
+    ]);
+    expect(projected.map(item => [item.role, item.content])).toEqual([
+      ['user', '创建文档'],
+      ['assistant', '文档已创建。'],
+    ]);
+    expect(projected[1].tool_calls).toBeUndefined();
   });
 
   it('inserts the durable suffix before messages authored after the request', () => {

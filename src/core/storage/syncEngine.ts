@@ -1,4 +1,4 @@
-import { fetchAllData, fetchData, saveData, batchSaveData } from './apiClient';
+import { fetchAllData, fetchData, saveData, batchSaveData, deleteData } from './apiClient';
 
 const PREFIX = 'pwb_';
 const pendingWriteVersions = new Map<string, number>();
@@ -24,6 +24,7 @@ export const KEYS = {
   TASK_MODEL: 'task_model',
   GOALS: 'goals',
   HABITS: 'habits',
+  HABITS_DELETED: 'habits_deleted',
   APP_CONFIG: 'app_config',
   MERMAID_ENABLED: 'mermaid_enabled',
 } as const;
@@ -35,6 +36,16 @@ const SYNC_KEYS: string[] = Object.values(KEYS);
  *  (not union-merged). Use for arrays without an `id` field where union
  *  merge would leave duplicate-but-mutated entries. */
 const SERVER_WINS_KEYS = new Set<string>([KEYS.AI_PROVIDERS, KEYS.APP_CONFIG]);
+
+/** Prefixes for dynamic per-item key families (e.g. one key per habit:
+ *  "habit:habit-123"). Each item syncs as its own small key so a single
+ *  update does not rewrite or re-upload the whole collection. */
+const SYNC_KEY_PREFIXES: string[] = ['habit:'];
+
+/** Whether a key participates in server sync (static key or dynamic prefix family). */
+function isSyncKey(key: string): boolean {
+  return SYNC_KEYS.includes(key) || SYNC_KEY_PREFIXES.some(prefix => key.startsWith(prefix));
+}
 
 /** Sync read from localStorage cache. */
 export function load<T>(key: string, defaultValue: T): T {
@@ -58,6 +69,15 @@ export function load<T>(key: string, defaultValue: T): T {
 /** Write to localStorage cache and async backend with retry. */
 let localWriteNotifyScheduled = false;
 
+function scheduleLocalWriteNotify(): void {
+  if (localWriteNotifyScheduled) return;
+  localWriteNotifyScheduled = true;
+  queueMicrotask(() => {
+    localWriteNotifyScheduled = false;
+    notifyStorageSynced('local-write');
+  });
+}
+
 export function save<T>(key: string, value: T): void {
   try {
     localStorage.setItem(PREFIX + key, JSON.stringify(value));
@@ -68,13 +88,34 @@ export function save<T>(key: string, value: T): void {
   const version = ++writeVersion;
   pendingWriteVersions.set(key, version);
   syncWithRetry(key, value, version);
-  if (!localWriteNotifyScheduled) {
-    localWriteNotifyScheduled = true;
-    queueMicrotask(() => {
-      localWriteNotifyScheduled = false;
-      notifyStorageSynced('local-write');
-    });
+  scheduleLocalWriteNotify();
+}
+
+/** Remove a key from the localStorage cache and the backend. */
+export function remove(key: string): void {
+  localStorage.removeItem(PREFIX + key);
+  deleteData(key).catch((error) => {
+    console.warn(`Failed to delete key "${key}" on server:`, error);
+  });
+  scheduleLocalWriteNotify();
+}
+
+/** Read all entries stored under a dynamic key prefix (e.g. "habit:"). */
+export function loadPrefixed<T>(keyPrefix: string): Array<{ key: string; value: T; raw: string }> {
+  const fullPrefix = PREFIX + keyPrefix;
+  const result: Array<{ key: string; value: T; raw: string }> = [];
+  for (let i = 0; i < localStorage.length; i++) {
+    const localKey = localStorage.key(i);
+    if (!localKey || !localKey.startsWith(fullPrefix)) continue;
+    const raw = localStorage.getItem(localKey);
+    if (raw == null) continue;
+    try {
+      result.push({ key: localKey.slice(PREFIX.length), value: JSON.parse(raw) as T, raw });
+    } catch {
+      console.warn(`Storage key "${localKey}" has invalid JSON, skipping`);
+    }
   }
+  return result;
 }
 
 /** Retry sync with exponential backoff (max 3 attempts). */
@@ -141,6 +182,11 @@ export async function syncToServer(): Promise<boolean> {
       /* skip invalid */
     }
   }
+  for (const prefix of SYNC_KEY_PREFIXES) {
+    for (const entry of loadPrefixed<unknown>(prefix)) {
+      entries.push({ key: entry.key, value: entry.value });
+    }
+  }
   if (entries.length === 0) return true;
   try {
     await batchSaveData(entries);
@@ -171,10 +217,20 @@ function mergeAndWriteKey(key: string, serverParsed: unknown): boolean {
       const merged = mergeById(localParsed, serverParsed as Array<{ id: string; updatedAt?: string }>);
       return writeLocalRaw(localKey, JSON.stringify(merged));
     }
+    if (isMergeableObject(localParsed) && isMergeableObject(serverParsed)) {
+      // Single objects (e.g. one key per habit): newer updatedAt wins, server wins ties.
+      const localTime = localParsed.updatedAt ? new Date(localParsed.updatedAt).getTime() : 0;
+      const serverTime = serverParsed.updatedAt ? new Date(serverParsed.updatedAt).getTime() : 0;
+      return writeLocalRaw(localKey, localTime > serverTime ? localRaw : serverRaw);
+    }
     return writeLocalRaw(localKey, serverRaw);
   } catch {
     return writeLocalRaw(localKey, serverRaw);
   }
+}
+
+function isMergeableObject(value: unknown): value is { updatedAt?: string } {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
 /** Merge two arrays by id. The server snapshot is authoritative for deletions. */
@@ -204,8 +260,8 @@ function mergeById<T extends { id: string; updatedAt?: string }>(local: T[], ser
  */
 export async function syncKeysFromServer(keys: string[], options: SyncFromServerOptions = {}): Promise<boolean> {
   const { notify = true, reason } = options;
-  // Filter to only known sync keys
-  const validKeys = keys.filter(k => SYNC_KEYS.includes(k));
+  // Filter to only known sync keys (static keys + dynamic prefix families)
+  const validKeys = keys.filter(isSyncKey);
   if (validKeys.length === 0) return true;
 
   try {
@@ -251,7 +307,7 @@ export async function syncFromServer(options: SyncFromServerOptions = {}): Promi
     const toPush: Array<{ key: string; value: unknown }> = [];
 
     for (const [key, serverRaw] of Object.entries(serverData)) {
-      if (!SYNC_KEYS.includes(key)) continue;
+      if (!isSyncKey(key)) continue;
       if (serverRaw == null || serverRaw === '') continue;
 
       let serverParsed: unknown;
@@ -272,6 +328,13 @@ export async function syncFromServer(options: SyncFromServerOptions = {}): Promi
           try {
             toPush.push({ key, value: JSON.parse(localRaw) });
           } catch { /* skip */ }
+        }
+      }
+    }
+    for (const prefix of SYNC_KEY_PREFIXES) {
+      for (const entry of loadPrefixed<unknown>(prefix)) {
+        if (serverData[entry.key] == null || serverData[entry.key] === '') {
+          toPush.push({ key: entry.key, value: entry.value });
         }
       }
     }
