@@ -72,50 +72,45 @@ export function useJobs() {
     }
   }, []);
 
-  const runJob = useCallback(async (name: string) => {
-    setPendingAction({ name, action: 'run' });
+  const runAction = useCallback(async (
+    name: string,
+    action: 'run' | 'toggle' | 'delete',
+    fn: () => Promise<void>,
+    fallbackMessage: string,
+  ): Promise<boolean> => {
+    setPendingAction({ name, action });
     try {
-      await jobsApi.runJob(name);
-      showToast({ message: `已开始执行 ${name}`, type: 'success' });
-      if (refreshTimerRef.current) clearTimeout(refreshTimerRef.current);
-      refreshTimerRef.current = setTimeout(() => { void fetchJobs(); }, 1000);
+      await fn();
+      return true;
     } catch (reason) {
-      const message = reason instanceof Error ? reason.message : '执行任务失败';
+      const message = reason instanceof Error ? reason.message : fallbackMessage;
       setError(message);
       showToast({ message, type: 'error' });
+      return false;
     } finally {
       setPendingAction(null);
     }
-  }, [fetchJobs]);
+  }, []);
+
+  const runJob = useCallback(async (name: string) => {
+    const ok = await runAction(name, 'run', () => jobsApi.runJob(name), '执行任务失败');
+    if (!ok) return;
+    showToast({ message: `已开始执行 ${name}`, type: 'success' });
+    if (refreshTimerRef.current) clearTimeout(refreshTimerRef.current);
+    refreshTimerRef.current = setTimeout(() => { void fetchJobs(); }, 1000);
+  }, [fetchJobs, runAction]);
 
   const toggleJob = useCallback(async (name: string) => {
-    setPendingAction({ name, action: 'toggle' });
-    try {
-      await jobsApi.toggleJob(name);
-      await fetchJobs();
-    } catch (reason) {
-      const message = reason instanceof Error ? reason.message : '更新任务状态失败';
-      setError(message);
-      showToast({ message, type: 'error' });
-    } finally {
-      setPendingAction(null);
-    }
-  }, [fetchJobs]);
+    const ok = await runAction(name, 'toggle', () => jobsApi.toggleJob(name), '更新任务状态失败');
+    if (ok) await fetchJobs();
+  }, [fetchJobs, runAction]);
 
   const deleteJob = useCallback(async (name: string) => {
-    setPendingAction({ name, action: 'delete' });
-    try {
-      await jobsApi.deleteJob(name);
-      await fetchJobs();
-      showToast({ message: `已删除 ${name}`, type: 'success' });
-    } catch (reason) {
-      const message = reason instanceof Error ? reason.message : '删除任务失败';
-      setError(message);
-      showToast({ message, type: 'error' });
-    } finally {
-      setPendingAction(null);
-    }
-  }, [fetchJobs]);
+    const ok = await runAction(name, 'delete', () => jobsApi.deleteJob(name), '删除任务失败');
+    if (!ok) return;
+    await fetchJobs();
+    showToast({ message: `已删除 ${name}`, type: 'success' });
+  }, [fetchJobs, runAction]);
 
   const getLogs = useCallback((name: string, signal?: AbortSignal) => jobsApi.fetchJobLogs(name, signal), []);
 
