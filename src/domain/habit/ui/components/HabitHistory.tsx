@@ -176,11 +176,15 @@ export default function HabitHistory({ habits, getStreak, onClose }: Props) {
         </div>
 
         {/* Per-habit streak if filtered */}
-        {selectedHabitId && (
-          <div className="mt-3 text-center text-sm text-[var(--text-secondary)]">
-            当前连续: {getStreak(selectedHabitId)} 天
-          </div>
-        )}
+        {selectedHabitId && (() => {
+          const habit = habits.find(h => h.id === selectedHabitId);
+          if (!habit) return null;
+          return (
+            <div className="mt-3 text-center text-sm text-[var(--text-secondary)]">
+              当前连续: {getStreak(selectedHabitId)} {habit.frequency.type === 'weekly' ? '周' : '天'}
+            </div>
+          );
+        })()}
       </div>
     </div>
   );

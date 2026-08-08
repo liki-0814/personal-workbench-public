@@ -8,6 +8,41 @@ export interface ParsedHabit {
   frequency: HabitFrequency;
 }
 
+function isValidFrequency(value: unknown): value is HabitFrequency {
+  if (typeof value !== 'object' || value === null) return false;
+  const freq = value as Record<string, unknown>;
+  switch (freq.type) {
+    case 'daily':
+      return true;
+    case 'weekly':
+      return (
+        typeof freq.timesPerWeek === 'number' &&
+        Number.isInteger(freq.timesPerWeek) &&
+        freq.timesPerWeek >= 1 &&
+        freq.timesPerWeek <= 7
+      );
+    case 'weekdays':
+      return (
+        Array.isArray(freq.days) &&
+        freq.days.length > 0 &&
+        freq.days.every(d => Number.isInteger(d) && d >= 0 && d <= 6)
+      );
+    default:
+      return false;
+  }
+}
+
+function isParsedHabit(item: unknown): item is ParsedHabit {
+  if (typeof item !== 'object' || item === null) return false;
+  const candidate = item as Record<string, unknown>;
+  return (
+    typeof candidate.title === 'string' &&
+    candidate.title.trim().length > 0 &&
+    typeof candidate.emoji === 'string' &&
+    isValidFrequency(candidate.frequency)
+  );
+}
+
 export async function parseHabitWithAI(goal: string): Promise<ParsedHabit[]> {
   const systemPrompt = `你是一个习惯养成顾问。用户会描述一个目标，你需要将其拆解为具体的、可执行的日常习惯。
 
@@ -43,16 +78,9 @@ export async function parseHabitWithAI(goal: string): Promise<ParsedHabit[]> {
   if (!jsonMatch) return [];
 
   try {
-    const parsed = JSON.parse(jsonMatch[0]);
+    const parsed: unknown = JSON.parse(jsonMatch[0]);
     if (!Array.isArray(parsed)) return [];
-    return parsed.filter(
-      (item: unknown): item is ParsedHabit =>
-        typeof item === 'object' &&
-        item !== null &&
-        'title' in item &&
-        'emoji' in item &&
-        'frequency' in item
-    );
+    return parsed.filter(isParsedHabit);
   } catch {
     return [];
   }

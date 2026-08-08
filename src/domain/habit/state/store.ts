@@ -1,166 +1,194 @@
-import { useState, useCallback } from 'react';
+import { useMemo, useSyncExternalStore } from 'react';
 import type { HabitItem, HabitFrequency } from '../types';
-import { load, save, KEYS, useStorageSync } from '@/core/storage';
+import { load, save, remove, loadPrefixed, KEYS, STORAGE_SYNC_EVENT } from '@/core/storage';
 import { now, formatDate } from '@/core/utils/date';
+import { computeStreak, computeWeekStatus, isDueOnDate } from '../logic';
+
+/**
+ * Each habit is stored as its own small key ("habit:{id}") instead of one big
+ * array, so a single check-in only rewrites/re-uploads that habit. Membership
+ * is derived by scanning the key prefix; order is createdAt (matching the old
+ * append order). Deletions propagate via the HABITS_DELETED tombstone list —
+ * without it, another device's stale copy would resurrect a deleted habit on
+ * the next sync.
+ */
+const HABIT_KEY_PREFIX = 'habit:';
+
+function habitKey(id: string): string {
+  return `${HABIT_KEY_PREFIX}${id}`;
+}
+
+interface HabitTombstone {
+  id: string;
+  updatedAt: string;
+}
 
 function generateHabitId(): string {
   return `habit-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
 }
 
-/** Get today's date string in YYYY-MM-DD. */
-function today(): string {
-  return formatDate(new Date());
+function loadTombstones(): HabitTombstone[] {
+  return load<HabitTombstone[]>(KEYS.HABITS_DELETED, []);
 }
 
-/** Get the day of week (0=Sun..6=Sat) for a YYYY-MM-DD string. */
-function getDayOfWeekForDate(dateStr: string): number {
-  const d = new Date(dateStr + 'T00:00:00');
-  return d.getDay();
-}
-
-/** Check if a given date is a due day for the habit based on its frequency. */
-function isDueOnDate(frequency: HabitFrequency, dateStr: string): boolean {
-  switch (frequency.type) {
-    case 'daily':
-      return true;
-    case 'weekdays':
-      return frequency.days.includes(getDayOfWeekForDate(dateStr));
-    case 'weekly':
-      // Weekly habits are always "due" — streak logic checks weekly targets
-      return true;
+/** One-time migration: split the legacy single "habits" array into per-habit keys. */
+function migrateLegacyHabits(): void {
+  const legacy = load<HabitItem[]>(KEYS.HABITS, []);
+  if (legacy.length === 0) return;
+  for (const habit of legacy) {
+    if (habit && typeof habit.id === 'string') {
+      save(habitKey(habit.id), habit);
+    }
   }
+  remove(KEYS.HABITS);
+}
+
+function byCreatedAt(a: HabitItem, b: HabitItem): number {
+  return a.createdAt.localeCompare(b.createdAt) || a.id.localeCompare(b.id);
+}
+
+function scanHabits(): { habits: HabitItem[]; fingerprint: string } {
+  const tombstones = loadTombstones();
+  const tombstonedIds = new Set(tombstones.map(t => t.id));
+  const entries = loadPrefixed<HabitItem>(HABIT_KEY_PREFIX);
+  const habits: HabitItem[] = [];
+
+  for (const entry of entries) {
+    const habit = entry.value;
+    if (!habit || typeof habit.id !== 'string') continue;
+    if (tombstonedIds.has(habit.id)) {
+      // Deleted on another device: drop the local copy and any server orphan.
+      remove(entry.key);
+      continue;
+    }
+    habits.push(habit);
+  }
+
+  habits.sort(byCreatedAt);
+  const fingerprint =
+    entries.map(e => `${e.key}=${e.raw}`).join('|') + '#' + JSON.stringify(tombstones);
+  return { habits, fingerprint };
+}
+
+// One-time migration runs before the initial snapshot.
+migrateLegacyHabits();
+
+// Module-level shared store: multiple consumers (the habit panel, the
+// workbench tab badge, …) must observe the same state. localStorage writes
+// do not fire STORAGE_SYNC_EVENT within the tab that made them, so a plain
+// per-hook useState copy would silently diverge between consumers.
+const initial = scanHabits();
+let allHabits: HabitItem[] = initial.habits;
+let fingerprint: string = initial.fingerprint;
+const listeners = new Set<() => void>();
+
+function subscribe(listener: () => void): () => void {
+  listeners.add(listener);
+  return () => {
+    listeners.delete(listener);
+  };
+}
+
+function getSnapshot(): HabitItem[] {
+  return allHabits;
+}
+
+function emit(): void {
+  listeners.forEach(listener => listener());
+}
+
+function refreshFromStorage(): void {
+  const next = scanHabits();
+  fingerprint = next.fingerprint;
+  allHabits = next.habits;
+  emit();
+}
+
+// Reload when data changes elsewhere (backend sync pulls, other tabs).
+// Our own writes already updated the snapshot; the fingerprint check keeps
+// those notifications from causing redundant re-renders.
+if (typeof window !== 'undefined') {
+  window.addEventListener(STORAGE_SYNC_EVENT, () => {
+    const next = scanHabits();
+    if (next.fingerprint === fingerprint) return;
+    fingerprint = next.fingerprint;
+    allHabits = next.habits;
+    emit();
+  });
+}
+
+function persistHabit(habit: HabitItem): void {
+  save(habitKey(habit.id), habit);
+  refreshFromStorage();
+}
+
+export function addHabit(title: string, emoji: string, frequency: HabitFrequency): void {
+  persistHabit({
+    id: generateHabitId(),
+    title,
+    emoji,
+    frequency,
+    records: [],
+    createdAt: now(),
+    updatedAt: now(),
+    archived: false,
+  });
+}
+
+export function removeHabit(id: string): void {
+  remove(habitKey(id));
+  const tombstones = loadTombstones().filter(t => t.id !== id);
+  tombstones.push({ id, updatedAt: now() });
+  save(KEYS.HABITS_DELETED, tombstones);
+  refreshFromStorage();
+}
+
+export function updateHabit(id: string, updates: Partial<Omit<HabitItem, 'id'>>): void {
+  const habit = allHabits.find(h => h.id === id);
+  if (!habit) return;
+  persistHabit({ ...habit, ...updates, updatedAt: now() });
+}
+
+export function toggleToday(id: string): void {
+  const habit = allHabits.find(h => h.id === id);
+  if (!habit) return;
+  const todayStr = formatDate(new Date());
+  const existingIdx = habit.records.findIndex(r => r.date === todayStr);
+  const records = existingIdx >= 0
+    // Flip existing record
+    ? habit.records.map((r, i) => (i === existingIdx ? { ...r, done: !r.done } : r))
+    // Add new record as done
+    : [...habit.records, { date: todayStr, done: true }];
+  persistHabit({ ...habit, records, updatedAt: now() });
+}
+
+export function archiveHabit(id: string): void {
+  updateHabit(id, { archived: true });
+}
+
+export function getStreak(id: string): number {
+  const habit = allHabits.find(h => h.id === id);
+  if (!habit) return 0;
+  return computeStreak(habit.frequency, habit.records, new Date());
+}
+
+export function getWeekStatus(id: string): boolean[] {
+  const habit = allHabits.find(h => h.id === id);
+  if (!habit) return Array(7).fill(false);
+  return computeWeekStatus(habit.records, new Date());
+}
+
+export function isTodayDue(habit: HabitItem): boolean {
+  return isDueOnDate(habit.frequency, formatDate(new Date()));
 }
 
 export function useHabits() {
-  const [allHabits, setAllHabits] = useState<HabitItem[]>(() =>
-    load(KEYS.HABITS, [])
-  );
-
-  useStorageSync(() => {
-    setAllHabits(load(KEYS.HABITS, []));
-  });
-
-  const persist = (items: HabitItem[]) => {
-    setAllHabits(items);
-    save(KEYS.HABITS, items);
-  };
-
-  const habits = allHabits.filter(h => !h.archived);
-
-  const addHabit = useCallback((title: string, emoji: string, frequency: HabitFrequency) => {
-    const item: HabitItem = {
-      id: generateHabitId(),
-      title,
-      emoji,
-      frequency,
-      records: [],
-      createdAt: now(),
-      updatedAt: now(),
-      archived: false,
-    };
-    persist([...allHabits, item]);
-  }, [allHabits]);
-
-  const removeHabit = useCallback((id: string) => {
-    persist(allHabits.filter(h => h.id !== id));
-  }, [allHabits]);
-
-  const updateHabit = useCallback((id: string, updates: Partial<Omit<HabitItem, 'id'>>) => {
-    persist(allHabits.map(h =>
-      h.id === id ? { ...h, ...updates, updatedAt: now() } : h
-    ));
-  }, [allHabits]);
-
-  const toggleToday = useCallback((id: string) => {
-    const todayStr = today();
-    persist(allHabits.map(h => {
-      if (h.id !== id) return h;
-      const existingIdx = h.records.findIndex(r => r.date === todayStr);
-      let newRecords: typeof h.records;
-      if (existingIdx >= 0) {
-        // Flip existing record
-        newRecords = h.records.map((r, i) =>
-          i === existingIdx ? { ...r, done: !r.done } : r
-        );
-      } else {
-        // Add new record as done
-        newRecords = [...h.records, { date: todayStr, done: true }];
-      }
-      return { ...h, records: newRecords, updatedAt: now() };
-    }));
-  }, [allHabits]);
-
-  const archiveHabit = useCallback((id: string) => {
-    persist(allHabits.map(h =>
-      h.id === id ? { ...h, archived: true, updatedAt: now() } : h
-    ));
-  }, [allHabits]);
-
-  const getStreak = useCallback((id: string): number => {
-    const habit = allHabits.find(h => h.id === id);
-    if (!habit) return 0;
-
-    const { frequency, records } = habit;
-    const doneSet = new Set(records.filter(r => r.done).map(r => r.date));
-
-    if (frequency.type === 'weekly') {
-      return getWeeklyStreak(frequency.timesPerWeek, doneSet);
-    }
-
-    // For daily and weekdays: count consecutive due days completed
-    let streak = 0;
-    const d = new Date();
-
-    // Start from today and go backwards
-    for (let i = 0; i < 365; i++) {
-      const dateStr = formatDate(d);
-      const due = isDueOnDate(frequency, dateStr);
-
-      if (due) {
-        if (doneSet.has(dateStr)) {
-          streak++;
-        } else {
-          // If today is not done yet, skip it (don't break streak)
-          if (i === 0) {
-            streak = 0; // Reset — today counts
-            // Actually, let's be lenient: if today isn't done yet, start checking from yesterday
-            d.setDate(d.getDate() - 1);
-            continue;
-          }
-          break;
-        }
-      }
-
-      d.setDate(d.getDate() - 1);
-    }
-
-    return streak;
-  }, [allHabits]);
-
-  const getWeekStatus = useCallback((id: string): boolean[] => {
-    const habit = allHabits.find(h => h.id === id);
-    if (!habit) return Array(7).fill(false);
-
-    const doneSet = new Set(habit.records.filter(r => r.done).map(r => r.date));
-    const result: boolean[] = [];
-
-    // Last 7 days: today-6 → today
-    for (let i = 6; i >= 0; i--) {
-      const d = new Date();
-      d.setDate(d.getDate() - i);
-      result.push(doneSet.has(formatDate(d)));
-    }
-
-    return result;
-  }, [allHabits]);
-
-  const isTodayDue = useCallback((habit: HabitItem): boolean => {
-    return isDueOnDate(habit.frequency, today());
-  }, []);
+  const all = useSyncExternalStore(subscribe, getSnapshot);
+  const habits = useMemo(() => all.filter(h => !h.archived), [all]);
 
   return {
     habits,
-    allHabits,
+    allHabits: all,
     addHabit,
     removeHabit,
     updateHabit,
@@ -170,43 +198,4 @@ export function useHabits() {
     getWeekStatus,
     isTodayDue,
   };
-}
-
-/**
- * Calculate weekly streak: how many consecutive weeks the habit met its
- * timesPerWeek target. Weeks are Mon-Sun.
- */
-function getWeeklyStreak(timesPerWeek: number, doneSet: Set<string>): number {
-  let streak = 0;
-  const d = new Date();
-
-  // Find the start of the current week (Monday)
-  const dayOfWeek = d.getDay();
-  const diffToMonday = dayOfWeek === 0 ? 6 : dayOfWeek - 1;
-
-  // Start checking from last completed week (skip current incomplete week)
-  const weekStart = new Date(d);
-  weekStart.setDate(d.getDate() - diffToMonday - 7);
-
-  for (let w = 0; w < 52; w++) {
-    let count = 0;
-    for (let i = 0; i < 7; i++) {
-      const checkDate = new Date(weekStart);
-      checkDate.setDate(weekStart.getDate() + i);
-      if (doneSet.has(formatDate(checkDate))) {
-        count++;
-      }
-    }
-
-    if (count >= timesPerWeek) {
-      streak++;
-    } else {
-      break;
-    }
-
-    // Move to previous week
-    weekStart.setDate(weekStart.getDate() - 7);
-  }
-
-  return streak;
 }

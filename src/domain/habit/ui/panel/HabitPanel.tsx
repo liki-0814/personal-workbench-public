@@ -1,88 +1,154 @@
 import { useState, useMemo } from 'react';
-import { Plus, History, Sparkles, X, Check, Trash2 } from 'lucide-react';
+import { Plus, History, Sparkles, X, Check, Trash2, Archive, Pencil, LoaderCircle } from 'lucide-react';
 import type { HabitItem, HabitFrequency } from '../../types';
+import { useHabits } from '../../state/store';
+import { streakUnit } from '../../logic';
 import { formatDate } from '@/core/utils/date';
+import { showToast, IconButton, PanelHeader } from '@/shell';
 import HabitHistory from '../components/HabitHistory';
-
-interface Props {
-  habits: HabitItem[];
-  onToggleToday: (id: string) => void;
-  onAdd: (title: string, emoji: string, frequency: HabitFrequency) => void;
-  onRemove: (id: string) => void;
-  onUpdate: (id: string, updates: Partial<HabitItem>) => void;
-  onArchive: (id: string) => void;
-  getStreak: (id: string) => number;
-  getWeekStatus: (id: string) => boolean[];
-  isTodayDue: (habit: HabitItem) => boolean;
-  onAiDecompose?: (goal: string) => void;
-}
 
 const DAY_LABELS = ['一', '二', '三', '四', '五', '六', '日'];
 
-export default function HabitPanel({
-  habits,
-  onToggleToday,
-  onAdd,
-  onRemove,
-  onUpdate: _onUpdate,
-  onArchive: _onArchive,
-  getStreak,
-  getWeekStatus,
-  isTodayDue,
-  onAiDecompose,
-}: Props) {
+type FreqType = 'daily' | 'weekly' | 'weekdays';
+
+interface FormState {
+  emoji: string;
+  title: string;
+  freqType: FreqType;
+  timesPerWeek: number;
+  selectedDays: number[];
+}
+
+const EMPTY_FORM: FormState = {
+  emoji: '',
+  title: '',
+  freqType: 'daily',
+  timesPerWeek: 3,
+  selectedDays: [],
+};
+
+function formToFrequency(form: FormState): HabitFrequency {
+  switch (form.freqType) {
+    case 'daily':
+      return { type: 'daily' };
+    case 'weekly':
+      return { type: 'weekly', timesPerWeek: form.timesPerWeek };
+    case 'weekdays':
+      return { type: 'weekdays', days: form.selectedDays };
+  }
+}
+
+function habitToForm(habit: HabitItem): FormState {
+  const base: FormState = { ...EMPTY_FORM, emoji: habit.emoji, title: habit.title };
+  switch (habit.frequency.type) {
+    case 'daily':
+      return { ...base, freqType: 'daily' };
+    case 'weekly':
+      return { ...base, freqType: 'weekly', timesPerWeek: habit.frequency.timesPerWeek };
+    case 'weekdays':
+      return { ...base, freqType: 'weekdays', selectedDays: habit.frequency.days };
+  }
+}
+
+export default function HabitPanel() {
+  const {
+    habits,
+    toggleToday,
+    addHabit,
+    removeHabit,
+    updateHabit,
+    archiveHabit,
+    getStreak,
+    getWeekStatus,
+    isTodayDue,
+  } = useHabits();
+
   const [showAddForm, setShowAddForm] = useState(false);
+  const [editingId, setEditingId] = useState<string | null>(null);
   const [showHistory, setShowHistory] = useState(false);
   const [showAiInput, setShowAiInput] = useState(false);
   const [aiInput, setAiInput] = useState('');
-
-  // Add form state
-  const [newEmoji, setNewEmoji] = useState('');
-  const [newTitle, setNewTitle] = useState('');
-  const [freqType, setFreqType] = useState<'daily' | 'weekly' | 'weekdays'>('daily');
-  const [timesPerWeek, setTimesPerWeek] = useState(3);
-  const [selectedDays, setSelectedDays] = useState<number[]>([]);
+  const [aiLoading, setAiLoading] = useState(false);
+  const [form, setForm] = useState<FormState>(EMPTY_FORM);
 
   const todayStr = formatDate(new Date());
 
+  const patchForm = (patch: Partial<FormState>) => {
+    setForm(prev => ({ ...prev, ...patch }));
+  };
+
   const resetForm = () => {
-    setNewEmoji('');
-    setNewTitle('');
-    setFreqType('daily');
-    setTimesPerWeek(3);
-    setSelectedDays([]);
+    setForm(EMPTY_FORM);
+    setEditingId(null);
     setShowAddForm(false);
   };
 
-  const handleAdd = () => {
-    if (!newTitle.trim()) return;
-    let frequency: HabitFrequency;
-    switch (freqType) {
-      case 'daily':
-        frequency = { type: 'daily' };
-        break;
-      case 'weekly':
-        frequency = { type: 'weekly', timesPerWeek };
-        break;
-      case 'weekdays':
-        frequency = { type: 'weekdays', days: selectedDays };
-        break;
+  const openEditForm = (habit: HabitItem) => {
+    setForm(habitToForm(habit));
+    setEditingId(habit.id);
+    setShowAddForm(true);
+  };
+
+  const formValid =
+    form.title.trim().length > 0 &&
+    (form.freqType !== 'weekdays' || form.selectedDays.length > 0);
+
+  const handleSave = () => {
+    if (!formValid) return;
+    const frequency = formToFrequency(form);
+    if (editingId) {
+      updateHabit(editingId, {
+        title: form.title.trim(),
+        emoji: form.emoji,
+        frequency,
+      });
+    } else {
+      addHabit(form.title.trim(), form.emoji, frequency);
     }
-    onAdd(newTitle.trim(), newEmoji || '', frequency);
     resetForm();
   };
 
-  const handleAiSubmit = () => {
-    if (!aiInput.trim() || !onAiDecompose) return;
-    onAiDecompose(aiInput.trim());
-    setAiInput('');
-    setShowAiInput(false);
+  const handleAiSubmit = async () => {
+    const goal = aiInput.trim();
+    if (!goal || aiLoading) return;
+    setAiLoading(true);
+    try {
+      const { parseHabitWithAI } = await import('@/domain/habit/ai/parseHabit');
+      const parsed = await parseHabitWithAI(goal);
+      if (parsed.length === 0) {
+        showToast({ message: 'AI 未能拆解出习惯，请尝试更具体的描述', type: 'error' });
+        return;
+      }
+      parsed.forEach(h => addHabit(h.title, h.emoji, h.frequency));
+      showToast({ message: `已添加 ${parsed.length} 个习惯`, type: 'success' });
+      setAiInput('');
+      setShowAiInput(false);
+    } catch (reason) {
+      showToast({
+        message: reason instanceof Error ? reason.message : 'AI 分解失败',
+        type: 'error',
+      });
+    } finally {
+      setAiLoading(false);
+    }
+  };
+
+  const handleDelete = (habit: HabitItem) => {
+    if (!window.confirm(`确定删除习惯「${habit.title}」？此操作不可恢复。`)) return;
+    removeHabit(habit.id);
+  };
+
+  const handleArchive = (habit: HabitItem) => {
+    archiveHabit(habit.id);
+    showToast({ message: `已归档「${habit.title}」`, type: 'success' });
   };
 
   const toggleDay = (day: number) => {
-    setSelectedDays(prev =>
-      prev.includes(day) ? prev.filter(d => d !== day) : [...prev, day]
-    );
+    patchForm({
+      selectedDays: form.selectedDays.includes(day)
+        ? form.selectedDays.filter(d => d !== day)
+        : [...form.selectedDays, day],
+    });
   };
 
   const renderedHabits = useMemo(() =>
@@ -99,81 +165,67 @@ export default function HabitPanel({
   return (
     <>
       <section className="px-4 py-4">
-        {/* Header */}
-        <div className="flex items-center justify-between pb-3 mb-3 border-b border-gray-100 dark:border-[#1E2028]">
-          <h3 className="text-[13px] font-semibold text-gray-900 dark:text-[#E5E7EB] tracking-[-0.01em]">习惯</h3>
-          <div className="flex items-center gap-1">
-            {onAiDecompose && (
-              <button
-                onClick={() => setShowAiInput(!showAiInput)}
-                className="w-7 h-7 flex items-center justify-center rounded-[8px] text-gray-400 dark:text-[#4B5563] hover:text-gray-600 dark:hover:text-[#9CA3AF] hover:bg-gray-100 dark:hover:bg-[#1A1D24] transition-colors"
-                title="AI 分解习惯"
-              >
+        <PanelHeader
+          title="习惯"
+          actions={
+            <>
+              <IconButton title="AI 分解习惯" onClick={() => setShowAiInput(!showAiInput)}>
                 <Sparkles size={14} />
-              </button>
-            )}
-            <button
-              onClick={() => setShowHistory(true)}
-              className="w-7 h-7 flex items-center justify-center rounded-[8px] text-gray-400 dark:text-[#4B5563] hover:text-gray-600 dark:hover:text-[#9CA3AF] hover:bg-gray-100 dark:hover:bg-[#1A1D24] transition-colors"
-              title="历史"
-            >
-              <History size={14} />
-            </button>
-            <button
-              onClick={() => setShowAddForm(!showAddForm)}
-              className="w-7 h-7 flex items-center justify-center rounded-[8px] text-gray-400 dark:text-[#4B5563] hover:text-gray-600 dark:hover:text-[#9CA3AF] hover:bg-gray-100 dark:hover:bg-[#1A1D24] transition-colors"
-              title="添加习惯"
-            >
-              <Plus size={14} />
-            </button>
-          </div>
-        </div>
+              </IconButton>
+              <IconButton title="历史" onClick={() => setShowHistory(true)}>
+                <History size={14} />
+              </IconButton>
+              <IconButton title="添加习惯" onClick={() => (showAddForm ? resetForm() : setShowAddForm(true))}>
+                <Plus size={14} />
+              </IconButton>
+            </>
+          }
+        />
 
         {/* AI Input */}
-        {showAiInput && onAiDecompose && (
+        {showAiInput && (
           <div className="mb-4 flex gap-2">
             <input
               type="text"
               value={aiInput}
               onChange={e => setAiInput(e.target.value)}
-              onKeyDown={e => e.key === 'Enter' && handleAiSubmit()}
+              onKeyDown={e => e.key === 'Enter' && void handleAiSubmit()}
               placeholder="描述你的习惯目标..."
-              className="flex-1 px-3 py-1.5 bg-white dark:bg-[#13161C] border border-gray-200 dark:border-[#2A2D35] rounded-[8px] text-[13px] text-gray-900 dark:text-[#E5E7EB] placeholder:text-gray-400 dark:placeholder:text-[#4B5563] outline-none focus:border-gray-300 dark:focus:border-[#3B4049] transition-colors"
+              disabled={aiLoading}
+              className="flex-1 px-3 py-1.5 bg-white dark:bg-[#13161C] border border-gray-200 dark:border-[#2A2D35] rounded-[8px] text-[13px] text-gray-900 dark:text-[#E5E7EB] placeholder:text-gray-400 dark:placeholder:text-[#4B5563] outline-none focus:border-gray-300 dark:focus:border-[#3B4049] transition-colors disabled:opacity-50"
               autoFocus
             />
             <button
-              onClick={handleAiSubmit}
-              disabled={!aiInput.trim()}
-              className="px-3 py-1.5 rounded-[8px] bg-[#3B82F6] text-white text-[13px] font-medium disabled:opacity-40 transition-opacity"
+              onClick={() => void handleAiSubmit()}
+              disabled={!aiInput.trim() || aiLoading}
+              className="px-3 py-1.5 rounded-[8px] bg-[#3B82F6] text-white text-[13px] font-medium disabled:opacity-40 transition-opacity flex items-center gap-1.5"
             >
+              {aiLoading && <LoaderCircle size={12} className="animate-spin" />}
               分解
             </button>
-            <button
-              onClick={() => { setShowAiInput(false); setAiInput(''); }}
-              className="w-7 h-7 flex items-center justify-center rounded-[8px] text-gray-400 dark:text-[#4B5563] hover:text-gray-600 dark:hover:text-[#9CA3AF] hover:bg-gray-100 dark:hover:bg-[#1A1D24] transition-colors"
-            >
+            <IconButton title="关闭" onClick={() => { setShowAiInput(false); setAiInput(''); }} disabled={aiLoading}>
               <X size={14} />
-            </button>
+            </IconButton>
           </div>
         )}
 
-        {/* Add Form */}
+        {/* Add / Edit Form */}
         {showAddForm && (
           <div className="mb-4 space-y-2">
             <div className="flex gap-2">
               <input
                 type="text"
-                value={newEmoji}
-                onChange={e => setNewEmoji(e.target.value)}
+                value={form.emoji}
+                onChange={e => patchForm({ emoji: e.target.value })}
                 placeholder="🎯"
                 className="w-12 px-2 py-1.5 bg-white dark:bg-[#13161C] border border-gray-200 dark:border-[#2A2D35] rounded-[8px] text-[13px] text-gray-900 dark:text-[#E5E7EB] text-center outline-none focus:border-gray-300 dark:focus:border-[#3B4049] transition-colors"
                 maxLength={4}
               />
               <input
                 type="text"
-                value={newTitle}
-                onChange={e => setNewTitle(e.target.value)}
-                onKeyDown={e => e.key === 'Enter' && handleAdd()}
+                value={form.title}
+                onChange={e => patchForm({ title: e.target.value })}
+                onKeyDown={e => e.key === 'Enter' && handleSave()}
                 placeholder="习惯名称"
                 className="flex-1 px-3 py-1.5 bg-white dark:bg-[#13161C] border border-gray-200 dark:border-[#2A2D35] rounded-[8px] text-[13px] text-gray-900 dark:text-[#E5E7EB] placeholder:text-gray-400 dark:placeholder:text-[#4B5563] outline-none focus:border-gray-300 dark:focus:border-[#3B4049] transition-colors"
                 autoFocus
@@ -185,9 +237,9 @@ export default function HabitPanel({
               {(['daily', 'weekly', 'weekdays'] as const).map(ft => (
                 <button
                   key={ft}
-                  onClick={() => setFreqType(ft)}
+                  onClick={() => patchForm({ freqType: ft })}
                   className={`h-7 px-2.5 rounded-[8px] text-[11px] font-medium transition-colors ${
-                    freqType === ft
+                    form.freqType === ft
                       ? 'bg-[#3B82F6] text-white'
                       : 'bg-gray-50 dark:bg-[#1A1D24] text-gray-500 dark:text-[#6B7280] border border-gray-200 dark:border-[#2A2D35] hover:text-gray-600 dark:hover:text-[#9CA3AF]'
                   }`}
@@ -198,15 +250,15 @@ export default function HabitPanel({
             </div>
 
             {/* Weekly: times per week */}
-            {freqType === 'weekly' && (
+            {form.freqType === 'weekly' && (
               <div className="flex items-center gap-2">
                 <span className="text-[11px] text-gray-500 dark:text-[#6B7280]">每周</span>
                 <input
                   type="number"
                   min={1}
                   max={7}
-                  value={timesPerWeek}
-                  onChange={e => setTimesPerWeek(Math.min(7, Math.max(1, Number(e.target.value))))}
+                  value={form.timesPerWeek}
+                  onChange={e => patchForm({ timesPerWeek: Math.min(7, Math.max(1, Number(e.target.value))) })}
                   className="w-12 px-2 py-1 bg-white dark:bg-[#13161C] border border-gray-200 dark:border-[#2A2D35] rounded-[8px] text-[13px] text-gray-900 dark:text-[#E5E7EB] text-center outline-none focus:border-gray-300 dark:focus:border-[#3B4049] transition-colors"
                 />
                 <span className="text-[11px] text-gray-500 dark:text-[#6B7280]">次</span>
@@ -214,12 +266,12 @@ export default function HabitPanel({
             )}
 
             {/* Weekdays: day picker */}
-            {freqType === 'weekdays' && (
+            {form.freqType === 'weekdays' && (
               <div className="flex gap-1">
                 {DAY_LABELS.map((label, i) => {
                   // Map display index to JS day: 一=1,二=2,...,日=0
                   const jsDay = i === 6 ? 0 : i + 1;
-                  const isSelected = selectedDays.includes(jsDay);
+                  const isSelected = form.selectedDays.includes(jsDay);
                   return (
                     <button
                       key={i}
@@ -236,6 +288,9 @@ export default function HabitPanel({
                 })}
               </div>
             )}
+            {form.freqType === 'weekdays' && form.selectedDays.length === 0 && (
+              <p className="text-[11px] text-[#F59E0B]">请至少选择一天</p>
+            )}
 
             {/* Actions */}
             <div className="flex justify-end gap-2 pt-2">
@@ -246,11 +301,11 @@ export default function HabitPanel({
                 取消
               </button>
               <button
-                onClick={handleAdd}
-                disabled={!newTitle.trim()}
+                onClick={handleSave}
+                disabled={!formValid}
                 className="px-3 py-1.5 rounded-[8px] bg-[#3B82F6] text-white text-[11px] font-medium disabled:opacity-40 transition-opacity"
               >
-                确认
+                {editingId ? '保存' : '确认'}
               </button>
             </div>
           </div>
@@ -264,6 +319,8 @@ export default function HabitPanel({
             </div>
           )}
           {renderedHabits.map(({ habit, due, done, streak, weekStatus }) => {
+            const unit = streakUnit(habit.frequency);
+            const showStreak = unit === 'week' ? streak >= 2 : streak >= 7;
 
             return (
               <div
@@ -276,9 +333,9 @@ export default function HabitPanel({
                 <div className="flex items-center gap-2 min-w-0 flex-1">
                   <span className="text-base flex-shrink-0">{habit.emoji}</span>
                   <span className="text-[13px] text-gray-900 dark:text-[#E5E7EB] truncate">{habit.title}</span>
-                  {streak >= 7 && (
+                  {showStreak && (
                     <span className="flex-shrink-0 text-[10px] font-medium text-[#F59E0B]">
-                      {streak}d
+                      {streak}{unit === 'week' ? 'w' : 'd'}
                     </span>
                   )}
                 </div>
@@ -298,7 +355,7 @@ export default function HabitPanel({
                 {/* Today check button */}
                 {due && (
                   <button
-                    onClick={() => onToggleToday(habit.id)}
+                    onClick={() => toggleToday(habit.id)}
                     className={`w-5 h-5 rounded-[6px] border flex items-center justify-center flex-shrink-0 transition-all duration-200 ${
                       done
                         ? 'bg-[#10B981] border-[#10B981]'
@@ -309,9 +366,23 @@ export default function HabitPanel({
                   </button>
                 )}
 
-                {/* Delete (hover only) */}
+                {/* Row actions (hover only) */}
                 <button
-                  onClick={() => onRemove(habit.id)}
+                  onClick={() => openEditForm(habit)}
+                  className="w-5 h-5 flex items-center justify-center flex-shrink-0 opacity-0 group-hover:opacity-100 text-gray-400 dark:text-[#4B5563] hover:text-gray-600 dark:hover:text-[#9CA3AF] transition-all"
+                  title="编辑"
+                >
+                  <Pencil size={12} />
+                </button>
+                <button
+                  onClick={() => handleArchive(habit)}
+                  className="w-5 h-5 flex items-center justify-center flex-shrink-0 opacity-0 group-hover:opacity-100 text-gray-400 dark:text-[#4B5563] hover:text-gray-600 dark:hover:text-[#9CA3AF] transition-all"
+                  title="归档"
+                >
+                  <Archive size={12} />
+                </button>
+                <button
+                  onClick={() => handleDelete(habit)}
                   className="w-5 h-5 flex items-center justify-center flex-shrink-0 opacity-0 group-hover:opacity-100 text-gray-400 dark:text-[#4B5563] hover:text-[#EF4444] transition-all"
                   title="删除"
                 >
