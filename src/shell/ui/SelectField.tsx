@@ -31,6 +31,7 @@ interface Props {
   menuMinWidth?: number;
   menuClassName?: string;
   optionClassName?: string;
+  autoFocus?: boolean;
 }
 
 const VIEWPORT_GUTTER = 8;
@@ -50,6 +51,7 @@ export default function SelectField({
   menuMinWidth = 180,
   menuClassName = '',
   optionClassName = '',
+  autoFocus = false,
 }: Props) {
   const [open, setOpen] = useState(false);
   const [menuPosition, setMenuPosition] = useState({ top: 0, left: 0, width: 0, maxHeight: MENU_MAX_HEIGHT });
@@ -150,6 +152,7 @@ export default function SelectField({
       <button
         ref={triggerRef}
         type="button"
+        autoFocus={autoFocus}
         disabled={disabled}
         title={title}
         className={`input-field pwb-select-trigger ${density === 'compact' ? 'pwb-select-compact' : ''} ${className}`}
