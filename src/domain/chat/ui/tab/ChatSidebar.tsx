@@ -1,6 +1,7 @@
-import { useMemo, useState } from 'react';
-import { Check, ChevronRight, Edit3, Folder, MoreHorizontal, PanelLeftClose, Plus, Trash2 } from 'lucide-react';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import { Check, ChevronRight, Copy, Edit3, Folder, MoreHorizontal, PanelLeftClose, Pin, Plus, Trash2 } from 'lucide-react';
 import type { ChatSession, LocalProject, SessionRuntime } from '@/domain/chat';
+import { DropdownMenu, DropdownMenuHint, DropdownMenuItem, DropdownMenuSeparator } from '@/shell';
 
 export interface ChatSidebarProps {
   sessions: ChatSession[];
@@ -10,6 +11,8 @@ export interface ChatSidebarProps {
   onCreateSession: (initialPath?: string) => void;
   onDeleteSession: (id: string) => void;
   onUpdateSession: (id: string, patch: Partial<ChatSession>) => void;
+  onRenameProject?: (id: string, name: string) => void;
+  onSetProjectPinned?: (id: string, pinned: boolean) => void;
   onRemoveProject?: (id: string) => void;
   collapsed?: boolean;
   onToggleCollapse?: () => void;
@@ -26,6 +29,8 @@ export default function ChatSidebar({
   onCreateSession,
   onDeleteSession,
   onUpdateSession,
+  onRenameProject,
+  onSetProjectPinned,
   onRemoveProject,
   collapsed = false,
   onToggleCollapse,
@@ -37,6 +42,26 @@ export default function ChatSidebar({
   const [editingSessionId, setEditingSessionId] = useState<string | null>(null);
   const [editingTitle, setEditingTitle] = useState('');
   const [openProjectMenu, setOpenProjectMenu] = useState<string | null>(null);
+  const [editingProjectId, setEditingProjectId] = useState<string | null>(null);
+  const [editingProjectName, setEditingProjectName] = useState('');
+  const [copiedProjectId, setCopiedProjectId] = useState<string | null>(null);
+  const projectMenuRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!openProjectMenu) return;
+    const closeMenu = (event: PointerEvent) => {
+      if (!projectMenuRef.current?.contains(event.target as Node)) setOpenProjectMenu(null);
+    };
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setOpenProjectMenu(null);
+    };
+    document.addEventListener('pointerdown', closeMenu);
+    document.addEventListener('keydown', closeOnEscape);
+    return () => {
+      document.removeEventListener('pointerdown', closeMenu);
+      document.removeEventListener('keydown', closeOnEscape);
+    };
+  }, [openProjectMenu]);
 
   const sessionsByProject = useMemo(() => {
     const map = new Map<string, ChatSession[]>();
@@ -51,6 +76,26 @@ export default function ChatSidebar({
     () => sessions.filter(session => !session.projectId || !projects.some(project => project.id === session.projectId)),
     [projects, sessions],
   );
+  const orderedProjects = useMemo(
+    () => projects.map((project, index) => ({ project, index }))
+      .sort((left, right) => Number(right.project.pinned) - Number(left.project.pinned) || left.index - right.index)
+      .map(item => item.project),
+    [projects],
+  );
+
+  const finishProjectRename = (project: LocalProject) => {
+    onRenameProject?.(project.id, editingProjectName.trim() || project.name);
+    setEditingProjectId(null);
+  };
+
+  const copyProjectPath = (project: LocalProject) => {
+    if (!navigator.clipboard) return;
+    void navigator.clipboard.writeText(project.canonicalPath).then(() => {
+      setCopiedProjectId(project.id);
+      window.setTimeout(() => setCopiedProjectId(current => current === project.id ? null : current), 1500);
+    }).catch(() => undefined);
+    setOpenProjectMenu(null);
+  };
 
   const moveFocus = (sessionId: string, direction: -1 | 1 | 'first' | 'last') => {
     const buttons = Array.from(document.querySelectorAll<HTMLButtonElement>('[data-session-primary="true"]'));
@@ -140,37 +185,71 @@ export default function ChatSidebar({
         </header>
 
         <div className="pwb-project-list" role="list" aria-label="本地项目和会话">
-          {projects.map(project => {
+          {orderedProjects.map(project => {
             const projectSessions = sessionsByProject.get(project.id) ?? [];
             const isCollapsed = collapsedProjects.has(project.id);
             const menuOpen = openProjectMenu === project.id;
             return (
               <section key={project.id} className="pwb-project" role="listitem">
-                <div className="pwb-project-row group">
-                  <button type="button" className="pwb-project-primary" aria-expanded={!isCollapsed} onClick={() => {
-                    setCollapsedProjects(current => {
-                      const next = new Set(current);
-                      if (next.has(project.id)) next.delete(project.id); else next.add(project.id);
-                      return next;
-                    });
-                  }}>
-                    <Folder size={16} />
-                    <span title={project.displayPath}>{project.name}</span>
-                    {project.availability !== 'ready' && <small>{project.availability === 'missing' ? '目录丢失' : '无权限'}</small>}
-                    <ChevronRight size={13} className={isCollapsed ? '' : 'rotate-90'} />
-                  </button>
+                <div ref={menuOpen ? projectMenuRef : undefined} className={`pwb-project-row group ${menuOpen ? 'has-open-menu' : ''}`}>
+                  {editingProjectId === project.id ? (
+                    <div className="pwb-project-editor">
+                      <Folder size={16} />
+                      <input
+                        value={editingProjectName}
+                        onChange={event => setEditingProjectName(event.target.value)}
+                        onKeyDown={event => {
+                          if (event.key === 'Enter') finishProjectRename(project);
+                          else if (event.key === 'Escape') setEditingProjectId(null);
+                        }}
+                        aria-label={`编辑项目名称：${project.name}`}
+                        autoFocus
+                      />
+                      <button type="button" aria-label="确认项目名称" onClick={() => finishProjectRename(project)}><Check size={13} /></button>
+                    </div>
+                  ) : (
+                    <button type="button" className="pwb-project-primary" aria-expanded={!isCollapsed} onClick={() => {
+                      setCollapsedProjects(current => {
+                        const next = new Set(current);
+                        if (next.has(project.id)) next.delete(project.id); else next.add(project.id);
+                        return next;
+                      });
+                    }}>
+                      <Folder size={16} />
+                      <span title={`${project.name}\n${project.displayPath}`}>{project.name}</span>
+                      {project.pinned && <Pin size={11} className="pwb-project-pin" aria-label="已置顶" />}
+                      {project.availability !== 'ready' && <small>{project.availability === 'missing' ? '目录丢失' : '无权限'}</small>}
+                      <ChevronRight size={13} className={isCollapsed ? '' : 'rotate-90'} />
+                    </button>
+                  )}
                   <div className="pwb-project-actions">
-                    <button type="button" aria-label={`在 ${project.name} 新建会话`} onClick={() => onCreateSession(project.canonicalPath)}><Plus size={14} /></button>
+                    <button type="button" aria-label={`在 ${project.name} 新建会话`} title="在此项目中新建会话" disabled={project.availability !== 'ready'} onClick={() => onCreateSession(project.canonicalPath)}><Plus size={14} /></button>
                     <button type="button" aria-label={`${project.name} 更多操作`} onClick={() => setOpenProjectMenu(menuOpen ? null : project.id)}><MoreHorizontal size={15} /></button>
                   </div>
                   {menuOpen && (
-                    <div className="precision-popover pwb-project-menu">
-                      <button type="button" disabled={projectSessions.length > 0} onClick={() => {
+                    <DropdownMenu label={`${project.name} 项目操作`} className="pwb-project-menu" onClose={() => setOpenProjectMenu(null)}>
+                      <DropdownMenuItem icon={<Pin size={14} />} onClick={() => {
+                        onSetProjectPinned?.(project.id, !project.pinned);
+                        setOpenProjectMenu(null);
+                      }}>{project.pinned ? '取消置顶' : '置顶项目'}</DropdownMenuItem>
+                      <DropdownMenuItem icon={<Edit3 size={14} />} onClick={() => {
+                        setEditingProjectId(project.id);
+                        setEditingProjectName(project.name);
+                        setOpenProjectMenu(null);
+                      }}>编辑项目名称</DropdownMenuItem>
+                      <DropdownMenuItem
+                        icon={copiedProjectId === project.id ? <Check size={14} /> : <Copy size={14} />}
+                        onClick={() => copyProjectPath(project)}
+                      >
+                        {copiedProjectId === project.id ? '已复制路径' : '复制项目路径'}
+                      </DropdownMenuItem>
+                      <DropdownMenuSeparator />
+                      <DropdownMenuItem danger icon={<Trash2 size={14} />} disabled={projectSessions.length > 0} onClick={() => {
                         onRemoveProject?.(project.id);
                         setOpenProjectMenu(null);
-                      }}>移除项目</button>
-                      {projectSessions.length > 0 && <small>删除项目下的会话后才能移除</small>}
-                    </div>
+                      }}>移除项目</DropdownMenuItem>
+                      {projectSessions.length > 0 && <DropdownMenuHint>请先删除项目中的 {projectSessions.length} 个会话</DropdownMenuHint>}
+                    </DropdownMenu>
                   )}
                 </div>
                 {!isCollapsed && (

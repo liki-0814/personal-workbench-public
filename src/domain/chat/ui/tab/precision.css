@@ -297,23 +297,31 @@
 .precision-chat .pwb-sidebar-header h2 { color: var(--text-primary); font-size: 15px; font-weight: 700; }
 .precision-chat .pwb-project-list { min-height: 0; flex: 1; overflow-y: auto; padding-bottom: 12px; }
 .precision-chat .pwb-project { position: relative; margin-bottom: 6px; }
-.precision-chat .pwb-project-row { position: relative; display: flex; align-items: center; min-height: 36px; border-radius: 8px; }
+.precision-chat .pwb-project-row { position: relative; display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; min-height: 38px; border-radius: 8px; }
 .precision-chat .pwb-project-row:hover,
 .precision-chat .pwb-project-row:focus-within { background: var(--surface-hover); }
-.precision-chat .pwb-project-primary { display: flex; min-width: 0; flex: 1; align-items: center; gap: 8px; padding: 0 8px; color: var(--text-primary); font-size: 13.5px; font-weight: 650; }
+.precision-chat .pwb-project-primary { display: flex; min-width: 0; align-items: center; gap: 8px; padding: 0 4px 0 8px; color: var(--text-primary); font-size: 13.5px; font-weight: 650; }
 .precision-chat .pwb-project-primary > span { min-width: 0; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .precision-chat .pwb-project-primary > small { color: var(--text-muted); font-size: 10px; font-weight: 500; }
 .precision-chat .pwb-project-primary > svg:last-child { color: var(--text-muted); transition: transform 140ms ease; }
-.precision-chat .pwb-project-actions { position: absolute; z-index: 1; top: 50%; right: 4px; display: flex; align-items: center; gap: 1px; padding-left: 10px; opacity: 0; background: linear-gradient(90deg, transparent, var(--surface-hover) 10px); transform: translateY(-50%); transition: opacity 120ms ease; pointer-events: none; }
+.precision-chat .pwb-project-pin { flex: 0 0 auto; color: var(--semantic-primary); fill: color-mix(in srgb, var(--semantic-primary) 18%, transparent); }
+.precision-chat .pwb-project-actions { z-index: 1; display: flex; width: 35px; align-items: center; gap: 1px; overflow: hidden; opacity: 1; transition: width 140ms ease; }
 .precision-chat .pwb-project-row:hover .pwb-project-actions,
-.precision-chat .pwb-project-row:focus-within .pwb-project-actions { opacity: 1; pointer-events: auto; }
-.precision-chat .pwb-project-actions button { display: grid; width: 28px; height: 28px; place-items: center; border-radius: 7px; color: var(--text-muted); }
+.precision-chat .pwb-project-row:focus-within .pwb-project-actions,
+.precision-chat .pwb-project-row.has-open-menu .pwb-project-actions { width: 67px; padding-right: 3px; overflow: visible; }
+.precision-chat .pwb-project-actions button { display: grid; width: 32px; height: 32px; place-items: center; border-radius: 7px; color: var(--text-muted); }
+.precision-chat .pwb-project-actions button:first-child { width: 0; overflow: hidden; opacity: 0; pointer-events: none; transition: width 140ms ease, opacity 100ms ease; }
+.precision-chat .pwb-project-row:hover .pwb-project-actions button:first-child,
+.precision-chat .pwb-project-row:focus-within .pwb-project-actions button:first-child,
+.precision-chat .pwb-project-row.has-open-menu .pwb-project-actions button:first-child { width: 32px; opacity: 1; pointer-events: auto; }
 .precision-chat .pwb-project-actions button:hover { color: var(--text-primary); background: var(--surface-active); }
-.precision-chat .pwb-project-menu { position: absolute; z-index: 40; top: 38px; right: 4px; width: 176px; padding: 5px; }
-.precision-chat .pwb-project-menu button { width: 100%; padding: 7px 8px; border-radius: 7px; color: var(--text-secondary); text-align: left; }
-.precision-chat .pwb-project-menu button:hover:not(:disabled) { color: var(--text-primary); background: var(--surface-hover); }
-.precision-chat .pwb-project-menu button:disabled { opacity: .45; }
-.precision-chat .pwb-project-menu small { display: block; padding: 4px 8px 6px; color: var(--text-muted); font-size: 10px; }
+.precision-chat .pwb-project-actions button:disabled { cursor: not-allowed; opacity: .35; }
+.precision-chat .pwb-project-editor { display: grid; min-width: 0; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 6px; padding: 0 3px 0 8px; }
+.precision-chat .pwb-project-editor > svg { color: var(--text-secondary); }
+.precision-chat .pwb-project-editor input { min-width: 0; height: 28px; border: 1px solid var(--semantic-primary); border-radius: 6px; padding: 0 7px; color: var(--text-primary); background: var(--surface-1); font-size: 12.5px; outline: none; box-shadow: 0 0 0 2px color-mix(in srgb, var(--semantic-primary) 13%, transparent); }
+.precision-chat .pwb-project-editor button { display: grid; width: 28px; height: 28px; place-items: center; border-radius: 6px; color: var(--semantic-primary); }
+.precision-chat .pwb-project-editor button:hover { background: var(--surface-active); }
+.precision-chat .pwb-project-menu { position: absolute; z-index: 40; top: 40px; right: 3px; width: 196px; }
 .precision-chat .pwb-project-sessions { margin: 0 4px 0 12px; padding-left: 6px; border-left: 1px solid var(--border-subtle); }
 .precision-chat .pwb-project-empty { padding: 7px 10px; color: var(--text-muted); font-size: 12px; }
 .precision-chat .pwb-session-actions { position: absolute; z-index: 1; top: 50%; right: 4px; display: flex; align-items: center; padding-left: 10px; opacity: 0; background: linear-gradient(90deg, transparent, var(--surface-2) 10px); transform: translateY(-50%); transition: opacity 120ms ease; pointer-events: none; }

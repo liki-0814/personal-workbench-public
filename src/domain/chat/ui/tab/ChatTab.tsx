@@ -62,6 +62,7 @@ interface Props {
   folders?: ChatFolder[];
   onCreateFolder?: (name: string) => void;
   onRenameFolder?: (id: string, name: string) => void;
+  onSetFolderPinned?: (id: string, pinned: boolean) => void;
   onDeleteFolder?: (id: string) => void;
   onMoveSessionToFolder?: (sessionId: string, folderId: string | null) => void;
   onReorderFolders?: (orderedIds: string[]) => void;
@@ -236,6 +237,8 @@ export default function ChatTab({
   onUpdateSessionMessages,
   onUpdateSession,
   folders = [],
+  onRenameFolder,
+  onSetFolderPinned,
   onDeleteFolder,
   bgTasks,
   todos,
@@ -703,6 +706,18 @@ export default function ChatTab({
     });
   }, []);
 
+  const createSessionInProject = useCallback((initialPath?: string) => {
+    if (!initialPath) {
+      startNewSessionWithDraft();
+      return;
+    }
+    ai.setModel(draftModel);
+    onCreateSession(draftModel, { mode: 'agent', cwd: initialPath });
+    window.requestAnimationFrame(() => {
+      document.querySelector<HTMLTextAreaElement>('textarea')?.focus();
+    });
+  }, [ai, draftModel, onCreateSession, startNewSessionWithDraft]);
+
   const confirmNewSessionDirectory = useCallback((directory: ResolvedDirectory) => {
     if (directoryPicker.text || (directoryPicker.images?.length ?? 0) > 0) {
       pendingFirstMessageRef.current = {
@@ -792,9 +807,11 @@ export default function ChatTab({
         projects={folders}
         activeSessionId={activeSessionId}
         onSelectSession={onSelectSession}
-        onCreateSession={initialPath => startNewSessionWithDraft(undefined, initialPath)}
+        onCreateSession={createSessionInProject}
         onDeleteSession={handleDeleteSession}
         onUpdateSession={onUpdateSession}
+        onRenameProject={onRenameFolder}
+        onSetProjectPinned={onSetFolderPinned}
         onRemoveProject={onDeleteFolder}
         collapsed={sidebarCollapsed}
         onToggleCollapse={toggleSidebar}
