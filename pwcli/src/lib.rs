@@ -1,39 +1,8 @@
-pub mod agent_runner;
+//! PWCLI's four-layer application architecture.
+//!
+//! Dependency direction is `app -> runtime -> agent_core -> ai`.
+
+pub mod agent_core;
+pub mod ai;
 pub mod app;
-pub mod backend;
-pub mod background;
-pub mod bash;
-pub mod commands;
-pub mod composition;
-pub mod config;
-pub mod config_wizard;
-pub mod contracts;
-pub mod crash;
-pub mod daemon;
-pub mod documents;
-pub mod fusion;
-pub mod git;
-pub mod graph;
-pub mod harness;
-pub mod hooks;
-pub mod http_client;
-pub mod identity;
-pub mod image_generation;
-pub mod llm;
-pub mod logging;
-pub mod media;
-pub mod memory;
-pub mod middleware;
-pub mod permissions;
-pub mod provider_ai;
-pub mod reliability;
-pub mod rpc;
-pub mod service;
-pub mod session;
-pub mod skills;
-pub mod task;
-pub mod tools;
-pub mod tui_app;
-pub mod tui_client;
-pub mod usage;
-pub mod visual_generation;
+pub mod runtime;

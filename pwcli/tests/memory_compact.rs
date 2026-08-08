@@ -1,13 +1,13 @@
 // memory compactor 集成测试：阈值/每日上限/失败禁用/快照
 use chrono::Local;
-use pwcli::config::ProviderConfig;
-use pwcli::llm::LlmClient;
-use pwcli::memory::compactor::{
+use pwcli::ai::config::ProviderConfig;
+use pwcli::ai::llm::LlmClient;
+use pwcli::ai::usage::UsageTracker;
+use pwcli::runtime::memory::compactor::{
     maybe_compact_memory, MemoryCompactOutcome, MEMORY_COMPACT_ENTRY_THRESHOLD,
 };
-use pwcli::memory::store::{MemoryMeta, MemoryStore};
-use pwcli::memory::types::{MemoryEntry, MemoryIndex, MemoryIndexLine};
-use pwcli::usage::UsageTracker;
+use pwcli::runtime::memory::store::{MemoryMeta, MemoryStore};
+use pwcli::runtime::memory::types::{MemoryEntry, MemoryIndex, MemoryIndexLine};
 
 const ENOUGH_LINES: usize = MEMORY_COMPACT_ENTRY_THRESHOLD + 1;
 

@@ -2,8 +2,8 @@
 
 use std::time::Duration;
 
-use pwcli::tools::code_agent::acp_runner;
-use pwcli::tools::code_agent::{
+use pwcli::runtime::tools::code_agent::acp_runner;
+use pwcli::runtime::tools::code_agent::{
     execute_code_agent, AgentTransportKind, CodeAgentArgs, SubAgentBackend,
 };
 

@@ -2,6 +2,85 @@
 
 Source-only distribution of the Personal Workbench web application and `pwcli` daemon.
 
+## Repository map
+
+Personal Workbench is one product with two build targets: a React frontend and a
+Rust executable that provides the CLI, local daemon, HTTP/SSE API, and embedded
+production web application.
+
+```text
+Browser
+  -> index.html -> src/main.tsx -> src/App.tsx
+  -> shell / features / domain
+  -> core HTTP, configuration, storage, and LLM clients
+  -> /api
+  -> pwcli service boundary
+  -> SessionManager / TaskBroker / RuntimeFactory
+  -> AgentRuntime -> agent core -> tools and AI provider adapters
+```
+
+| Path | Responsibility |
+| --- | --- |
+| `src/core/` | Frontend infrastructure shared across product areas: configuration, storage, LLM clients, and generic utilities. |
+| `src/domain/` | Product domains such as chat, todo, documents, jobs, habits, and pomodoro. A domain owns its types, state, domain logic, and domain-specific UI. |
+| `src/features/` | User-facing workflows that compose one or more domains, such as workbench, settings, import/export, and search. |
+| `src/shell/` | Application-wide chrome and reusable UI/state, including the header, theme, notifications, and Markdown rendering. |
+| `src/App.tsx` | Frontend composition root: connects domains and features and owns top-level navigation. |
+| `pwcli/src/` | Rust application code for CLI/TUI entry points, daemon/API, sessions, delegated tasks, the agent runtime, tools, and provider integrations. |
+| `pwcli/resources/` | Runtime resources embedded or distributed with `pwcli`. |
+| `config/` | TypeScript, Vite, Vitest, ESLint, Tailwind, and architecture-check configuration. |
+| `scripts/` | Build, migration, and architecture-check scripts. |
+| `tests/` | Cross-module frontend integration and regression tests plus shared fixtures. |
+| `docs/adr/` | Accepted architectural decisions and dependency rules. |
+
+### Frontend boundaries
+
+`src/main.tsx` bootstraps configuration and storage synchronization, then mounts
+`src/App.tsx`. `App.tsx` is the composition root; reusable product behavior
+belongs in a domain or feature rather than in the entry point.
+
+- Put framework-independent, broadly shared infrastructure in `core`.
+- Put behavior and state owned by one product concept in its `domain`.
+- Put workflows that coordinate multiple domains in `features`.
+- Put global application chrome and shared presentation primitives in `shell`.
+- Import a domain through its `index.ts` public surface when one exists; avoid
+  reaching into another domain's internal state or UI directories.
+
+The `@/` alias resolves to `src/`.
+
+### PWCLI runtime boundaries
+
+The Rust directory is intentionally a single crate. Its architecture is based
+on runtime ownership and dependency direction rather than one directory per
+layer:
+
+```text
+CLI / Web JSON / Web SSE / internal worker
+                  -> RuntimeFactory (composition)
+                  -> AgentRuntime (one model/tool turn)
+                     -> agent core -> contracts / tool ports
+                     -> AI and provider adapters
+
+SessionManager owns state across turns.
+TaskBroker owns delegated/background work across processes.
+```
+
+Agent core must not depend on `service`, `SessionManager`, or `TaskBroker`, and
+tools must not depend on `service`. `RuntimeFactory` is the only production
+composition root for an `AgentRuntime`. See
+[`docs/adr/0001-pwcli-four-layer-architecture.md`](docs/adr/0001-pwcli-four-layer-architecture.md)
+for the complete ownership model. Run `npm run check:architecture` to verify the
+enforced dependency rules.
+
+### Test placement
+
+- Keep focused unit and component tests beside the source as `*.test.ts` or
+  `*.test.tsx`.
+- Put cross-module behavior, build contracts, storage integration, and shared
+  regression fixtures under top-level `tests/`.
+- Rust unit tests stay beside their modules; crate-level integration tests live
+  in `pwcli/tests/`.
+
 ## Prerequisites
 
 - Node.js 18 or newer and npm

@@ -1,7 +1,12 @@
 {
-  "coreForbiddenEdges": [],
+  "layerExceptions": {
+    "runtime->app": [
+      "pwcli/src/runtime/tools/extensions.rs",
+      "pwcli/src/runtime/task/mod.rs"
+    ]
+  },
   "taskLocalFiles": [
-    "pwcli/src/tools/fs_local.rs",
-    "pwcli/src/tools/progress.rs"
+    "pwcli/src/runtime/tools/fs_local.rs",
+    "pwcli/src/runtime/tools/progress.rs"
   ]
 }

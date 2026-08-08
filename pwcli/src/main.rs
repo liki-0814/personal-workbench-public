@@ -5,12 +5,11 @@ use clap::{Parser, Subcommand};
 use std::io::Read;
 use tokio::sync::mpsc;
 
-use pwcli::config::RuntimeConfig;
-use pwcli::config_wizard::{run_config_user, run_config_wizard};
-use pwcli::git::GitContext;
-use pwcli::tui_app::{self, MenuSources, StatusUpdate, UiEvent, UserSubmission};
-
-mod repl_ui;
+use pwcli::app::cli::repl_ui;
+use pwcli::app::cli::tui_app::{self, MenuSources, StatusUpdate, UiEvent, UserSubmission};
+use pwcli::app::config::wizard::{run_config_user, run_config_wizard};
+use pwcli::app::config::RuntimeConfig;
+use pwcli::runtime::git::GitContext;
 
 /// Personal Workbench CLI — interactive AI agent + slash-command REPL.
 #[derive(Parser)]
@@ -77,10 +76,10 @@ enum Command {
     /// Manage the persistent local daemon.
     Daemon {
         #[command(subcommand)]
-        sub: pwcli::daemon::DaemonCommand,
+        sub: pwcli::app::platform::daemon::DaemonCommand,
     },
     /// Check configuration, storage, daemon health and native ACP CLIs.
-    Doctor(pwcli::daemon::DoctorArgs),
+    Doctor(pwcli::app::platform::daemon::DoctorArgs),
     /// Run the interactive configuration wizard (provider, API key, model).
     Config {
         #[command(subcommand)]
@@ -100,6 +99,24 @@ enum Command {
     Memory {
         #[command(subcommand)]
         sub: MemorySub,
+    },
+    /// Generate, edit, evaluate, or manage references for scientific illustrations.
+    Illustrate {
+        #[command(subcommand)]
+        sub: Option<IllustrateSub>,
+        /// Input text/JSON file. Omit to read stdin.
+        #[arg(long)]
+        input: Option<std::path::PathBuf>,
+        #[arg(long, default_value = "auto", value_parser = ["auto", "diagram", "plot", "polish", "refine", "eval"])]
+        mode: String,
+        #[arg(long)]
+        intent: Option<String>,
+        #[arg(long, default_value = "balanced", value_parser = ["fast", "balanced", "max"])]
+        quality: String,
+        #[arg(long, default_value = "auto", value_parser = ["auto", "none"])]
+        retrieval: String,
+        #[arg(long)]
+        aspect_ratio: Option<String>,
     },
     /// Run newline-delimited JSON RPC over stdin/stdout.
     Rpc,
@@ -151,6 +168,43 @@ enum MemorySub {
     ImportMarkdown { path: std::path::PathBuf },
     List,
     Search { query: String },
+}
+
+#[derive(Subcommand)]
+enum IllustrateSub {
+    /// Inspect and manage illustration reference libraries.
+    Refs {
+        #[command(subcommand)]
+        sub: IllustrationRefsSub,
+    },
+}
+
+#[derive(Subcommand)]
+enum IllustrationRefsSub {
+    Status,
+    List,
+    ResetStarter,
+    Import {
+        path: std::path::PathBuf,
+        #[arg(long, value_parser = ["diagram", "plot"])]
+        kind: String,
+        #[arg(long)]
+        layout: String,
+        #[arg(long)]
+        intent: String,
+        #[arg(
+            long,
+            default_value = "User-provided scientific illustration reference"
+        )]
+        summary: String,
+    },
+    /// Import only diagram/ref.json and plot/ref.json from a local PaperBananaBench tree.
+    ImportPack {
+        path: std::path::PathBuf,
+    },
+    Remove {
+        id: String,
+    },
 }
 
 fn print_banner(git_ctx: &GitContext, config: &RuntimeConfig) {
@@ -208,11 +262,11 @@ fn print_banner(git_ctx: &GitContext, config: &RuntimeConfig) {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    let previous_crash = pwcli::crash::latest_crash();
-    pwcli::crash::install_handler();
+    let previous_crash = pwcli::app::platform::crash::latest_crash();
+    pwcli::app::platform::crash::install_handler();
     if let Some(path) = previous_crash {
         eprintln!("上次运行异常退出，崩溃信息：{}", path.display());
-        pwcli::crash::mark_seen(&path);
+        pwcli::app::platform::crash::mark_seen(&path);
     }
     let cli = Cli::parse();
     match cli.command {
@@ -236,7 +290,8 @@ async fn main() -> Result<()> {
             }
             let cwd = cwd.unwrap_or(std::env::current_dir()?);
             let (captured, daemon_url) =
-                pwcli::tui_client::capture_work_item(prompt, &cwd, executor.as_deref()).await?;
+                pwcli::app::cli::tui_client::capture_work_item(prompt, &cwd, executor.as_deref())
+                    .await?;
             if format == "json" {
                 println!("{}", serde_json::to_string_pretty(&captured)?);
             } else {
@@ -253,62 +308,128 @@ async fn main() -> Result<()> {
             return Ok(());
         }
         Some(Command::TaskWorker { descriptor }) => {
-            pwcli::config::local_config::init().await;
-            return pwcli::task::run_worker(descriptor).await;
+            pwcli::app::config::local_config::init().await;
+            return pwcli::runtime::task::run_worker(descriptor).await;
         }
         Some(Command::Web { no_open }) => {
-            pwcli::config::local_config::init().await;
-            return pwcli::daemon::web(no_open).await;
+            pwcli::app::config::local_config::init().await;
+            return pwcli::app::platform::daemon::web(no_open).await;
         }
         Some(Command::Daemon { sub }) => {
-            pwcli::config::local_config::init().await;
-            return pwcli::daemon::execute(sub).await;
+            pwcli::app::config::local_config::init().await;
+            return pwcli::app::platform::daemon::execute(sub).await;
         }
         Some(Command::Doctor(args)) => {
-            pwcli::config::local_config::init().await;
-            return pwcli::daemon::doctor(args).await;
+            pwcli::app::config::local_config::init().await;
+            return pwcli::app::platform::daemon::doctor(args).await;
         }
         Some(Command::Config { sub }) => match sub {
             Some(ConfigSub::User { email }) => return run_config_user(email).await,
             None => return run_config_wizard().await,
         },
         Some(Command::Auth { sub }) => {
-            pwcli::config::local_config::init().await;
+            pwcli::app::config::local_config::init().await;
             return run_auth_command(sub).await;
         }
         Some(Command::Moa { sub }) => {
-            pwcli::config::local_config::init().await;
+            pwcli::app::config::local_config::init().await;
             return run_moa_command(sub).await;
         }
         Some(Command::Memory { sub }) => {
-            pwcli::config::local_config::init().await;
+            pwcli::app::config::local_config::init().await;
             return run_memory_command(sub).await;
         }
+        Some(Command::Illustrate {
+            sub,
+            input,
+            mode,
+            intent,
+            quality,
+            retrieval,
+            aspect_ratio,
+        }) => {
+            pwcli::app::config::local_config::init().await;
+            if let Some(IllustrateSub::Refs { sub }) = sub {
+                return run_illustration_refs(sub);
+            }
+            let intent = intent.context("--intent is required when generating an illustration")?;
+            let raw = match input {
+                Some(path) => std::fs::read_to_string(&path)
+                    .with_context(|| format!("read {}", path.display()))?,
+                None => {
+                    let mut value = String::new();
+                    std::io::stdin().read_to_string(&mut value)?;
+                    value
+                }
+            };
+            anyhow::ensure!(
+                !raw.trim().is_empty(),
+                "illustration input must not be empty"
+            );
+            let resolved_mode = parse_illustration_mode(&mode)?;
+            let content = if resolved_mode == pwcli::runtime::illustration::IllustrationMode::Plot
+                || raw.trim_start().starts_with(['{', '['])
+            {
+                serde_json::from_str(&raw)
+                    .context("plot/JSON illustration input is invalid JSON")?
+            } else {
+                serde_json::Value::String(raw)
+            };
+            let request = pwcli::runtime::illustration::IllustrationRequest {
+                mode: resolved_mode,
+                content,
+                visual_intent: intent,
+                image_refs: vec![],
+                quality: match quality.as_str() {
+                    "fast" => pwcli::runtime::illustration::IllustrationQuality::Fast,
+                    "max" => pwcli::runtime::illustration::IllustrationQuality::Max,
+                    _ => pwcli::runtime::illustration::IllustrationQuality::Balanced,
+                },
+                retrieval: if retrieval == "none" {
+                    pwcli::runtime::illustration::RetrievalMode::None
+                } else {
+                    pwcli::runtime::illustration::RetrievalMode::Auto
+                },
+                aspect_ratio,
+                constraints: Default::default(),
+            };
+            let factory = pwcli::app::composition::RuntimeFactory::load_local().await?;
+            let context = factory
+                .illustration_context(std::env::current_dir()?)
+                .await?;
+            let data_dir = pwcli::app::config::local_config::data_dir();
+            let run = pwcli::runtime::illustration::IllustrationService::new(&data_dir)
+                .execute(&context, request)
+                .await?;
+            println!("{}", serde_json::to_string_pretty(&run)?);
+            return Ok(());
+        }
         Some(Command::Rpc) => {
-            pwcli::config::local_config::init().await;
-            return pwcli::rpc::run_stdio().await;
+            pwcli::app::config::local_config::init().await;
+            return pwcli::app::cli::rpc::run_stdio().await;
         }
         None => {} // fall through to REPL or oneshot
     }
 
     if cli.web {
-        pwcli::config::local_config::init().await;
-        return pwcli::daemon::web(cli.no_open).await;
+        pwcli::app::config::local_config::init().await;
+        return pwcli::app::platform::daemon::web(cli.no_open).await;
     }
 
     // -p / --prompt: non-interactive single-shot mode (no TUI).
     if let Some(prompt) = cli.prompt {
-        return pwcli::tui_client::run_daemon_oneshot(prompt).await;
+        return pwcli::app::cli::tui_client::run_daemon_oneshot(prompt).await;
     }
 
     // The interactive TUI is a client. The daemon owns sessions, tools,
     // background work and ACP subprocesses across TUI/Web disconnects.
-    pwcli::config::local_config::init().await;
-    pwcli::daemon::start().await?;
-    let daemon_status = pwcli::daemon::status().await;
-    let daemon_sessions = pwcli::tui_client::fetch_daemon_sessions(&daemon_status.http_address)
-        .await
-        .unwrap_or_default();
+    pwcli::app::config::local_config::init().await;
+    pwcli::app::platform::daemon::start().await?;
+    let daemon_status = pwcli::app::platform::daemon::status().await;
+    let daemon_sessions =
+        pwcli::app::cli::tui_client::fetch_daemon_sessions(&daemon_status.http_address)
+            .await
+            .unwrap_or_default();
     let config = RuntimeConfig::load();
     let git_ctx = GitContext::current().await;
     print_banner(&git_ctx, &config);
@@ -316,9 +437,9 @@ async fn main() -> Result<()> {
     let (ui_tx, ui_rx) = mpsc::unbounded_channel::<UiEvent>();
     let window_tokens = config
         .active_provider()
-        .map(|provider| pwcli::usage::context_window_for_model(&provider.model))
+        .map(|provider| pwcli::ai::usage::context_window_for_model(&provider.model))
         .unwrap_or(32_000);
-    let client_handle = tokio::spawn(pwcli::tui_client::run_daemon_client_task(
+    let client_handle = tokio::spawn(pwcli::app::cli::tui_client::run_daemon_client_task(
         input_rx,
         ui_tx.clone(),
         daemon_status.http_address.clone(),
@@ -333,18 +454,18 @@ async fn main() -> Result<()> {
                 .unwrap_or(env!("CARGO_PKG_VERSION"))
         )),
         yolo: Some(
-            pwcli::permissions::current_agent_permission_mode()
-                == pwcli::permissions::AgentPermissionMode::Full,
+            pwcli::runtime::permissions::current_agent_permission_mode()
+                == pwcli::runtime::permissions::AgentPermissionMode::Full,
         ),
         permission_mode: Some(
-            pwcli::permissions::current_agent_permission_mode()
+            pwcli::runtime::permissions::current_agent_permission_mode()
                 .as_str()
                 .to_string(),
         ),
         session_name: None,
         active_provider: config.active_provider.clone(),
     };
-    let moa_config = pwcli::config::local_config::get()
+    let moa_config = pwcli::app::config::local_config::get()
         .ai
         .moa
         .unwrap_or_default();
@@ -402,6 +523,67 @@ async fn main() -> Result<()> {
     result
 }
 
+fn parse_illustration_mode(value: &str) -> Result<pwcli::runtime::illustration::IllustrationMode> {
+    use pwcli::runtime::illustration::IllustrationMode;
+    Ok(match value {
+        "diagram" => IllustrationMode::Diagram,
+        "plot" => IllustrationMode::Plot,
+        "polish" => IllustrationMode::Polish,
+        "refine" => IllustrationMode::Refine,
+        "eval" => IllustrationMode::Eval,
+        "auto" => IllustrationMode::Auto,
+        _ => anyhow::bail!("invalid illustration mode"),
+    })
+}
+
+fn run_illustration_refs(command: IllustrationRefsSub) -> Result<()> {
+    let data_dir = pwcli::app::config::local_config::data_dir();
+    let store = pwcli::runtime::illustration::ReferenceStore::new(&data_dir);
+    match command {
+        IllustrationRefsSub::Status => println!(
+            "{}",
+            serde_json::to_string_pretty(&serde_json::json!({
+                "references": store.status()?,
+                "python": pwcli::runtime::illustration::python_env::status()
+            }))?
+        ),
+        IllustrationRefsSub::List => {
+            println!("{}", serde_json::to_string_pretty(&store.list_personal()?)?)
+        }
+        IllustrationRefsSub::ResetStarter => {
+            store.reset_starter()?;
+            println!("starter reference pack restored");
+        }
+        IllustrationRefsSub::Import {
+            path,
+            kind,
+            layout,
+            intent,
+            summary,
+        } => {
+            let entry = store.import_personal(
+                &path,
+                parse_illustration_mode(&kind)?,
+                &layout,
+                &intent,
+                &summary,
+            )?;
+            println!("{}", serde_json::to_string_pretty(&entry)?);
+        }
+        IllustrationRefsSub::ImportPack { path } => {
+            let count = store.import_paperbanana_reference_pool(&path)?;
+            println!(
+                "imported {count} PaperBanana reference-pool images (test/GT outside ref.json ignored)"
+            );
+        }
+        IllustrationRefsSub::Remove { id } => {
+            store.remove_personal(&id)?;
+            println!("removed {id}");
+        }
+    }
+    Ok(())
+}
+
 fn open_capture_url(url: &str) -> Result<()> {
     #[cfg(target_os = "macos")]
     let status = std::process::Command::new("open").arg(url).status();
@@ -424,7 +606,7 @@ fn open_capture_url(url: &str) -> Result<()> {
 }
 
 async fn run_auth_command(sub: AuthSub) -> Result<()> {
-    use pwcli::provider_ai::{
+    use pwcli::ai::provider::{
         provider_kind, AuthFlowMethod, AuthFlowState, AuthManager, ProviderKind,
     };
 
@@ -526,10 +708,10 @@ async fn run_memory_command(sub: MemorySub) -> Result<()> {
         .as_ref()
         .and_then(|user| user.slug.clone())
         .unwrap_or_else(|| "local".to_string());
-    let store = pwcli::memory::MemoryStore::new(&user_slug)?;
+    let store = pwcli::runtime::memory::MemoryStore::new(&user_slug)?;
     match sub {
         MemorySub::ImportMarkdown { path } => {
-            let report = pwcli::memory::import_markdown_tree(&store, &path)?;
+            let report = pwcli::runtime::memory::import_markdown_tree(&store, &path)?;
             println!(
                 "files={} imported={} updated={} unchanged={} skipped={}",
                 report.files_scanned,
@@ -541,9 +723,9 @@ async fn run_memory_command(sub: MemorySub) -> Result<()> {
         }
         MemorySub::List => print!("{}", store.read_index_raw()?),
         MemorySub::Search { query } => {
-            let hits = pwcli::memory::hybrid_search(
+            let hits = pwcli::runtime::memory::hybrid_search(
                 &store,
-                pwcli::memory::HybridSearchOptions {
+                pwcli::runtime::memory::HybridSearchOptions {
                     query,
                     max_results: 10,
                     exclude_slugs: std::collections::HashSet::new(),
@@ -560,8 +742,8 @@ async fn run_memory_command(sub: MemorySub) -> Result<()> {
 }
 
 async fn run_moa_command(command: MoaSub) -> Result<()> {
-    use pwcli::fusion::config::{MoaModelRef, MoaPreset};
-    let mut local = pwcli::config::local_config::get();
+    use pwcli::runtime::decision::config::{MoaModelRef, MoaPreset};
+    let mut local = pwcli::app::config::local_config::get();
     let mut moa = local.ai.moa.clone().unwrap_or_default();
     match command {
         MoaSub::List => {
@@ -588,7 +770,7 @@ async fn run_moa_command(command: MoaSub) -> Result<()> {
                 moa.active_preset = fallback;
             }
             local.ai.moa = Some(moa);
-            pwcli::config::local_config::save(&local).await?;
+            pwcli::app::config::local_config::save(&local).await?;
             println!("Deleted MoA preset '{name}'.");
         }
         MoaSub::Configure { name, default } => {
@@ -657,7 +839,7 @@ async fn run_moa_command(command: MoaSub) -> Result<()> {
                 moa.active_preset = preset_name.clone();
             }
             local.ai.moa = Some(moa);
-            pwcli::config::local_config::save(&local).await?;
+            pwcli::app::config::local_config::save(&local).await?;
             println!("Configured MoA preset '{preset_name}'.");
         }
     }

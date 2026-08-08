@@ -1,6 +1,6 @@
 // MemoryStore 集成测试：隔离/约束/并发/快照
-use pwcli::memory::store::{MemoryError, MemoryStore, MAX_ENTRY_BYTES, MAX_SUMMARY_CHARS};
-use pwcli::memory::types::{MemoryEntry, MemoryIndex, MemoryIndexLine};
+use pwcli::runtime::memory::store::{MemoryError, MemoryStore, MAX_ENTRY_BYTES, MAX_SUMMARY_CHARS};
+use pwcli::runtime::memory::types::{MemoryEntry, MemoryIndex, MemoryIndexLine};
 use std::sync::Arc;
 use std::thread;
 

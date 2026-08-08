@@ -10,6 +10,7 @@ fn pwcli(home: &Path, args: &[&str]) -> Output {
     Command::new(env!("CARGO_BIN_EXE_pwcli"))
         .args(args)
         .env("HOME", home)
+        .env("PWCLI_SKIP_ILLUSTRATION_BOOTSTRAP", "1")
         .output()
         .unwrap()
 }

@@ -1,13 +1,13 @@
 use std::collections::HashSet;
 
-use pwcli::commands::{parse_memory_injection_mode, MemoryInjectionMode};
-use pwcli::memory::compactor::{select_slugs_to_archive, ACTIVE_KEEP};
-use pwcli::memory::extractor::format_turn_messages;
-use pwcli::memory::hash::{fact_content_hash, normalize_for_hash};
-use pwcli::memory::search::{fuse_rrf_for_test, hybrid_search, HybridSearchOptions};
-use pwcli::memory::types::MemoryIndexLine;
-use pwcli::memory::{MemoryEntry, MemoryStore};
-use pwcli::session::ConversationMessage;
+use pwcli::app::cli::commands::{parse_memory_injection_mode, MemoryInjectionMode};
+use pwcli::runtime::memory::compactor::{select_slugs_to_archive, ACTIVE_KEEP};
+use pwcli::runtime::memory::extractor::format_turn_messages;
+use pwcli::runtime::memory::hash::{fact_content_hash, normalize_for_hash};
+use pwcli::runtime::memory::search::{fuse_rrf_for_test, hybrid_search, HybridSearchOptions};
+use pwcli::runtime::memory::types::MemoryIndexLine;
+use pwcli::runtime::memory::{MemoryEntry, MemoryStore};
+use pwcli::runtime::session::ConversationMessage;
 
 const RRF_K: f64 = 60.0;
 const W_GREP: f64 = 0.4;
@@ -159,7 +159,7 @@ fn rrf_fuse_overlap_slug_ranks_first() {
     let dir = tempfile::tempdir().unwrap();
     let store = MemoryStore::new_with_dir(dir.path().to_path_buf()).unwrap();
 
-    use pwcli::memory::retrieval::MemoryHit as GrepHit;
+    use pwcli::runtime::memory::retrieval::MemoryHit as GrepHit;
     let grep_hits = vec![
         GrepHit {
             slug: "alpha".to_string(),
@@ -269,7 +269,7 @@ fn migrate_assigns_uuid() {
         "---\nslug: legacy\nsummary: s\ncreated_at: 1\nupdated_at: 1\n---\nc\n",
     )
     .unwrap();
-    let report = pwcli::memory::migrate_store(&store).unwrap();
+    let report = pwcli::runtime::memory::migrate_store(&store).unwrap();
     assert_eq!(report.ids_assigned, 1);
     assert!(store.read_entry_raw("legacy").unwrap().id.is_some());
 }
