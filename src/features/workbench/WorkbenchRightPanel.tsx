@@ -1,6 +1,6 @@
 import { useMemo, useRef, useState } from 'react';
 import { Check, CircleAlert, FileText, GitCompare, LoaderCircle, MessageSquareMore, Plus, Trash2 } from 'lucide-react';
-import type { HabitItem } from '@/domain/habit';
+import { HabitPanel, useHabits } from '@/domain/habit';
 import type { TodoItem } from '@/domain/todo';
 import type { DayPlanItem } from '@/domain/day-plan';
 import { JobsPanel } from '@/domain/jobs';
@@ -19,11 +19,8 @@ export type WorkbenchView = 'inbox' | 'objectives' | 'day_plan' | 'habits' | 'jo
 interface Props {
   activeView: WorkbenchView;
   onActiveViewChange: (view: WorkbenchView) => void;
-  habits: HabitItem[];
   todos: TodoItem[];
   dayPlans: DayPlanItem[];
-  isTodayDue: (habit: HabitItem) => boolean;
-  habitPanel: React.ReactNode;
   objectivePanel: React.ReactNode;
   dayPlanPanel: React.ReactNode;
   onAskAiForJob?: () => void;
@@ -87,11 +84,8 @@ function getTodayLabel(): string {
 export default function WorkbenchRightPanel({
   activeView,
   onActiveViewChange,
-  habits,
   todos,
   dayPlans,
-  isTodayDue,
-  habitPanel,
   objectivePanel,
   dayPlanPanel,
   onAskAiForJob,
@@ -104,6 +98,7 @@ export default function WorkbenchRightPanel({
   onCaptureWorkItem,
 }: Props) {
   const [captureOpen, setCaptureOpen] = useState(false);
+  const { habits, isTodayDue } = useHabits();
   const pendingTodoCount = useMemo(
     () => todos.filter((t) => !t.completed).length,
     [todos],
@@ -200,7 +195,7 @@ export default function WorkbenchRightPanel({
         aria-labelledby={`workbench-tab-${activeView}`}
         className={`relative min-h-0 flex-1 pt-3 ${activeView === 'objectives' ? 'overflow-visible' : 'overflow-y-auto'}`}
       >
-        {activeView === 'habits' && habitPanel}
+        {activeView === 'habits' && <HabitPanel />}
         {activeView === 'jobs' && <JobsPanel onAskAi={onAskAiForJob} />}
         {activeView === 'objectives' && objectivePanel}
         {activeView === 'day_plan' && dayPlanPanel}

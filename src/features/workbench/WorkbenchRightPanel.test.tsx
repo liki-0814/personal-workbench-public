@@ -42,11 +42,8 @@ describe('WorkbenchRightPanel', () => {
       <WorkbenchRightPanel
         activeView="day_plan"
         onActiveViewChange={onActiveViewChange}
-        habits={[]}
         todos={[]}
         dayPlans={[]}
-        isTodayDue={() => false}
-        habitPanel={<div>习惯</div>}
         objectivePanel={<div>任务</div>}
         dayPlanPanel={<div>计划</div>}
         projects={[]}
@@ -89,11 +86,8 @@ describe('WorkbenchRightPanel', () => {
       <WorkbenchRightPanel
         activeView="inbox"
         onActiveViewChange={vi.fn()}
-        habits={[]}
         todos={[]}
         dayPlans={[]}
-        isTodayDue={() => false}
-        habitPanel={null}
         objectivePanel={null}
         dayPlanPanel={null}
         workItems={projection}
@@ -152,11 +146,8 @@ describe('WorkbenchRightPanel', () => {
       <WorkbenchRightPanel
         activeView="inbox"
         onActiveViewChange={vi.fn()}
-        habits={[]}
         todos={[]}
         dayPlans={[]}
-        isTodayDue={() => false}
-        habitPanel={null}
         objectivePanel={null}
         dayPlanPanel={null}
         workItems={projection}
@@ -217,11 +208,8 @@ describe('WorkbenchRightPanel', () => {
       <WorkbenchRightPanel
         activeView="inbox"
         onActiveViewChange={vi.fn()}
-        habits={[]}
         todos={[]}
         dayPlans={[]}
-        isTodayDue={() => false}
-        habitPanel={null}
         objectivePanel={null}
         dayPlanPanel={null}
         workItems={projection}

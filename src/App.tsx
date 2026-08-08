@@ -22,7 +22,6 @@ import {
   type WorkItem,
   type WorkItemNavigationTarget,
 } from '@/domain/chat';
-import { useHabits, HabitPanel } from '@/domain/habit';
 import WorkbenchRightPanel, { type WorkbenchView } from '@/features/workbench/WorkbenchRightPanel';
 import WorkStatusBar from '@/features/workbench/WorkStatusBar';
 import {
@@ -30,7 +29,7 @@ import {
   type WorkItemCaptureRequest,
 } from '@/features/workbench/workItemCapture';
 import { ToolboxCenter, useClipboardHistory } from '@/domain/toolbox';
-import { SettingsModal } from '@/features/settings';
+import { SettingsModal, ModelUpdateDialog } from '@/features/settings';
 
 import { usePeriodicSync } from '@/core/storage';
 import { apiFetch } from '@/core/utils';
@@ -97,7 +96,6 @@ function WorkbenchApp() {
   const bgTasks = useBackgroundTasks();
   const { toasts, removeToast } = useToast();
   const clipboard = useClipboardHistory();
-  const habitStore = useHabits();
   const workItems = useMemo(
     () => selectWorkItemProjection(taskRuntime.tasks, chatSessions.sessions, taskRuntime.attention),
     [chatSessions.sessions, taskRuntime.attention, taskRuntime.tasks],
@@ -293,6 +291,7 @@ function WorkbenchApp() {
                     folders={chatSessions.folders}
                     onCreateFolder={chatSessions.createFolder}
                     onRenameFolder={chatSessions.renameFolder}
+                    onSetFolderPinned={chatSessions.setFolderPinned}
                     onDeleteFolder={chatSessions.deleteFolder}
                     onMoveSessionToFolder={chatSessions.moveSessionToFolder}
                     onReorderSessions={chatSessions.reorderSessions}
@@ -326,10 +325,8 @@ function WorkbenchApp() {
                       workbenchViewTouchedRef.current = true;
                       setWorkbenchView(view);
                     }}
-                    habits={habitStore.habits}
                     todos={normalTodos}
                     dayPlans={dayPlans.plans}
-                    isTodayDue={habitStore.isTodayDue}
                     onAskAiForJob={() => {
                       requestNewChat('请帮我创建一个定时调度任务。先询问我执行目标、时间、工作目录和可接受的副作用，再生成配置并真实测试；只有测试通过后才正式启用。');
                     }}
@@ -342,29 +339,6 @@ function WorkbenchApp() {
                     }}
                     projects={chatSessions.folders}
                     onCaptureWorkItem={handleCaptureWorkItem}
-                    habitPanel={
-                      <HabitPanel
-                        habits={habitStore.habits}
-                        onToggleToday={habitStore.toggleToday}
-                        onAdd={habitStore.addHabit}
-                        onRemove={habitStore.removeHabit}
-                        onUpdate={habitStore.updateHabit}
-                        onArchive={habitStore.archiveHabit}
-                        getStreak={habitStore.getStreak}
-                        getWeekStatus={habitStore.getWeekStatus}
-                        isTodayDue={habitStore.isTodayDue}
-                        onAiDecompose={async (goal) => {
-                          const { parseHabitWithAI } = await import('@/domain/habit/ai/parseHabit');
-                          const parsed = await parseHabitWithAI(goal);
-                          if (parsed.length === 0) {
-                            showToast({ message: 'AI 未能拆解出习惯，请尝试更具体的描述', type: 'error' });
-                            return;
-                          }
-                          parsed.forEach(h => habitStore.addHabit(h.title, h.emoji, h.frequency));
-                          showToast({ message: `已添加 ${parsed.length} 个习惯`, type: 'success' });
-                        }}
-                      />
-                    }
                     objectivePanel={
                       <Suspense fallback={<TabLoading />}>
                         <TodoTab
@@ -450,6 +424,7 @@ function WorkbenchApp() {
       </div>
 
       <SettingsModal open={showSettings} onClose={() => setShowSettings(false)} />
+      <ModelUpdateDialog onOpenSettings={() => setShowSettings(true)} />
       <ToolboxCenter
         open={showToolbox}
         onClose={() => setShowToolbox(false)}
