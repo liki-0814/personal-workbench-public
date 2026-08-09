@@ -69,6 +69,7 @@ export interface LlmRequest {
   stream?: boolean;
   feature?: string;
   thinking?: boolean;
+  thinkingLevel?: import('@/core/config').ThinkingLevel;
 }
 
 export interface LlmResponse {

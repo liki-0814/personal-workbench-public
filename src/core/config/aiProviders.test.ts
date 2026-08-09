@@ -4,6 +4,8 @@ import {
   normalizeProviderProtocol,
   supportsDeferredTools,
   supportsKimiDeferredTools,
+  supportedThinkingLevelsForModel,
+  preferredThinkingLevel,
   needsProxy,
   templatesForProtocol,
   validateProviderConfig,
@@ -34,6 +36,21 @@ describe('supportsDeferredTools', () => {
     expect(supportsKimiDeferredTools(provider('Example', 'https://api.example.com/v1', {
       models: [{ id: 'm', name: 'm', deferredToolsMode: 'enabled' }],
     }))).toBe(true);
+  });
+});
+
+describe('thinking levels', () => {
+  it('keeps Pi ordering and hides levels the model marks unsupported', () => {
+    const levels = supportedThinkingLevelsForModel({
+      capabilities: { thinking: true },
+      thinkingLevelMap: { low: 'low', medium: null, high: 'high', xhigh: 'xhigh' },
+    });
+    expect(levels).toEqual(['off', 'low', 'high', 'xhigh']);
+    expect(preferredThinkingLevel(levels)).toBe('high');
+  });
+
+  it('falls back to off and medium when a thinking model has no level metadata', () => {
+    expect(supportedThinkingLevelsForModel({ capabilities: { thinking: true } })).toEqual(['off', 'medium']);
   });
 });
 

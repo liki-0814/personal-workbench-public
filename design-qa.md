@@ -1,50 +1,48 @@
-# Project sidebar interaction design QA
+# Compact thinking-depth slider design QA
 
-- Source visual truth: `/var/folders/9j/rl4n0_nd3nvd0l02zf7j0ddw0000gn/T/codex-clipboard-e0c6b6f0-391e-4da3-b5f4-1e8a40012d39.png`
-- Implementation full screenshot: `/Users/likuang/liki_dev/personal-workbench-public/.codex-audit/11-unified-project-dropdown.png`
-- Implementation focused screenshot: menu bounding box measured directly in the browser (`196 × 165.5` CSS px)
-- Browser viewport: 1280 × 720 CSS px, device scale factor 1
-- Source pixels: 554 × 622
-- Implementation pixels: 1280 × 720 full view; 196 × 165.5 CSS px menu
-- State: light theme, project menu open, one existing project conversation
+- Source visual truth: `/var/folders/9j/rl4n0_nd3nvd0l02zf7j0ddw0000gn/T/codex-clipboard-23bf7bf5-29ac-4053-8bcd-5f5f414fbaae.png`
+- Implementation full screenshot: `/Users/likuang/liki_dev/personal-workbench-public/implementation-thinking-slider-compact-full.png`
+- Implementation focused screenshot: `/Users/likuang/liki_dev/personal-workbench-public/implementation-thinking-slider-compact.png`
+- Browser viewport: 1280 × 720 CSS px
+- Source pixels: 3424 × 1920; red-box reference region inspected as a 590 × 280 px crop
+- Implementation pixels: 1280 × 720 full view; 296 × 114 focused crop
+- Implementation CSS size: 280 × 98 px popover, 220 × 22 px track, 30 px thumb, 15 px heading icon
+- Density normalization: the source is a high-density Codex Desktop screenshot; comparison uses component proportions rather than treating the surrounding application viewport as a 1:1 target
+- State: light theme, GPT-5.6-Sol selected, seven supported levels visible, pointer-open state
 
 ## Full-view comparison evidence
 
-The revised sidebar preserves the existing Personal Workbench visual system while adopting the selected Codex menu structure. Project actions occupy their own layout track and do not cover the project label. The menu opens from the project row without shifting the main workspace.
+The compact popover remains anchored to the AI toolbar without covering the composer or neighboring controls. Its 280 × 98 px footprint matches the small utility-card scale highlighted in the source rather than reading as a large settings panel.
 
 ## Focused comparison evidence
 
-The focused comparison checks the oversized prior project menu capture against the unified dropdown implementation. The revised menu is 196 px wide and 165.5 px high, uses 32 px rows with fixed icon columns, and removes the card-like vertical gaps. Finder, permanent worktree, and archive commands remain intentionally omitted.
+The reference crop and final implementation were inspected together. The heading icon occupies about 5.4% of popover width and the thumb about 13.6% of track width, closely matching the source proportions. The implementation retains level labels because the model-dependent control can expose up to seven positions; this is an intentional clarity addition.
 
 ## Required fidelity surfaces
 
-- Fonts and typography: existing application font stack, weights, truncation, and compact sidebar scale are preserved. Menu labels remain readable and project names truncate without colliding with controls.
-- Spacing and layout rhythm: project name and actions use separate grid tracks; the shared dropdown uses 4 px outer padding, 32 px rows, 7 px icon gaps, 6 px row radii, and a compact divider.
-- Colors and visual tokens: existing surface, border, muted-text, primary, and danger tokens are reused in light and dark themes.
-- Image and asset quality: no image assets are present in this component; icons come from the existing Lucide dependency.
-- Copy and content: commands are concise and match implemented behavior: pin, edit name, copy path, and remove.
+- Fonts and typography: the existing app font stack is retained. Heading/value text is reduced to 12/11 px and labels to 9 px; all seven Chinese labels remain on one line without overlap.
+- Spacing and layout rhythm: the original 360 × 135 px popover was reduced to 280 × 98 px. Padding, radius, shadow, heading gap, track, thumb, markers, and label rhythm were reduced together rather than shrinking only the icon.
+- Colors and visual tokens: surfaces, selected fill, muted markers, text, borders, and focus indication continue to use the active application theme tokens.
+- Image quality and asset fidelity: no raster assets are required. The compact lightning is the existing Lucide icon at 15 px with a filled treatment matching the source.
+- Copy and content: `思考深度` and the current value remain explicit; every model-supported level is named below the track.
 
 ## Primary interactions tested
 
-- Project `+` creates a bound conversation immediately, opens no directory dialog, selects the conversation, and focuses the composer.
-- Pin and unpin persist and update the menu label.
-- Project name enters an inline editor and saves successfully.
-- Copy path completes without a console error.
-- Remove stays disabled while conversations remain and explains the prerequisite.
-- Project menu opens from its always-visible more button; Escape/outside click close behavior is implemented.
-- Menu auto-focuses the first enabled command; Arrow Up/Down, Home/End, and Escape keyboard behavior is covered.
+- Pointer drag traversed the seven-level slider from the first position to `极致` (`value=6`).
+- Pointer-open state shows no decorative focus ring, keeping the 30 px thumb visually compact.
+- Keyboard-open state restores the visible focus ring; Arrow/Home/End/Escape behavior remains available.
+- Responsive positioning, supported-level filtering, reduced-motion behavior, and outside-click dismissal are unchanged.
 - Browser console errors checked: none.
 
 ## Comparison history
 
-1. Initial implementation reserved both action buttons at all times, shortening the visible project label more than necessary.
-2. Revised implementation keeps the more button available, reveals the project `+` on hover/focus, and expands the action track without overlapping the label.
-3. Post-fix evidence: `09-project-menu-final-focused.png`; no remaining P0/P1/P2 issue.
-4. The first project menu still used page-specific `precision-popover` styling and appeared too tall. It was replaced by the shared `DropdownMenu` component and reduced to 32 px command rows.
-5. Post-fix browser evidence: `11-unified-project-dropdown.png`; menu height is 165.5 px, first item is focused, and the browser console has no errors.
+1. Earlier implementation measured 360 × 135 px with a 21 px heading icon and 40 px thumb; the hierarchy appeared oversized relative to the toolbar and the new source reference.
+2. The complete component was proportionally reduced to 280 × 98 px, with a 15 px heading icon, 22 px track, 30 px thumb, 5 px markers, smaller typography, padding, radius, and elevation.
+3. A persistent focus outline made the pointer-open thumb appear larger than its geometry. Focus styling was changed to input-modality-aware state: hidden for pointer opening and retained for keyboard opening.
+4. Post-fix focused comparison found no actionable P0/P1/P2 mismatch.
 
 ## Follow-up polish
 
-- P3: a future resizable sidebar could expose more of unusually long project names, but the current tooltip and non-overlapping truncation are acceptable for this scope.
+- P3: the implementation includes explicit level labels while the visual reference uses dots only. The labels are retained intentionally because supported level sets vary by model.
 
 final result: passed

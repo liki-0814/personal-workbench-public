@@ -33,5 +33,5 @@ export type { ResolvedDirectory } from './ui/tab/DirectoryPickerModal';
 export { useBackgroundTasks } from './state/backgroundTaskStore';
 export type { BackgroundTaskInfo } from './state/backgroundTaskStore';
 export { useChatSessions } from './state/sessionStore';
-export { useAiChat, getMessageContent, getMessageImages, getMessageImageRecords, getMessageStats } from './state/store';
+export { useAiChat, getMessageContent, getMessageTimeline, getMessageDecisionTrace, getMessageImages, getMessageImageRecords, getMessageStats, prepareMessageForRegeneration } from './state/store';
 export { default as BackgroundTaskPanel } from './ui/shared/BackgroundTaskPanel';

@@ -1,11 +1,13 @@
 import { useState, useCallback, useRef, useEffect } from 'react';
-import { getModels } from '@/core/config';
+import { getModels, type ThinkingLevel } from '@/core/config';
+import { load, save } from '@/core/storage';
 import { streamLlm } from '@/core/llm';
 import { generateId } from '@/core/utils/id';
-import { useAgentChat, createAgentSession, controlAgentHarness } from './agentStore';
+import { useAgentChat, createAgentSession, controlAgentHarness, updateAgentRuntimeThinking } from './agentStore';
 import { startStream, endStream, abortStream, setStreamError, useStreamState } from './streamRegistry';
 import { uploadImages } from './imageUpload';
 import { buildAgentStreamCallbacks } from './agentCallbacks';
+import { reduceTimeline, backgroundOpenTools } from './timelineReducer';
 import { AgentSessionCoordinator } from './agentSessionCoordinator';
 
 export { getModels, getModelInfo } from '@/core/config';
@@ -21,6 +23,20 @@ export function getMessageContent(msg: ChatMessage): string {
     return msg.versions[msg.activeVersion].content;
   }
   return msg.content;
+}
+
+export function getMessageTimeline(msg: ChatMessage) {
+  if (msg.activeVersion !== undefined && msg.activeVersion >= 0 && msg.versions?.[msg.activeVersion]) {
+    return msg.versions[msg.activeVersion].timeline;
+  }
+  return msg.timeline;
+}
+
+export function getMessageDecisionTrace(msg: ChatMessage) {
+  if (msg.activeVersion !== undefined && msg.activeVersion >= 0 && msg.versions?.[msg.activeVersion]) {
+    return msg.versions[msg.activeVersion].decisionTrace;
+  }
+  return msg.decisionTrace;
 }
 
 export function getMessageImages(msg: ChatMessage): string[] | undefined {
@@ -42,6 +58,41 @@ export function getMessageStats(msg: ChatMessage): MessageStats | undefined {
     return msg.versions[msg.activeVersion].stats;
   }
   return msg.stats;
+}
+
+/** Archive the current answer version and reset all turn-local projection state. */
+export function prepareMessageForRegeneration(msg: ChatMessage, timestamp = Date.now()): ChatMessage {
+  const savedVersion: ChatMessageVersion = {
+    content: msg.content,
+    model: msg.model,
+    thinkingLevel: msg.thinkingLevel,
+    timeline: msg.timeline,
+    decisionTrace: msg.decisionTrace,
+    generatedImages: msg.generatedImages,
+    generatedImageRecords: msg.generatedImageRecords,
+    timestamp,
+    stats: msg.stats,
+    tokenUsage: msg.tokenUsage,
+  };
+  return {
+    ...msg,
+    versions: [...(msg.versions || []), savedVersion],
+    activeVersion: -1,
+    content: '',
+    model: undefined,
+    thinkingLevel: undefined,
+    timeline: undefined,
+    thinking: undefined,
+    progressText: undefined,
+    toolTrace: undefined,
+    decisionTrace: undefined,
+    decisionPrompt: undefined,
+    error: undefined,
+    generatedImages: undefined,
+    generatedImageRecords: undefined,
+    stats: undefined,
+    tokenUsage: undefined,
+  };
 }
 
 
@@ -119,8 +170,26 @@ export function useAiChat({
     else sessionStorage.removeItem(draftKey);
   }, [draftKey]);
   const [model, setModel] = useState<AiModel>(getModels()[0]?.name ?? '');
-  // Extended-thinking toggle. Off by default — user opts in per session.
-  const [thinking, setThinking] = useState(false);
+  const [thinkingLevel, setThinkingLevelState] = useState<ThinkingLevel>(() => {
+    const saved = load<string>('thinking_level', 'high');
+    return ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'].includes(saved)
+      ? saved as ThinkingLevel
+      : 'high';
+  });
+  const thinkingLevelRef = useRef(thinkingLevel);
+  thinkingLevelRef.current = thinkingLevel;
+  const [effectiveThinkingLevel, setEffectiveThinkingLevel] = useState<ThinkingLevel>(thinkingLevel);
+  const [pendingThinkingLevel, setPendingThinkingLevel] = useState<ThinkingLevel | null>(null);
+  const thinking = thinkingLevel !== 'off';
+  const setThinkingLevel = useCallback((level: ThinkingLevel) => {
+    setThinkingLevelState(level);
+    thinkingLevelRef.current = level;
+    if (!streamingRef.current) setEffectiveThinkingLevel(level);
+    save('thinking_level', level);
+  }, []);
+  const setThinking = useCallback((enabled: boolean) => {
+    setThinkingLevel(enabled ? 'high' : 'off');
+  }, [setThinkingLevel]);
   const streamingRef = useRef(false);
   const lastKeyRef = useRef(sessionKey);
   const systemPromptRef = useRef(systemPrompt);
@@ -132,11 +201,42 @@ export function useAiChat({
   const targetKey = sessionKey || '_anon';
   const { loading, error } = useStreamState(targetKey);
 
+  const handleRuntimeUpdate = useCallback((update: { callIndex: number; thinkingLevel: ThinkingLevel }) => {
+    setEffectiveThinkingLevel(update.thinkingLevel);
+    setPendingThinkingLevel(current => current === update.thinkingLevel ? null : current);
+  }, []);
+
+  useEffect(() => {
+    if (loading) return;
+    setPendingThinkingLevel(null);
+    setEffectiveThinkingLevel(thinkingLevelRef.current);
+  }, [loading]);
+
   // Agent service integration
   const agentChat = useAgentChat();
   const [agentSessionId, setAgentSessionId] = useState<string | null>(initialAgentSessionId);
   const agentSessionRef = useRef<string | null>(initialAgentSessionId);
   agentSessionRef.current = agentSessionId;
+
+  const setThinkingLevelForNextCall = useCallback(async (level: ThinkingLevel) => {
+    const previous = thinkingLevelRef.current;
+    setThinkingLevel(level);
+    const activeSessionId = agentSessionRef.current;
+    if (!streamingRef.current || !activeSessionId) {
+      setPendingThinkingLevel(null);
+      setEffectiveThinkingLevel(level);
+      return;
+    }
+    setPendingThinkingLevel(level);
+    try {
+      await updateAgentRuntimeThinking(activeSessionId, level);
+    } catch (error) {
+      setPendingThinkingLevel(null);
+      setThinkingLevel(previous);
+      setEffectiveThinkingLevel(previous);
+      throw error;
+    }
+  }, [setThinkingLevel]);
   const agentSessionsRef = useRef(new Map<string, string>());
   if (initialAgentSessionId && !agentSessionsRef.current.has(targetKey)) {
     agentSessionsRef.current.set(targetKey, initialAgentSessionId);
@@ -335,7 +435,9 @@ export function useAiChat({
         }
         if (sessionId) {
           try {
-            const assistantMsg: ChatMessage = { id: generateId(), role: 'assistant', content: '' };
+            const assistantMsg: ChatMessage = {
+              id: generateId(), role: 'assistant', content: '', model, thinkingLevel,
+            };
             currentMessages = [...currentMessages, assistantMsg];
             const assistantIndex = currentMessages.length - 1;
             update(currentMessages);
@@ -353,14 +455,16 @@ export function useAiChat({
               setMessages: (msgs) => { currentMessages = msgs; update(currentMessages); },
               assistantIndex,
               target,
+              onRuntimeUpdate: handleRuntimeUpdate,
             });
-            const { flushPendingProgress, ...streamCallbacks } = callbacks;
+            const { flushPendingProgress, finalizeTimeline, ...streamCallbacks } = callbacks;
             await agentChat.streamMessage(messagesToSend, {
               sessionId,
               sessionName: sessionKeyRef.current || undefined,
               systemPrompt: serverManagedPrompt ? undefined : systemPromptRef.current,
               model,
               thinking,
+              thinkingLevel,
               cwd: cwdRef.current || undefined,
               requirePermissionApproval,
               signal,
@@ -368,6 +472,7 @@ export function useAiChat({
               onContextUsage: usage => onContextUsageRef.current?.(usage),
               onDone: (usage) => {
                 flushPendingProgress();
+                finalizeTimeline();
                 // Mark any still-running tool traces as backgrounded (auto-promoted by pwcli)
                 const msgs = currentMessages;
                 const last = msgs[assistantIndex];
@@ -419,7 +524,9 @@ export function useAiChat({
 
       // Direct mode: simple streaming without tools (no agent loop)
       try {
-        const assistantMsg: ChatMessage = { id: generateId(), role: 'assistant', content: '' };
+        const assistantMsg: ChatMessage = {
+          id: generateId(), role: 'assistant', content: '', model, thinkingLevel,
+        };
         currentMessages = [...currentMessages, assistantMsg];
         const assistantIndex = currentMessages.length - 1;
         update(currentMessages);
@@ -428,6 +535,8 @@ export function useAiChat({
           .filter((m, i, arr) => !m.systemNotice && (i < arr.length - 1 || m.role !== 'assistant' || m.content.trim() !== ''))
           .map(m => ({ role: m.role, content: m.content, images: m.images, tool_calls: m.tool_calls, tool_call_id: m.tool_call_id }));
 
+        let prevThinking = '';
+        let prevContent = '';
         for await (const event of streamLlm({
           model,
           messages: messagesToSend,
@@ -435,15 +544,23 @@ export function useAiChat({
           temperature: 0.7,
           stream: true,
           thinking,
+          thinkingLevel,
         }, signal)) {
           if (event.type === 'delta') {
+            // streamLlm 的 content/thinking 为累积值，diff 成增量后走同一 reducer
+            let msg = currentMessages[assistantIndex];
+            const thinkingNow = event.thinking ?? '';
+            const contentNow = event.content ?? '';
+            if (thinkingNow.length > prevThinking.length) {
+              msg = reduceTimeline(msg, { type: 'thinking_delta', delta: thinkingNow.slice(prevThinking.length) });
+              prevThinking = thinkingNow;
+            }
+            if (contentNow.length > prevContent.length) {
+              msg = reduceTimeline(msg, { type: 'text_delta', delta: contentNow.slice(prevContent.length) });
+              prevContent = contentNow;
+            }
             const updated = [...currentMessages];
-            updated[assistantIndex] = {
-              ...updated[assistantIndex],
-              content: event.content,
-              thinking: event.thinking,
-              generatedImages: event.generatedImages,
-            };
+            updated[assistantIndex] = { ...msg, generatedImages: event.generatedImages };
             currentMessages = updated;
             update(currentMessages);
           } else if (event.type === 'error') {
@@ -454,18 +571,29 @@ export function useAiChat({
         if (err instanceof Error && err.name !== 'AbortError') {
           setStreamError(target, err.message || '网络错误，请稍后重试');
           const lastMsg = currentMessages[currentMessages.length - 1];
-          if (lastMsg?.role === 'assistant' && lastMsg.content === '' && !lastMsg.tool_calls?.length) {
-            currentMessages = currentMessages.slice(0, -1);
+          if (lastMsg?.role === 'assistant') {
+            const closedMsg = reduceTimeline(lastMsg, { type: 'error' });
+            if (closedMsg.content === '' && !closedMsg.tool_calls?.length) {
+              currentMessages = currentMessages.slice(0, -1);
+            } else {
+              currentMessages = [...currentMessages.slice(0, -1), closedMsg];
+            }
             update(currentMessages);
           }
         }
       } finally {
+        const lastMsg = currentMessages[currentMessages.length - 1];
+        if (lastMsg?.role === 'assistant' && lastMsg.timeline?.length) {
+          // 正常结束/中断时关闭开放项（error 路径已关闭，done 为幂等）
+          currentMessages = [...currentMessages.slice(0, -1), reduceTimeline(lastMsg, { type: 'done' })];
+          update(currentMessages);
+        }
         flushMessagesPersist();
         streamingRef.current = false;
         endStream(target);
       }
     },
-    [messages, model, updateMessages, flushMessagesPersist, useAgent, agentChat, thinking, serverManagedPrompt, setInput, requirePermissionApproval, ensureAgentSession]
+    [messages, model, updateMessages, flushMessagesPersist, useAgent, agentChat, thinking, thinkingLevel, serverManagedPrompt, setInput, requirePermissionApproval, ensureAgentSession, handleRuntimeUpdate]
   );
 
   const retry = useCallback(async () => {
@@ -489,7 +617,9 @@ export function useAiChat({
     // Retry via pwcli agent (or direct streaming if no agent)
     if (useAgent && agentSessionId) {
       try {
-        const assistantMsg: ChatMessage = { id: generateId(), role: 'assistant', content: '' };
+        const assistantMsg: ChatMessage = {
+          id: generateId(), role: 'assistant', content: '', model, thinkingLevel,
+        };
         currentMessages = [...currentMessages, assistantMsg];
         const assistantIndex = currentMessages.length - 1;
         update(currentMessages);
@@ -505,8 +635,9 @@ export function useAiChat({
           setMessages: (msgs) => { currentMessages = msgs; update(currentMessages); },
           assistantIndex,
           target,
+          onRuntimeUpdate: handleRuntimeUpdate,
         });
-        const { flushPendingProgress, ...streamCallbacks } = callbacks;
+        const { flushPendingProgress, finalizeTimeline, ...streamCallbacks } = callbacks;
 
         await agentChat.streamMessage(messagesToSend, {
           sessionId: agentSessionId,
@@ -514,6 +645,7 @@ export function useAiChat({
           systemPrompt: serverManagedPrompt ? undefined : systemPromptRef.current,
           model,
           thinking,
+          thinkingLevel,
           cwd: cwdRef.current || undefined,
           requirePermissionApproval,
           signal,
@@ -521,6 +653,7 @@ export function useAiChat({
           onContextUsage: usage => onContextUsageRef.current?.(usage),
           onDone: (usage) => {
             flushPendingProgress();
+            finalizeTimeline();
             if (!usage) return;
             const last = currentMessages[assistantIndex];
             if (!last) return;
@@ -544,7 +677,9 @@ export function useAiChat({
 
     // Direct mode streaming (no tools)
     try {
-      const assistantMsg: ChatMessage = { id: generateId(), role: 'assistant', content: '' };
+      const assistantMsg: ChatMessage = {
+        id: generateId(), role: 'assistant', content: '', model, thinkingLevel,
+      };
       currentMessages = [...currentMessages, assistantMsg];
       const assistantIndex = currentMessages.length - 1;
       update(currentMessages);
@@ -560,6 +695,7 @@ export function useAiChat({
         temperature: 0.7,
         stream: true,
         thinking,
+        thinkingLevel,
       }, signal)) {
         if (event.type === 'delta') {
           const updated = [...currentMessages];
@@ -589,7 +725,7 @@ export function useAiChat({
       streamingRef.current = false;
       endStream(target);
     }
-  }, [messages, model, updateMessages, flushMessagesPersist, useAgent, agentSessionId, agentChat, thinking, serverManagedPrompt, requirePermissionApproval]);
+  }, [messages, model, updateMessages, flushMessagesPersist, useAgent, agentSessionId, agentChat, thinking, thinkingLevel, serverManagedPrompt, requirePermissionApproval, handleRuntimeUpdate]);
 
   const clearChat = useCallback(async () => {
     const target = sessionKeyRef.current || '_anon';
@@ -645,26 +781,9 @@ export function useAiChat({
     if (lastAssistantIndex === -1) return;
 
     const msg = messages[lastAssistantIndex];
-    const savedVersion: ChatMessageVersion = {
-      content: msg.content,
-      generatedImages: msg.generatedImages,
-      generatedImageRecords: msg.generatedImageRecords,
-      timestamp: Date.now(),
-      stats: msg.stats,
-    };
-    const newVersions = [...(msg.versions || []), savedVersion];
-
     // Truncate messages after this assistant message (they depend on it)
     let currentMessages = messages.slice(0, lastAssistantIndex + 1);
-    currentMessages[lastAssistantIndex] = {
-      ...msg,
-      versions: newVersions,
-      activeVersion: -1,
-      content: '',
-      generatedImages: undefined,
-      generatedImageRecords: undefined,
-      stats: undefined,
-    };
+    currentMessages[lastAssistantIndex] = prepareMessageForRegeneration(msg);
     const target = sessionKeyRef.current || '_anon';
     const controller = startStream(target);
     const signal = controller.signal;
@@ -687,8 +806,9 @@ export function useAiChat({
           setMessages: (msgs) => { currentMessages = msgs; update(currentMessages); },
           assistantIndex,
           target,
+          onRuntimeUpdate: handleRuntimeUpdate,
         });
-        const { flushPendingProgress, ...streamCallbacks } = callbacks;
+        const { flushPendingProgress, finalizeTimeline, ...streamCallbacks } = callbacks;
 
         await agentChat.streamMessage(messagesToSend, {
           sessionId: agentSessionId,
@@ -696,6 +816,7 @@ export function useAiChat({
           systemPrompt: serverManagedPrompt ? undefined : systemPromptRef.current,
           model,
           thinking,
+          thinkingLevel,
           cwd: cwdRef.current || undefined,
           requirePermissionApproval,
           signal,
@@ -703,20 +824,16 @@ export function useAiChat({
           onContextUsage: usage => onContextUsageRef.current?.(usage),
           onDone: (usage) => {
             flushPendingProgress();
+            finalizeTimeline();
             const msgs = currentMessages;
             const last = msgs[assistantIndex];
-            if (last && (usage || last.toolTrace?.some(t => t.status === 'running'))) {
-              const updated = [...msgs];
-              updated[assistantIndex] = {
-                ...last,
-                tokenUsage: usage ?? last.tokenUsage,
-                toolTrace: last.toolTrace?.map(t =>
-                  t.status === 'running' ? { ...t, status: 'backgrounded' as const } : t
-                ),
-              };
-              currentMessages = updated;
-              update(currentMessages);
-            }
+            if (!last) return;
+            // 仍 running 的工具转后台，随后关闭全部开放项
+            const closed = reduceTimeline(backgroundOpenTools(last), { type: 'done' });
+            const updated = [...msgs];
+            updated[assistantIndex] = { ...closed, tokenUsage: usage ?? closed.tokenUsage };
+            currentMessages = updated;
+            update(currentMessages);
           },
         });
       } catch (err) {
@@ -738,6 +855,8 @@ export function useAiChat({
           .filter((m, i, arr) => !m.systemNotice && (i < arr.length - 1 || m.role !== 'assistant' || m.content.trim() !== ''))
           .map(m => ({ role: m.role, content: m.content, images: m.images, tool_calls: m.tool_calls, tool_call_id: m.tool_call_id }));
 
+      let prevThinking = '';
+      let prevContent = '';
       for await (const event of streamLlm({
         model,
         messages: messagesToSend,
@@ -745,15 +864,22 @@ export function useAiChat({
         temperature: 0.7,
         stream: true,
         thinking,
+        thinkingLevel,
       }, signal)) {
         if (event.type === 'delta') {
+          let msg = currentMessages[assistantIndex];
+          const thinkingNow = event.thinking ?? '';
+          const contentNow = event.content ?? '';
+          if (thinkingNow.length > prevThinking.length) {
+            msg = reduceTimeline(msg, { type: 'thinking_delta', delta: thinkingNow.slice(prevThinking.length) });
+            prevThinking = thinkingNow;
+          }
+          if (contentNow.length > prevContent.length) {
+            msg = reduceTimeline(msg, { type: 'text_delta', delta: contentNow.slice(prevContent.length) });
+            prevContent = contentNow;
+          }
           const updated = [...currentMessages];
-          updated[assistantIndex] = {
-            ...updated[assistantIndex],
-            content: event.content,
-            thinking: event.thinking,
-            generatedImages: event.generatedImages,
-          };
+          updated[assistantIndex] = { ...msg, generatedImages: event.generatedImages };
           currentMessages = updated;
           update(currentMessages);
         } else if (event.type === 'error') {
@@ -764,17 +890,27 @@ export function useAiChat({
       if (err instanceof Error && err.name !== 'AbortError') {
         setStreamError(target, err.message || '网络错误，请稍后重试');
         const lastMsg = currentMessages[currentMessages.length - 1];
-        if (lastMsg?.role === 'assistant' && lastMsg.content === '' && !lastMsg.tool_calls?.length) {
-          currentMessages = currentMessages.slice(0, -1);
+        if (lastMsg?.role === 'assistant') {
+          const closedMsg = reduceTimeline(lastMsg, { type: 'error' });
+          if (closedMsg.content === '' && !closedMsg.tool_calls?.length) {
+            currentMessages = currentMessages.slice(0, -1);
+          } else {
+            currentMessages = [...currentMessages.slice(0, -1), closedMsg];
+          }
           update(currentMessages);
         }
       }
     } finally {
+      const lastMsg = currentMessages[currentMessages.length - 1];
+      if (lastMsg?.role === 'assistant' && lastMsg.timeline?.length) {
+        currentMessages = [...currentMessages.slice(0, -1), reduceTimeline(lastMsg, { type: 'done' })];
+        update(currentMessages);
+      }
       flushMessagesPersist();
       streamingRef.current = false;
       endStream(target);
     }
-  }, [messages, model, updateMessages, flushMessagesPersist, useAgent, agentSessionId, agentChat, thinking, serverManagedPrompt, requirePermissionApproval]);
+  }, [messages, model, updateMessages, flushMessagesPersist, useAgent, agentSessionId, agentChat, thinking, thinkingLevel, serverManagedPrompt, requirePermissionApproval, handleRuntimeUpdate]);
 
   // Switch between versions of a message
   const switchVersion = useCallback((msgIndex: number, versionIndex: number) => {
@@ -799,7 +935,12 @@ export function useAiChat({
     model,
     setModel,
     thinking,
+    thinkingLevel,
+    effectiveThinkingLevel,
+    pendingThinkingLevel,
     setThinking,
+    setThinkingLevel,
+    setThinkingLevelForNextCall,
     sendMessage,
     retry,
     regenerate,

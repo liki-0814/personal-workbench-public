@@ -1,16 +1,8 @@
-import type { ChatMessage, DecisionOption, DecisionPromptRecord, DecisionTrace, GeneratedImageRecord, ToolTrace } from '../types';
+import type { ChatMessage, DecisionOption, DecisionPromptRecord, DecisionTrace, GeneratedImageRecord } from '../types';
 import type { DocumentRef } from '@/domain/documents';
 import { setStreamError } from './streamRegistry';
 import { uploadImages, isBase64DataUrl } from './imageUpload';
-
-const TOOL_TRACE_ARG_LIMIT = 500;
-const TOOL_TRACE_RESULT_LIMIT = 1000;
-/** Maximum progress lines kept per trace chip. Excess drops oldest (keeps tail). */
-const TOOL_TRACE_PROGRESS_LIMIT = 200;
-
-function truncTraceField(s: string, max: number): string {
-  return s.length > max ? `${s.slice(0, max)}…[共 ${s.length} 字符]` : s;
-}
+import { reduceTimeline, type TimelineEvent } from './timelineReducer';
 
 export interface AgentStreamCallbackParams {
   /** Getter for current messages array (captured via closure in caller) */
@@ -21,118 +13,78 @@ export interface AgentStreamCallbackParams {
   assistantIndex: number;
   /** Stream target key for error reporting */
   target: string;
+  onRuntimeUpdate?: (update: { callIndex: number; thinkingLevel: import('@/core/config').ThinkingLevel }) => void;
 }
 
 /**
  * Build the agent stream callbacks object used by agentChat.streamMessage().
- * Eliminates duplication between sendMessage and regenerate.
+ * 过程事件（思考/正文/工具）统一经 reduceTimeline 归约为 msg.timeline
+ * （分组/关闭规则见 timelineReducer）；本层只负责进度节流与消息级副作用
+ * （图片、文档、决策等独立字段）。
  */
 export function buildAgentStreamCallbacks(params: AgentStreamCallbackParams) {
-  const { getMessages, setMessages, assistantIndex, target } = params;
+  const { getMessages, setMessages, assistantIndex, target, onRuntimeUpdate } = params;
 
   // Throttle progress lines: accumulate per-tool and flush every 150ms
   const pendingProgress = new Map<string, string[]>();
-  let activeSegmentRound: number | null = null;
-  let activeSegmentText = '';
   let progressFlushTimer: ReturnType<typeof setTimeout> | null = null;
+  let activeRound: number | undefined;
+
+  function commit(next: ChatMessage) {
+    const updated = [...getMessages()];
+    updated[assistantIndex] = next;
+    setMessages(updated);
+  }
+
+  function apply(ev: TimelineEvent) {
+    commit(reduceTimeline(getMessages()[assistantIndex], ev));
+  }
 
   function flushProgress() {
     progressFlushTimer = null;
     if (pendingProgress.size === 0) return;
-    const updated = [...getMessages()];
-    const cur = updated[assistantIndex];
-    if (!cur.toolTrace) { pendingProgress.clear(); return; }
-    updated[assistantIndex] = {
-      ...cur,
-      toolTrace: cur.toolTrace.map(t => {
-        const lines = pendingProgress.get(t.id);
-        if (!lines) return t;
-        const log = t.progressLog ?? [];
-        const combined = [...log, ...lines];
-        const next = combined.length > TOOL_TRACE_PROGRESS_LIMIT
-          ? combined.slice(combined.length - TOOL_TRACE_PROGRESS_LIMIT)
-          : combined;
-        return { ...t, progressLog: next };
-      }),
-    };
+    let msg = getMessages()[assistantIndex];
+    for (const [id, lines] of pendingProgress) {
+      for (const line of lines) msg = reduceTimeline(msg, { type: 'tool_progress', id, line });
+    }
     pendingProgress.clear();
-    setMessages(updated);
+    commit(msg);
   }
 
   return {
     onAssistantSegmentStart: (round: number) => {
-      activeSegmentRound = round;
-      activeSegmentText = '';
-      const updated = [...getMessages()];
-      const current = updated[assistantIndex];
-      // A new model call supersedes the previous working draft. Tool traces
-      // remain attached to the turn; only answer text is reset.
-      updated[assistantIndex] = { ...current, content: '', thinking: '' };
-      setMessages(updated);
-    },
-    onDelta: (delta: string) => {
-      if (activeSegmentRound !== null) activeSegmentText += delta;
-      const updated = [...getMessages()];
-      updated[assistantIndex] = { ...updated[assistantIndex], content: updated[assistantIndex].content + delta };
-      setMessages(updated);
+      activeRound = round;
+      apply({ type: 'segment_start', round });
     },
     onAssistantSegmentEnd: (round: number, hasToolCalls: boolean) => {
-      if (activeSegmentRound !== round) return;
-      const segmentText = activeSegmentText.trim();
-      activeSegmentRound = null;
-      activeSegmentText = '';
-      if (!hasToolCalls) return;
-      const updated = [...getMessages()];
-      const current = updated[assistantIndex];
-      updated[assistantIndex] = {
-        ...current,
-        content: '',
-        thinking: '',
-        progressText: segmentText
-          ? [...(current.progressText ?? []), segmentText]
-          : current.progressText,
-      };
-      setMessages(updated);
+      apply({ type: 'segment_end', round, hasToolCalls });
+      if (activeRound === round) activeRound = undefined;
+    },
+    onAssistantSegmentClassified: (round: number, kind: 'narration' | 'candidate' | 'final') => {
+      apply({ type: 'segment_classified', round, kind });
+    },
+    onCandidateDisposition: (round: number, disposition: 'promoted' | 'discarded' | 'superseded') => {
+      apply({ type: 'candidate_disposition', round, disposition });
+    },
+    onRuntimeUpdate: (update: { callIndex: number; thinkingLevel: import('@/core/config').ThinkingLevel }) => {
+      const current = getMessages()[assistantIndex];
+      if (current) commit({ ...current, thinkingLevel: update.thinkingLevel });
+      onRuntimeUpdate?.(update);
+    },
+    onDelta: (delta: string) => {
+      apply({ type: 'text_delta', delta, round: activeRound });
     },
     onThinkingDelta: (delta: string) => {
-      const updated = [...getMessages()];
-      updated[assistantIndex] = {
-        ...updated[assistantIndex],
-        thinking: (updated[assistantIndex].thinking || '') + delta,
-      };
-      setMessages(updated);
+      apply({ type: 'thinking_delta', delta });
     },
     onStreamReset: (_reason: string) => {
-      const updated = [...getMessages()];
-      const current = updated[assistantIndex];
-      updated[assistantIndex] = {
-        ...current,
-        content: '',
-        thinking: '',
-        toolTrace: undefined,
-      };
-      setMessages(updated);
+      apply({ type: 'stream_reset' });
     },
     onToolCall: ({ id, name }: { id: string; name: string }) => {
-      const updated = [...getMessages()];
-      const cur = updated[assistantIndex];
-      const existing = cur.toolTrace ?? [];
-      if (existing.some(t => t.id === id)) return;
-      const trace: ToolTrace = { id, name, args: '', status: 'running' };
-      updated[assistantIndex] = { ...cur, toolTrace: [...existing, trace] };
-      setMessages(updated);
+      apply({ type: 'tool_call_start', id, name });
     },
     onToolCallArgsDelta: (id: string, argsDelta: string) => {
-      const updated = [...getMessages()];
-      const cur = updated[assistantIndex];
-      const trace = cur.toolTrace?.find(t => t.id === id);
-      if (!trace) return;
-      const newArgs = truncTraceField(trace.args + argsDelta, TOOL_TRACE_ARG_LIMIT);
-      updated[assistantIndex] = {
-        ...cur,
-        toolTrace: cur.toolTrace!.map(t => t.id === id ? { ...t, args: newArgs } : t),
-      };
-      setMessages(updated);
+      apply({ type: 'tool_call_args_delta', id, delta: argsDelta });
     },
     onToolResult: ({ toolCallId, output, isError, failure }: { toolCallId: string; output: string; isError: boolean; failure?: import('../types').FailureEnvelope }) => {
       // Flush any pending progress for this tool before recording the result
@@ -140,36 +92,10 @@ export function buildAgentStreamCallbacks(params: AgentStreamCallbackParams) {
         if (progressFlushTimer) { clearTimeout(progressFlushTimer); progressFlushTimer = null; }
         flushProgress();
       }
-      const updated = [...getMessages()];
-      const cur = updated[assistantIndex];
-      if (!cur.toolTrace) return;
-      updated[assistantIndex] = {
-        ...cur,
-        toolTrace: cur.toolTrace.map(t => t.id === toolCallId ? {
-          ...t,
-          result: truncTraceField(output, TOOL_TRACE_RESULT_LIMIT),
-          isError,
-          failure,
-          recoveryPhase: undefined,
-          status: isError ? 'error' : 'done',
-        } : t),
-      };
-      setMessages(updated);
+      apply({ type: 'tool_result', id: toolCallId, output, isError, failure });
     },
     onToolRecovery: ({ toolCallId, failure, phase }: { toolCallId: string; failure: import('../types').FailureEnvelope; phase: string }) => {
-      const updated = [...getMessages()];
-      const cur = updated[assistantIndex];
-      if (!cur.toolTrace) return;
-      updated[assistantIndex] = {
-        ...cur,
-        toolTrace: cur.toolTrace.map(t => t.id === toolCallId ? {
-          ...t,
-          failure,
-          recoveryPhase: phase,
-          status: phase === 'auto_retrying' ? 'recovering' : t.status,
-        } : t),
-      };
-      setMessages(updated);
+      apply({ type: 'tool_recovery', id: toolCallId, phase, failure });
     },
     onToolProgress: (toolCallId: string, line: string) => {
       const buf = pendingProgress.get(toolCallId) ?? [];
@@ -214,6 +140,7 @@ export function buildAgentStreamCallbacks(params: AgentStreamCallbackParams) {
       setMessages(updated);
     },
     onDecisionStarted: ({ id, trigger, risk }: { id: string; trigger: string; risk: string }) => {
+      apply({ type: 'decision_started', id, trigger });
       const updated = [...getMessages()];
       const current = updated[assistantIndex];
       const existing = current.decisionTrace ?? [];
@@ -222,7 +149,7 @@ export function buildAgentStreamCallbacks(params: AgentStreamCallbackParams) {
       updated[assistantIndex] = { ...current, decisionTrace: [...existing, trace] };
       setMessages(updated);
     },
-    onDecisionAdvisor: ({ id, model, status }: { id: string; model: string; status: string }) => {
+    onDecisionAdvisor: ({ id, model, status, round, summary }: { id: string; model: string; status: string; round?: number; summary?: string }) => {
       const updated = [...getMessages()];
       const current = updated[assistantIndex];
       if (!current.decisionTrace) return;
@@ -230,7 +157,10 @@ export function buildAgentStreamCallbacks(params: AgentStreamCallbackParams) {
         ...current,
         decisionTrace: current.decisionTrace.map(trace => trace.id !== id ? trace : {
           ...trace,
-          advisors: [...trace.advisors.filter(advisor => advisor.model !== model), { model, status }],
+          advisors: [
+            ...trace.advisors.filter(advisor => !(advisor.model === model && advisor.round === round)),
+            { model, status, round, summary },
+          ],
         }),
       };
       setMessages(updated);
@@ -238,6 +168,7 @@ export function buildAgentStreamCallbacks(params: AgentStreamCallbackParams) {
     onDecisionResolved: ({ id, outcome, confidence, consensus, rationale }: {
       id: string; outcome: string; confidence: number; consensus: number; rationale: string;
     }) => {
+      apply({ type: 'decision_resolved', id, outcome });
       const updated = [...getMessages()];
       const current = updated[assistantIndex];
       if (!current.decisionTrace) return;
@@ -264,11 +195,11 @@ export function buildAgentStreamCallbacks(params: AgentStreamCallbackParams) {
     onError: (err: string) => {
       if (progressFlushTimer) { clearTimeout(progressFlushTimer); progressFlushTimer = null; }
       flushProgress();
+      apply({ type: 'error' });
       setStreamError(target, err);
-      const updated = [...getMessages()];
-      if (updated[assistantIndex] && !updated[assistantIndex].content) {
-        updated[assistantIndex] = { ...updated[assistantIndex], error: err };
-        setMessages(updated);
+      const current = getMessages()[assistantIndex];
+      if (current && !current.content) {
+        commit({ ...current, error: err });
       }
     },
     /** Flush any buffered progress lines immediately (call before onDone). */
@@ -276,5 +207,6 @@ export function buildAgentStreamCallbacks(params: AgentStreamCallbackParams) {
       if (progressFlushTimer) { clearTimeout(progressFlushTimer); progressFlushTimer = null; }
       flushProgress();
     },
+    finalizeTimeline: () => apply({ type: 'done' }),
   };
 }

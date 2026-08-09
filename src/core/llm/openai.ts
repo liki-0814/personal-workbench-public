@@ -76,10 +76,7 @@ export async function* streamOpenAI(res: Response): AsyncGenerator<StreamDelta, 
   if (!contentType.includes('text/event-stream')) {
     const data = await res.json();
     const choice = data.choices?.[0];
-    let content = choice?.message?.content;
-    if ((content === '' || content == null) && choice?.message?.reasoning_content) {
-      content = choice.message.reasoning_content;
-    }
+    const content = choice?.message?.content;
     const parsed = parseOpenAIMultimodalContent(content);
     yield {
       content: parsed.text,

@@ -1,13 +1,15 @@
-import { useState, memo, useMemo } from 'react';
+import { useEffect, useState, memo, useMemo } from 'react';
 import { Wrench, ChevronDown, ChevronLeft, ChevronRight, RefreshCw, Copy, Check, Brain, Zap, FileCode2, GitBranch } from 'lucide-react';
 import MarkdownRenderer from '@/shell/ui/MarkdownRenderer';
 import CopyableImage from '@/shell/ui/CopyableImage';
-import { getMessageContent, getMessageImages, getMessageImageRecords, getMessageStats } from '@/domain/chat';
+import { getMessageContent, getMessageTimeline, getMessageDecisionTrace, getMessageImages, getMessageImageRecords, getMessageStats } from '@/domain/chat';
 import type { ChatMessage, GeneratedImageRecord } from '../../types';
 import type { WorkspaceRef } from '@/domain/studio';
 import { ThinkingIndicator } from './ThinkingIndicator';
 import ToolTraceList from './ToolTraceList';
 import DecisionTraceList from './DecisionTraceList';
+import TurnTimeline from './timeline/TurnTimeline';
+import { getTimelineToolItems } from '../../state/timelineReducer';
 import { DocumentCard, type DocumentRef } from '@/domain/documents';
 
 interface Props {
@@ -46,14 +48,90 @@ function MessageBubbleInner({
   const msgImages = useMemo(() => getMessageImages(msg), [msg]);
   const msgStats = useMemo(() => getMessageStats(msg), [msg]);
   const imageRecords = useMemo(() => getMessageImageRecords(msg) ?? [], [msg]);
+  const activeTimeline = useMemo(() => getMessageTimeline(msg), [msg]);
+  const activeDecisionTrace = useMemo(() => getMessageDecisionTrace(msg), [msg]);
+  const hasTimeline = !!(activeTimeline && activeTimeline.length > 0);
+  const timelineTools = useMemo(() => getTimelineToolItems(activeTimeline), [activeTimeline]);
   const hasToolOutcome = useMemo(
-    () => !!msg.toolTrace?.some(t => t.result || t.status === 'backgrounded' || t.status === 'done'),
-    [msg.toolTrace],
+    () => hasTimeline
+      ? timelineTools.some(t => t.result || t.status === 'backgrounded' || t.status === 'done')
+      : !!msg.toolTrace?.some(t => t.result || t.status === 'backgrounded' || t.status === 'done'),
+    [hasTimeline, timelineTools, msg.toolTrace],
   );
   const hasBackgroundedTool = useMemo(
-    () => !!msg.toolTrace?.some(t => t.status === 'backgrounded'),
-    [msg.toolTrace],
+    () => hasTimeline
+      ? timelineTools.some(t => t.status === 'backgrounded')
+      : !!msg.toolTrace?.some(t => t.status === 'backgrounded'),
+    [hasTimeline, timelineTools, msg.toolTrace],
   );
+  const hasTimelineProcess = useMemo(
+    () => !!activeTimeline?.some(item =>
+      item.kind !== 'text' || (item.phase !== 'final' && item.phase !== undefined && item.phase !== 'discarded'),
+    ),
+    [activeTimeline],
+  );
+  const hasLegacyProcess = !hasTimeline && !!(
+    msg.progressText?.length || msg.thinking?.length || msg.toolTrace?.length
+  );
+  const hasDecisionProcess = !!activeDecisionTrace?.length;
+  const hasProcess = hasTimelineProcess || hasLegacyProcess || hasDecisionProcess;
+  const activeTurn = loading && isLastAssistant;
+  const hasSettledResult = !activeTurn && !!(
+    msgContent || msgImages?.length || msg.documentRefs?.length || msg.collaborationTask || hasBackgroundedTool
+  );
+  const [processExpanded, setProcessExpanded] = useState(activeTurn);
+  const processSummary = useMemo(() => {
+    if (!activeTimeline?.length) {
+      return activeTurn ? '进行中' : '';
+    }
+    let thinkingCount = 0;
+    let runningTools = 0;
+    let startedAt = Number.POSITIVE_INFINITY;
+    let endedAt = 0;
+    for (const item of activeTimeline) {
+      startedAt = Math.min(startedAt, item.startedAt);
+      endedAt = Math.max(endedAt, item.endedAt ?? Date.now());
+      if (item.kind === 'thinking') thinkingCount += 1;
+      if (item.kind === 'tool_group') {
+        for (const child of item.children) {
+          if (child.kind === 'thinking') thinkingCount += 1;
+          if (child.kind === 'tool' && (child.status === 'running' || child.status === 'recovering')) {
+            runningTools += 1;
+          }
+        }
+      }
+    }
+    const reviewing = activeDecisionTrace?.some(trace => trace.status === 'reviewing');
+    if (activeTurn) {
+      if (reviewing) return '正在复核答案';
+      if (runningTools > 0) return `正在执行 ${runningTools} 项操作`;
+      if (activeTimeline.some(item => item.kind === 'thinking' && item.status === 'running')) return '正在思考';
+      return '正在生成答案';
+    }
+    const parts = [];
+    if (msg.model) {
+      const levelLabels: Record<string, string> = {
+        off: '默认', minimal: '极简', low: '低', medium: '中', high: '高',
+        xhigh: '超高', max: '最大', ultra: '极致',
+      };
+      parts.push(`${msg.model}${msg.thinkingLevel ? ` · ${levelLabels[msg.thinkingLevel]}强度` : ''}`);
+    }
+    if (thinkingCount > 0) parts.push(`思考 ${thinkingCount} 段`);
+    if (timelineTools.length > 0) parts.push(`操作 ${timelineTools.length} 项`);
+    if (activeDecisionTrace?.length) parts.push(`复核 ${activeDecisionTrace.length} 次`);
+    if (Number.isFinite(startedAt) && endedAt >= startedAt) {
+      parts.push(`${Math.max(0, Math.round((endedAt - startedAt) / 1000))}s`);
+    }
+    return parts.join(' · ');
+  }, [activeDecisionTrace, activeTimeline, activeTurn, msg.model, msg.thinkingLevel, timelineTools.length]);
+  useEffect(() => {
+    if (!hasProcess) return;
+    if (activeTurn) {
+      setProcessExpanded(true);
+    } else if (hasSettledResult) {
+      setProcessExpanded(false);
+    }
+  }, [activeTurn, hasProcess, hasSettledResult, msg.id, msg.activeVersion]);
   const versions = msg.versions || [];
   const activeV = msg.activeVersion ?? -1;
   const versionCount = versions.length + 1;
@@ -100,22 +178,39 @@ function MessageBubbleInner({
     <div className={`precision-message-row flex gap-3 justify-start group ${loading && isLastAssistant ? 'is-streaming' : ''}`}>
       <div className={`${avatarSize} ${loading && isLastAssistant ? 'is-streaming' : ''}`} aria-hidden>AI</div>
       <div className={`flex flex-col ${assistantMaxWidth} min-w-0 flex-1`}>
-        {msg.progressText && msg.progressText.length > 0 && (
-          <details className="mb-2 rounded-lg border border-black/5 bg-black/[0.02] px-3 py-2 text-xs text-black/55 dark:border-white/10 dark:bg-white/[0.03] dark:text-white/55">
-            <summary className="cursor-pointer select-none">执行过程</summary>
-            <div className="mt-2 space-y-1.5 whitespace-pre-wrap">
-              {msg.progressText.map((text, index) => <p key={`${index}:${text.slice(0, 24)}`}>{text}</p>)}
-            </div>
-          </details>
-        )}
-        {msg.thinking && msg.thinking.length > 0 && (
-          <ThinkingBlock thinking={msg.thinking} streaming={loading && isLastAssistant && !msgContent} />
-        )}
-        {msg.toolTrace && msg.toolTrace.length > 0 && (
-          <ToolTraceList traces={msg.toolTrace} compact={compact} />
-        )}
-        {msg.decisionTrace && msg.decisionTrace.length > 0 && (
-          <DecisionTraceList traces={msg.decisionTrace} />
+        {hasProcess && (
+          <section className="mb-2 overflow-hidden rounded-lg border border-black/5 bg-black/[0.015] text-xs dark:border-white/10 dark:bg-white/[0.025]">
+            <button
+              type="button"
+              className="flex w-full items-center gap-2 px-3 py-2 text-left text-black/55 dark:text-white/55"
+              aria-expanded={processExpanded}
+              onClick={() => setProcessExpanded(value => !value)}
+            >
+              <Wrench size={13} />
+              <span className="font-medium">执行过程</span>
+              {processSummary && <span className="truncate opacity-60">· {processSummary}</span>}
+              <ChevronDown size={13} className={`ml-auto ${processExpanded ? 'rotate-180' : ''}`} />
+            </button>
+            {processExpanded && (
+              <div className="space-y-2 border-t border-black/5 px-3 py-2 dark:border-white/10">
+                {!hasTimeline && msg.progressText && msg.progressText.length > 0 && (
+                  <div className="space-y-1.5 whitespace-pre-wrap text-black/55 dark:text-white/55">
+                    {msg.progressText.map((text, index) => <p key={`${index}:${text.slice(0, 24)}`}>{text}</p>)}
+                  </div>
+                )}
+                {!hasTimeline && msg.thinking && msg.thinking.length > 0 && (
+                  <ThinkingBlock thinking={msg.thinking} streaming={activeTurn && !msgContent} />
+                )}
+                {!hasTimeline && msg.toolTrace && msg.toolTrace.length > 0 && (
+                  <ToolTraceList traces={msg.toolTrace} compact={compact} />
+                )}
+                {hasTimeline && <TurnTimeline items={activeTimeline!} mode="process" />}
+                {activeDecisionTrace && activeDecisionTrace.length > 0 && (
+                  <DecisionTraceList traces={activeDecisionTrace} />
+                )}
+              </div>
+            )}
+          </section>
         )}
         {msg.source === 'background' && (
           <div className="precision-background-label flex items-center gap-1.5 mb-1.5 text-[11px] font-medium">
@@ -124,9 +219,10 @@ function MessageBubbleInner({
           </div>
         )}
         <div className={`pwb-msg-assistant ${compact ? 'text-sm' : ''}`}>
+          {hasTimeline && <TurnTimeline items={activeTimeline!} mode="answer" />}
           {/* Pre-stream waiting indicator: shows when bubble exists but model
            * hasn't streamed any visible content yet. */}
-          {loading && isLastAssistant && !msgContent && !msg.thinking && (
+          {loading && isLastAssistant && !msgContent && !msg.thinking && !hasTimeline && (
             <ThinkingIndicator compact={compact} />
           )}
           {!loading && !msgContent && !msg.thinking && !msgImages?.length && hasBackgroundedTool && (
@@ -170,7 +266,7 @@ function MessageBubbleInner({
                 </div>
               )}
             </section>
-          ) : <MarkdownRenderer content={msgContent} />}
+          ) : !hasTimeline ? <MarkdownRenderer content={msgContent} /> : null}
           {onOpenWorkspaceRef && msg.workspaceRefs && msg.workspaceRefs.length > 0 && (
             <div className="workspace-ref-list">
               <strong>改动文件</strong>

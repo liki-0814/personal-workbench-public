@@ -3,6 +3,7 @@ import type { ChatMessage, ContextUsageSnapshot, DecisionOption, DecisionPromptR
 import type { DocumentRef } from '@/domain/documents';
 import { requestSyncFromServer } from '@/core/storage';
 import { getModelInfo } from '@/core/config';
+import type { ThinkingLevel } from '@/core/config';
 import { getBackendUrl } from '@/core/config/backendUrl';
 import { apiFetch } from '@/core/utils';
 
@@ -21,6 +22,8 @@ export interface AgentChatOptions {
   model?: string;
   /** 启用扩展思考（Claude 3.7+ extended thinking / Qwen3 enable_thinking 等） */
   thinking?: boolean;
+  /** Pi-style reasoning depth, mapped to the selected model's supported wire value. */
+  thinkingLevel?: ThinkingLevel;
   /** 会话级工作目录（绝对路径），注入 system prompt 并作为 code_agent 默认 cwd */
   cwd?: string;
   requirePermissionApproval?: boolean;
@@ -28,6 +31,9 @@ export interface AgentChatOptions {
   onDelta?: (delta: string) => void;
   onAssistantSegmentStart?: (round: number) => void;
   onAssistantSegmentEnd?: (round: number, hasToolCalls: boolean) => void;
+  onAssistantSegmentClassified?: (round: number, kind: 'narration' | 'candidate' | 'final') => void;
+  onCandidateDisposition?: (round: number, disposition: 'promoted' | 'discarded' | 'superseded') => void;
+  onRuntimeUpdate?: (update: { callIndex: number; thinkingLevel: ThinkingLevel }) => void;
   onThinkingDelta?: (delta: string) => void;
   onStreamReset?: (reason: string) => void;
   onToolCall?: (toolCall: { id: string; name: string; arguments: string }) => void;
@@ -41,7 +47,7 @@ export interface AgentChatOptions {
   onToolDocument?: (toolCallId: string, document: DocumentRef) => void;
   onToolDecision?: (toolCallId: string, decision: DecisionPromptRecord) => void;
   onDecisionStarted?: (decision: { id: string; trigger: string; risk: string }) => void;
-  onDecisionAdvisor?: (decision: { id: string; model: string; status: string }) => void;
+  onDecisionAdvisor?: (decision: { id: string; model: string; status: string; round?: number; summary?: string }) => void;
   onDecisionResolved?: (decision: { id: string; outcome: string; confidence: number; consensus: number; rationale: string }) => void;
   onDecisionEscalated?: (decision: { id: string; rationale: string; options?: DecisionOption[] }) => void;
   onContextUsage?: (usage: ContextUsageSnapshot) => void;
@@ -49,7 +55,7 @@ export interface AgentChatOptions {
   onError?: (error: string) => void;
 }
 
-function buildProviderOverride(model?: string) {
+export function buildProviderOverride(model?: string, thinkingLevel?: ThinkingLevel) {
   if (!model) return undefined;
   const info = getModelInfo(model);
   if (!info) return undefined;
@@ -58,6 +64,7 @@ function buildProviderOverride(model?: string) {
     provider_index: info.providerIndex,
     name: info.providerName,
     model: info.id,
+    thinking_level: thinkingLevel,
   };
 }
 
@@ -92,7 +99,7 @@ export function useAgentChat() {
             })),
             system_prompt: options.systemPrompt,
             session_name: options.sessionName,
-            provider_override: buildProviderOverride(options.model),
+            provider_override: buildProviderOverride(options.model, options.thinkingLevel),
             thinking: options.thinking ?? false,
             cwd: options.cwd || undefined,
             require_permission_approval: options.requirePermissionApproval ?? false,
@@ -147,6 +154,28 @@ export function useAgentChat() {
                   case 'assistant_segment_end':
                     if (Number.isFinite(parsed.round)) {
                       options.onAssistantSegmentEnd?.(parsed.round, !!parsed.has_tool_calls);
+                    }
+                    break;
+                  case 'assistant_segment_classified':
+                    if (Number.isFinite(parsed.round) && (
+                      parsed.kind === 'narration' || parsed.kind === 'candidate' || parsed.kind === 'final'
+                    )) {
+                      options.onAssistantSegmentClassified?.(parsed.round, parsed.kind);
+                    }
+                    break;
+                  case 'assistant_candidate_disposition':
+                    if (Number.isFinite(parsed.round) && (
+                      parsed.disposition === 'promoted' || parsed.disposition === 'discarded' || parsed.disposition === 'superseded'
+                    )) {
+                      options.onCandidateDisposition?.(parsed.round, parsed.disposition);
+                    }
+                    break;
+                  case 'runtime_update':
+                    if (Number.isFinite(parsed.call_index) && typeof parsed.thinking_level === 'string') {
+                      options.onRuntimeUpdate?.({
+                        callIndex: parsed.call_index,
+                        thinkingLevel: parsed.thinking_level as ThinkingLevel,
+                      });
                     }
                     break;
                   case 'thinking_delta':
@@ -335,6 +364,16 @@ export async function controlAgentHarness(
   await apiFetch(`/api/agent/sessions/${encodeURIComponent(sessionId)}/control`, {
     method: 'POST',
     body: JSON.stringify({ action, ...(content ? { content } : {}) }),
+  });
+}
+
+export async function updateAgentRuntimeThinking(
+  sessionId: string,
+  thinkingLevel: ThinkingLevel,
+): Promise<void> {
+  await apiFetch(`/api/agent/sessions/${encodeURIComponent(sessionId)}/control`, {
+    method: 'POST',
+    body: JSON.stringify({ action: 'update_runtime', thinking_level: thinkingLevel }),
   });
 }
 

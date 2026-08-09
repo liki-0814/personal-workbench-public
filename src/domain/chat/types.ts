@@ -1,5 +1,6 @@
 import type { WorkspaceRef } from '@/domain/studio';
 import type { DocumentRef } from '@/domain/documents';
+import type { ThinkingLevel } from '@/core/config';
 
 export type AiModel = string;
 
@@ -25,6 +26,12 @@ export interface MessageStats {
 
 export interface ChatMessageVersion {
   content: string;
+  model?: AiModel;
+  thinkingLevel?: ThinkingLevel;
+  /** Ordered process/answer timeline belonging to this generated version. */
+  timeline?: TimelineItem[];
+  /** Advisor review history belonging to this generated version. */
+  decisionTrace?: DecisionTrace[];
   generatedImages?: string[];
   generatedImageRecords?: GeneratedImageRecord[];
   timestamp: number;
@@ -37,6 +44,9 @@ export interface ChatMessage {
   id?: string;
   role: 'system' | 'user' | 'assistant' | 'tool';
   content: string;
+  /** Effective model controls recorded for this generated assistant version. */
+  model?: AiModel;
+  thinkingLevel?: ThinkingLevel;
   images?: string[]; // URLs (persisted to /api/images/) or legacy base64 data URLs
   generatedImages?: string[]; // URLs (persisted to /api/images/) or legacy base64 data URLs
   generatedImageRecords?: GeneratedImageRecord[];
@@ -55,8 +65,12 @@ export interface ChatMessage {
   backgroundTaskId?: string;
   /** Live trace of tool calls made by the agent during this assistant turn.
    *  Persisted so it survives reload. args/result are truncated before saving
-   *  (see TOOL_TRACE_ARG_LIMIT / TOOL_TRACE_RESULT_LIMIT in store.ts). */
+   *  (see TOOL_TRACE_ARG_LIMIT / TOOL_TRACE_RESULT_LIMIT in store.ts).
+   *  @deprecated 新回合改用 timeline；仅旧消息渲染读取。 */
   toolTrace?: ToolTrace[];
+  /** 有序事件时间线（思考段 / 操作组 / 正文段落交替），新渲染范式的数据源。
+   *  折叠状态由 item 开放与否派生；不存在时回退旧渲染路径。 */
+  timeline?: TimelineItem[];
   /** Harness-native MoA reviews performed at disputed or risky decision nodes. */
   decisionTrace?: DecisionTrace[];
   /** Structured choice requested by the agent; persisted with the assistant turn. */
@@ -208,12 +222,55 @@ export interface ToolTrace {
   progressLog?: string[];
 }
 
+/** 时间线思考段：流式时展开，结束后折叠为「深度思考 · Ns」。 */
+export interface TimelineThinkingItem {
+  kind: 'thinking';
+  id: string;
+  text: string;
+  status: 'running' | 'done';
+  startedAt: number;
+  /** undefined = 仍在接收 delta（开放）。 */
+  endedAt?: number;
+}
+
+/** 时间线工具子项：结构兼容 ToolTrace，便于新旧渲染路径共用 TraceItem。 */
+export interface TimelineToolItem extends ToolTrace {
+  kind: 'tool';
+  startedAt: number;
+  endedAt?: number;
+}
+
+/** 连续工具调用合并成的“操作”组；组开放期间到达的思考嵌套在 children 内。
+ *  组只被 text_delta / done / error 关闭。 */
+export interface TimelineToolGroupItem {
+  kind: 'tool_group';
+  id: string;
+  children: Array<TimelineToolItem | TimelineThinkingItem>;
+  startedAt: number;
+  /** undefined = 组仍开放（运行中展开）。 */
+  endedAt?: number;
+}
+
+/** 模型文本段。候选答案在复核通过或整轮完成前不会进入正式正文。 */
+export interface TimelineTextItem {
+  kind: 'text';
+  id: string;
+  text: string;
+  phase?: 'draft' | 'final' | 'narration' | 'discarded';
+  round?: number;
+  startedAt: number;
+  /** undefined = 仍在追加。 */
+  endedAt?: number;
+}
+
+export type TimelineItem = TimelineThinkingItem | TimelineToolGroupItem | TimelineTextItem;
+
 export interface DecisionTrace {
   id: string;
   trigger: string;
   risk: string;
   status: 'reviewing' | 'resolved' | 'escalated';
-  advisors: Array<{ model: string; status: string }>;
+  advisors: Array<{ model: string; status: string; round?: number; summary?: string }>;
   outcome?: string;
   confidence?: number;
   consensus?: number;
@@ -236,6 +293,8 @@ export interface DecisionPromptRecord {
   total: number;
   allowCustom: boolean;
   allowSkip: boolean;
+  /** code_agent 决策上浮：存在时点选直接续聊子会话，不经主对话中转 */
+  codeAgentResume?: { sessionId: string };
 }
 
 export interface ChatSession {

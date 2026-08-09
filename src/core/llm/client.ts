@@ -57,7 +57,7 @@ export async function* streamLlm(
   request: LlmRequest & { systemPrompt?: string },
   signal?: AbortSignal
 ): AsyncGenerator<LlmStreamEvent, void, unknown> {
-  const { model, messages, tools, temperature = 0.7, max_tokens, systemPrompt, stream = true, thinking } = request;
+  const { model, messages, tools, temperature = 0.7, max_tokens, systemPrompt, stream = true, thinking, thinkingLevel = 'medium' } = request;
   const info = getModelInfo(model);
 
   if (!info.baseUrl || !info.apiKey) {
@@ -86,8 +86,11 @@ export async function* streamLlm(
         if (info.thinkingParams && Object.keys(info.thinkingParams).length > 0) {
           mergeModelRequestParams(body, info.thinkingParams);
         } else {
-          body.thinking = { type: 'enabled', budget_tokens: 1024 };
+          const budgets: Record<string, number> = { minimal: 1024, low: 4096, medium: 10240, high: 32768, xhigh: 65536, max: 65536, ultra: 65536 };
+          body.thinking = { type: 'enabled', budget_tokens: budgets[thinkingLevel] ?? 10240 };
         }
+        const mapped = info.thinkingLevelMap?.[thinkingLevel];
+        if (typeof mapped === 'string') body.reasoning_effort = mapped;
       }
       res = await fetch(url, { method: 'POST', signal, headers, body: JSON.stringify(body) });
     } else {
@@ -106,6 +109,8 @@ export async function* streamLlm(
         } else {
           body.enable_thinking = true;
         }
+        const mapped = info.thinkingLevelMap?.[thinkingLevel];
+        if (typeof mapped === 'string') body.reasoning_effort = mapped;
       }
       res = await fetch(url, { method: 'POST', signal, headers, body: JSON.stringify(body) });
     }
@@ -147,10 +152,7 @@ export async function* streamLlm(
     } else {
       const choice = (data.choices as Array<Record<string, unknown>> | undefined)?.[0];
       const msg = choice?.message as Record<string, unknown> | undefined;
-      let content = msg?.content;
-      if ((content === '' || content == null) && msg?.reasoning_content) {
-        content = msg.reasoning_content;
-      }
+      const content = msg?.content;
       const parsed = parseOpenAIMultimodalContent(content);
       yield { type: 'delta', content: parsed.text, generatedImages: parsed.generatedImages, tool_calls: msg?.tool_calls as ToolCall[] | undefined };
       yield { type: 'done', stop_reason: choice?.finish_reason as string | undefined };

@@ -1,7 +1,7 @@
 import { lazy, Suspense, useEffect, useState, useCallback, useId, useMemo, useRef } from 'react';
 import { createPortal } from 'react-dom';
 import { ArrowLeft, ListCollapse, X, RefreshCw, PanelLeftOpen, Activity, Upload, FolderOpen } from 'lucide-react';
-import { isThinkingCapableModel, isVisionModel } from '@/core/config/aiProviders';
+import { getSupportedThinkingLevels, preferredThinkingLevel, isVisionModel, THINKING_LEVEL_LABELS, type ThinkingLevel } from '@/core/config/aiProviders';
 import { useAiModels } from '@/core/config/hooks';
 import { load, save } from '@/core/storage';
 import { apiFetch } from '@/core/utils';
@@ -11,6 +11,7 @@ import { compactAgentSession, useAiChat } from '@/domain/chat';
 import { generateId } from '@/core/utils/id';
 import {
   ModelSelector,
+  ThinkingLevelSelector,
   PermissionModeSelector,
   EmptyChatHero,
   MessageBubble,
@@ -429,7 +430,12 @@ export default function ChatTab({
     for (let index = ai.messages.length - 1; index >= 0; index -= 1) {
       const message = ai.messages[index];
       if (message.role === 'user') return null;
-      if (message.decisionPrompt && !dismissedStructuredDecisionIds.has(message.decisionPrompt.id)) return message.decisionPrompt;
+      if (message.decisionPrompt && !dismissedStructuredDecisionIds.has(message.decisionPrompt.id)) {
+        // code_agent 决策卡片只在它处于最后一条消息时展示：
+        // 主 agent 若已自行续聊，中途消息上的旧卡片不应再弹出。
+        if (message.decisionPrompt.codeAgentResume && index !== ai.messages.length - 1) continue;
+        return message.decisionPrompt;
+      }
     }
     return null;
   }, [ai.messages, dismissedStructuredDecisionIds, turnRunning]);
@@ -450,6 +456,23 @@ export default function ChatTab({
     setDismissedDecisionIds(current => new Set(current).add(trace.id));
     await ai.sendMessage(`跳过本次方案选择，请按你认为最稳妥的方式继续。\n<!-- pwb-moa-user-decision:${trace.id}:skip -->`);
   }, [ai]);
+
+  const resolveCodeAgentDecision = useCallback(async (decision: DecisionPromptRecord, message: string) => {
+    const resumeSessionId = decision.codeAgentResume?.sessionId;
+    if (!resumeSessionId) return;
+    setDismissedStructuredDecisionIds(ids => new Set(ids).add(decision.id));
+    try {
+      const agentSessionId = activeSession?.agentSessionId ?? await ai.ensureAgentSession();
+      if (!agentSessionId) throw new Error('没有可用的会话');
+      await apiFetch(`/api/agent/sessions/${encodeURIComponent(agentSessionId)}/code-agent/decision`, {
+        method: 'POST',
+        body: JSON.stringify({ sessionId: resumeSessionId, message }),
+      });
+      showToast({ message: '已在后台续聊子 agent，完成后自动通知', type: 'success' });
+    } catch (error) {
+      showToast({ message: error instanceof Error ? error.message : '续聊子 agent 失败', type: 'error' });
+    }
+  }, [activeSession?.agentSessionId, ai]);
 
 
   const openStudio = useCallback((workspaceRef: WorkspaceRef) => {
@@ -604,7 +627,17 @@ export default function ChatTab({
     };
   }, [activeSession?.contextCheckpoint, activeSession?.contextUsage, ai.messages, currentModel]);
   const acceptsImages = isVisionModel(currentModel);
-  const supportsThinking = isThinkingCapableModel(currentModel);
+  const thinkingLevels = useMemo(() => getSupportedThinkingLevels(currentModel), [currentModel]);
+  const thinkingClampNoticeRef = useRef('');
+  const setCurrentThinkingLevel = useCallback((level: ThinkingLevel) => {
+    save(`thinking_level:${currentModel}`, level);
+    void ai.setThinkingLevelForNextCall(level).catch((error: unknown) => {
+      showToast({
+        message: error instanceof Error ? error.message : '思考强度更新失败',
+        type: 'error',
+      });
+    });
+  }, [ai, currentModel]);
 
   useEffect(() => {
     if (!acceptsImages && inputImages.length > 0) {
@@ -623,11 +656,29 @@ export default function ChatTab({
     setInputImages(next.filter(url => !inputGeneratedImageReferences.includes(url)));
   }, [inputGeneratedImageReferences]);
 
-  // Keep reasoning policy internal: tool-using and collaboration turns use it when supported.
+  // Pi-style: persist one preferred level, but clamp it to what the selected
+  // model explicitly declares instead of sending unsupported provider values.
   useEffect(() => {
-    const shouldThink = supportsThinking;
-    if (ai.thinking !== shouldThink) ai.setThinking(shouldThink);
-  }, [ai, supportsThinking]);
+    const saved = load<ThinkingLevel | null>(`thinking_level:${currentModel}`, null);
+    const next = saved && thinkingLevels.includes(saved)
+      ? saved
+      : thinkingLevels.includes(ai.thinkingLevel)
+        ? ai.thinkingLevel
+        : preferredThinkingLevel(thinkingLevels);
+    if (next !== ai.thinkingLevel) {
+      ai.setThinkingLevel(next);
+    }
+    if (saved && !thinkingLevels.includes(saved)) {
+      const noticeKey = `${currentModel}:${saved}:${next}`;
+      if (thinkingClampNoticeRef.current !== noticeKey) {
+        thinkingClampNoticeRef.current = noticeKey;
+        showToast({
+          message: `当前模型不支持“${THINKING_LEVEL_LABELS[saved]}”，已切换为“${THINKING_LEVEL_LABELS[next]}”`,
+          type: 'info',
+        });
+      }
+    }
+  }, [ai, currentModel, thinkingLevels]);
 
   const {
     scrollRef,
@@ -834,6 +885,11 @@ export default function ChatTab({
               <div className="precision-toolbar-controls">
                 <div className="precision-toolbar-group">
                   <ModelSelector value={draftModel} onChange={setDraftModel} size="sm" />
+                  <ThinkingLevelSelector
+                    value={ai.thinkingLevel}
+                    levels={thinkingLevels}
+                    onChange={setCurrentThinkingLevel}
+                  />
                   <PermissionModeSelector />
                 </div>
                 <div className="precision-toolbar-group precision-toolbar-actions">
@@ -904,6 +960,12 @@ export default function ChatTab({
                       if (activeSessionId) onUpdateSession(activeSessionId, { model: m, contextUsage: undefined });
                     }}
                     size="sm"
+                  />
+                  <ThinkingLevelSelector
+                    value={ai.thinkingLevel}
+                    levels={thinkingLevels}
+                    onChange={setCurrentThinkingLevel}
+                    pending={ai.pendingThinkingLevel !== null}
                   />
                   <PermissionModeSelector />
                 </div>
@@ -1140,8 +1202,12 @@ export default function ChatTab({
                 step={pendingToolDecision.step}
                 total={pendingToolDecision.total}
                 options={pendingToolDecision.options.map((option, index) => ({ ...option, recommended: option.recommended ?? index === 0 }))}
-                onSelect={option => ai.sendMessage(`我选择「${option.label}」。\n\n${option.description ?? ''}\n<!-- pwb-user-choice:${pendingToolDecision.id}:${option.id} -->`)}
-                onCustom={pendingToolDecision.allowCustom ? answer => ai.sendMessage(`${answer}\n<!-- pwb-user-choice:${pendingToolDecision.id}:custom -->`) : undefined}
+                onSelect={option => pendingToolDecision.codeAgentResume
+                  ? void resolveCodeAgentDecision(pendingToolDecision, `选择「${option.label}」${option.description ? `：${option.description}` : ''}`)
+                  : ai.sendMessage(`我选择「${option.label}」。\n\n${option.description ?? ''}\n<!-- pwb-user-choice:${pendingToolDecision.id}:${option.id} -->`)}
+                onCustom={pendingToolDecision.allowCustom ? answer => pendingToolDecision.codeAgentResume
+                  ? void resolveCodeAgentDecision(pendingToolDecision, answer)
+                  : ai.sendMessage(`${answer}\n<!-- pwb-user-choice:${pendingToolDecision.id}:custom -->`) : undefined}
                 onSkip={pendingToolDecision.allowSkip ? () => ai.sendMessage(`跳过这个问题，请按推荐选项继续。\n<!-- pwb-user-choice:${pendingToolDecision.id}:skip -->`) : undefined}
                 onClose={() => setDismissedStructuredDecisionIds(ids => new Set(ids).add(pendingToolDecision.id))}
               /> : pendingConsensusDecision ? <DecisionPrompt

@@ -1,0 +1,65 @@
+.agent-turn-timeline {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.agent-turn-step {
+  position: relative;
+  display: grid;
+  grid-template-columns: 12px minmax(0, 1fr);
+  column-gap: 6px;
+  min-width: 0;
+}
+
+.agent-turn-step::before {
+  position: absolute;
+  top: 0;
+  bottom: -6px;
+  left: 5px;
+  width: 1px;
+  content: '';
+  background: color-mix(in srgb, var(--border-default) 72%, transparent);
+}
+
+.agent-turn-step:last-child::before {
+  bottom: 50%;
+}
+
+.agent-turn-step-node {
+  z-index: 1;
+  width: 7px;
+  height: 7px;
+  margin-top: 10px;
+  margin-left: 2px;
+  border: 1px solid color-mix(in srgb, var(--text-muted) 65%, transparent);
+  border-radius: 999px;
+  background: var(--surface-0);
+}
+
+.agent-turn-step-tool_group .agent-turn-step-node {
+  border-color: color-mix(in srgb, var(--semantic-primary) 58%, var(--border-default));
+}
+
+.agent-turn-step-content {
+  min-width: 0;
+}
+
+/* Final answers are a primary reading surface, not a process node. */
+[aria-label='最终答案'].agent-turn-timeline .agent-turn-step {
+  display: block;
+}
+
+[aria-label='最终答案'].agent-turn-timeline .agent-turn-step::before {
+  display: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .agent-turn-timeline *,
+  .agent-turn-timeline *::before,
+  .agent-turn-timeline *::after {
+    scroll-behavior: auto !important;
+    transition-duration: 0ms !important;
+    animation-duration: 0ms !important;
+  }
+}

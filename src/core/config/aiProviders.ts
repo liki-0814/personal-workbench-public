@@ -23,6 +23,8 @@ export interface ModelEntry {
   requestParams?: Record<string, unknown>;
   /** Provider-specific top-level fields merged only while extended thinking is enabled. */
   thinkingParams?: Record<string, unknown>;
+  /** Pi-style canonical level -> provider wire value mapping. Null hides an unsupported level. */
+  thinkingLevelMap?: Record<string, unknown>;
   /** Cache-stable transcript loading for compatible models. */
   deferredToolsMode?: string;
 }
@@ -248,6 +250,7 @@ export interface AiModelInfo {
   capabilities?: ModelCapabilities;
   requestParams?: Record<string, unknown>;
   thinkingParams?: Record<string, unknown>;
+  thinkingLevelMap?: Record<string, unknown>;
   deferredToolsMode?: string;
 }
 
@@ -294,6 +297,7 @@ function rebuildModels(): AiModelInfo[] {
       capabilities: m.capabilities,
       requestParams: m.requestParams,
       thinkingParams: m.thinkingParams,
+      thinkingLevelMap: m.thinkingLevelMap,
       deferredToolsMode: m.deferredToolsMode,
     }))
   );
@@ -402,6 +406,43 @@ export function isThinkingCapableModel(modelId: string): boolean {
   if (!modelId) return false;
   if (isImageModel(modelId)) return false;
   return !!findModel(modelId)?.capabilities?.thinking;
+}
+
+export const THINKING_LEVEL_ORDER = ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'] as const;
+export type ThinkingLevel = typeof THINKING_LEVEL_ORDER[number];
+
+export const THINKING_LEVEL_LABELS: Record<ThinkingLevel, string> = {
+  off: '关闭',
+  minimal: '极简',
+  low: '低',
+  medium: '中',
+  high: '高',
+  xhigh: '超高',
+  max: '最大',
+  ultra: '极致',
+};
+
+export function getSupportedThinkingLevels(modelId: string): ThinkingLevel[] {
+  const model = findModel(modelId);
+  return supportedThinkingLevelsForModel(model);
+}
+
+export function supportedThinkingLevelsForModel(
+  model?: Pick<ModelEntry, 'capabilities' | 'thinkingLevelMap'>,
+): ThinkingLevel[] {
+  if (!model?.capabilities?.thinking) return ['off'];
+  const declared = model.thinkingLevelMap;
+  if (!declared || Object.keys(declared).length === 0) return ['off', 'medium'];
+  return THINKING_LEVEL_ORDER.filter(level => level === 'off' || (
+    Object.prototype.hasOwnProperty.call(declared, level) && declared[level] !== null
+  ));
+}
+
+export function preferredThinkingLevel(levels: ThinkingLevel[]): ThinkingLevel {
+  for (const level of ['high', 'medium', 'low', 'minimal'] as ThinkingLevel[]) {
+    if (levels.includes(level)) return level;
+  }
+  return levels.find(level => level !== 'off') ?? 'off';
 }
 
 export function isVisionModel(modelId: string): boolean {

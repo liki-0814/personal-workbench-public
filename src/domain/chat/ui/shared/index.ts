@@ -1,4 +1,5 @@
 export { default as ModelSelector } from './ModelSelector';
+export { default as ThinkingLevelSelector } from './ThinkingLevelSelector';
 export { default as PermissionModeSelector } from './PermissionModeSelector';
 export { default as EmptyChatHero } from './EmptyChatHero';
 export { default as MessageBubble } from './MessageBubble';

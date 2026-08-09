@@ -86,8 +86,27 @@ describe('document tool projection', () => {
   });
 });
 
-describe('assistant segment projection', () => {
-  it('moves tool-round narration into progress and keeps only the final segment as content', () => {
+describe('timeline projection', () => {
+  it('shows advisor progress and replaces it with the completed summary', () => {
+    let messages: ChatMessage[] = [{ role: 'assistant', content: '' }];
+    const callbacks = buildAgentStreamCallbacks({
+      getMessages: () => messages,
+      setMessages: next => { messages = next; },
+      assistantIndex: 0,
+      target: 'session',
+    });
+    callbacks.onDecisionStarted?.({ id: 'review-1', trigger: 'finalreview', risk: 'elevated' });
+    callbacks.onDecisionAdvisor?.({ id: 'review-1', model: 'openai:gpt', status: 'running', round: 1 });
+    callbacks.onDecisionAdvisor?.({ id: 'review-1', model: 'openai:gpt', status: 'done', round: 1, summary: '建议通过' });
+    callbacks.onDecisionAdvisor?.({ id: 'review-1', model: 'openai:gpt', status: 'running', round: 2 });
+    callbacks.onDecisionAdvisor?.({ id: 'review-1', model: 'openai:gpt', status: 'done', round: 2, summary: '复议后仍建议通过' });
+    expect(messages[0].decisionTrace?.[0].advisors).toEqual([
+      { model: 'openai:gpt', status: 'done', round: 1, summary: '建议通过' },
+      { model: 'openai:gpt', status: 'done', round: 2, summary: '复议后仍建议通过' },
+    ]);
+  });
+
+  it('separates tool narration from the committed final answer', () => {
     let messages: ChatMessage[] = [{ role: 'assistant', content: '' }];
     const callbacks = buildAgentStreamCallbacks({
       getMessages: () => messages,
@@ -99,13 +118,57 @@ describe('assistant segment projection', () => {
     callbacks.onAssistantSegmentStart?.(1);
     callbacks.onDelta?.('我先检查仓库。');
     callbacks.onAssistantSegmentEnd?.(1, true);
-    expect(messages[0].content).toBe('');
-    expect(messages[0].progressText).toEqual(['我先检查仓库。']);
-
+    callbacks.onAssistantSegmentClassified?.(1, 'narration');
+    callbacks.onToolCall?.({ id: 'c1', name: 'read_file' });
+    callbacks.onToolResult?.({ toolCallId: 'c1', output: 'ok', isError: false });
     callbacks.onAssistantSegmentStart?.(2);
     callbacks.onDelta?.('问题来自事件边界缺失。');
     callbacks.onAssistantSegmentEnd?.(2, false);
+    callbacks.onAssistantSegmentClassified?.(2, 'candidate');
+    callbacks.onCandidateDisposition?.(2, 'promoted');
+    callbacks.finalizeTimeline();
+
     expect(messages[0].content).toBe('问题来自事件边界缺失。');
-    expect(messages[0].progressText).toEqual(['我先检查仓库。']);
+    expect(messages[0].progressText).toBeUndefined();
+
+    const kinds = (messages[0].timeline ?? []).map(i => i.kind);
+    expect(kinds).toEqual(['text', 'tool_group', 'text']);
+    const group = (messages[0].timeline ?? [])[1];
+    expect(group.kind === 'tool_group' && group.endedAt).toBeDefined();
+    const narration = (messages[0].timeline ?? [])[0];
+    expect(narration.kind === 'text' && narration.phase).toBe('narration');
+  });
+
+  it('discards a rejected draft and commits only the revised answer', () => {
+    let messages: ChatMessage[] = [{ role: 'assistant', content: '' }];
+    const callbacks = buildAgentStreamCallbacks({
+      getMessages: () => messages,
+      setMessages: next => { messages = next; },
+      assistantIndex: 0,
+      target: 'session',
+    });
+
+    callbacks.onAssistantSegmentStart?.(1);
+    callbacks.onDelta?.('第一版草稿');
+    callbacks.onAssistantSegmentEnd?.(1, false);
+    callbacks.onAssistantSegmentClassified?.(1, 'candidate');
+    callbacks.onDecisionStarted?.({ id: 'review-1', trigger: 'finalreview', risk: 'elevated' });
+    expect(messages[0].content).toBe('');
+
+    callbacks.onDecisionResolved?.({
+      id: 'review-1', outcome: 'revise', confidence: 0.9, consensus: 1, rationale: '需要修订',
+    });
+    expect(messages[0].content).toBe('');
+
+    callbacks.onAssistantSegmentStart?.(2);
+    callbacks.onDelta?.('第二版终稿');
+    callbacks.onAssistantSegmentEnd?.(2, false);
+    callbacks.onAssistantSegmentClassified?.(2, 'candidate');
+    callbacks.onCandidateDisposition?.(2, 'promoted');
+    callbacks.finalizeTimeline();
+    expect(messages[0].content).toBe('第二版终稿');
+    const texts = (messages[0].timeline ?? []).filter(i => i.kind === 'text');
+    expect(texts).toHaveLength(2);
+    expect(texts[0].kind === 'text' && texts[0].phase).toBe('discarded');
   });
 });
