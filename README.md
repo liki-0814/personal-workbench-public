@@ -152,6 +152,23 @@ The small launcher package installs the matching native package
 Using the official registry explicitly avoids `ETARGET` errors from npm mirrors
 that have not synchronized the latest release yet.
 
+### Upgrade an existing installation
+
+Starting with `0.1.2`, the launcher can update the native package and restart a
+running daemon without changing local configuration or session data:
+
+```bash
+pwcli upgrade
+```
+
+Users upgrading from `0.1.1` need this one-time bootstrap because that launcher
+did not yet include the upgrade command:
+
+```bash
+npm install --global @liki030814/pwcli@latest --registry=https://registry.npmjs.org/
+pwcli daemon restart
+```
+
 ### Build from source
 
 Requirements:
@@ -272,8 +289,8 @@ This produces ignored tarballs under `npm/dist/`:
 Publish the platform package first, then the launcher:
 
 ```bash
-npm publish ./npm/dist/pwcli-darwin-arm64-0.1.1.tgz --access public
-npm publish ./npm/dist/liki030814-pwcli-0.1.1.tgz --access public
+npm publish ./npm/dist/pwcli-darwin-arm64-0.1.2.tgz --access public
+npm publish ./npm/dist/liki030814-pwcli-0.1.2.tgz --access public
 ```
 
 ## License
