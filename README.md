@@ -45,7 +45,7 @@ The prebuilt npm release currently supports **macOS on Apple Silicon** and
 requires Node.js 18 or newer:
 
 ```bash
-npm install --global @liki030814/pwcli
+npm install --global @liki030814/pwcli --registry=https://registry.npmjs.org/
 pwcli config
 pwcli web
 ```
@@ -143,12 +143,14 @@ from provider names.
 ### npm binary — macOS Apple Silicon
 
 ```bash
-npm install --global @liki030814/pwcli
+npm install --global @liki030814/pwcli --registry=https://registry.npmjs.org/
 pwcli --version
 ```
 
 The small launcher package installs the matching native package
 `pwcli-darwin-arm64`. Other platforms should currently build from source.
+Using the official registry explicitly avoids `ETARGET` errors from npm mirrors
+that have not synchronized the latest release yet.
 
 ### Build from source
 
