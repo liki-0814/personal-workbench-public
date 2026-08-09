@@ -91,6 +91,8 @@ pub struct ExecResult {
     pub stdout: String,
     pub stderr: String,
     pub exit_code: Option<u32>,
+    /// 命令在 `timeout_secs` 内未结束；stdout/stderr 保留已收到的部分输出。
+    pub timed_out: bool,
 }
 
 pub async fn exec(
@@ -127,14 +129,19 @@ pub async fn exec(
     })
     .await;
 
-    if result.is_err() {
-        anyhow::bail!("命令超时 ({}s): {}", timeout_secs, command);
+    // 超时不吞掉已收到的输出：带回部分结果，由上层（工具 handler）组织成
+    // 带指导信息的错误，交回模型决定重试/加大超时/转后台。
+    let timed_out = result.is_err();
+    if timed_out {
+        // 尽力关闭 channel，忽略远端已断开等错误
+        let _ = channel.close().await;
     }
 
     Ok(ExecResult {
         stdout: String::from_utf8_lossy(&stdout_buf).into(),
         stderr: String::from_utf8_lossy(&stderr_buf).into(),
         exit_code,
+        timed_out,
     })
 }
 

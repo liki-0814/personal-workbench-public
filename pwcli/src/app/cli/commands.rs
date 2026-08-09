@@ -115,6 +115,7 @@ const FINAL_ANSWER_CONTRACT_NOTE: &str = r##"
 - 工具调用前后的过程性叙述属于执行进度，不属于最终回答。最终回答不得重复进度文字、草稿或已经被后续证据修正的旧结论。
 - 不为展示能力而罗列用户没有询问的工具、skill、目录或工作流；不复述用户已经知道的项目介绍。
 - 完成编码或其他执行任务时，必须保留关键结果、实际验证、未解决风险和必要的文件定位；简洁不得以省略验证或掩盖失败为代价。
+- 当回答要求用户在 2–3 个互斥方案中继续选择时，必须调用 `request_user_choice` 生成 Chat 选择弹窗；不要只在 Markdown 正文末尾写 A/B、二选一或“你选哪个”。仅供参考、无需用户立即选择的建议列表不调用。
 - 同一结论只表达一次。若已有多个草稿或版本，合并为一份自洽的最终答案。
 "##;
 
@@ -520,6 +521,7 @@ mod response_language_tests {
     fn final_answer_contract_preserves_execution_evidence() {
         assert!(FINAL_ANSWER_CONTRACT_NOTE.contains("实际验证"));
         assert!(FINAL_ANSWER_CONTRACT_NOTE.contains("简洁不得以省略验证"));
+        assert!(FINAL_ANSWER_CONTRACT_NOTE.contains("必须调用 `request_user_choice`"));
         assert!(FINAL_ANSWER_CONTRACT_NOTE.contains("同一结论只表达一次"));
     }
 

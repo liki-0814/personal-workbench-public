@@ -13,9 +13,9 @@ use tracing::{error, info, warn};
 use tokio::sync::broadcast;
 
 use crate::ai::llm::{ChatMessage, ProviderConfig, StreamEvent};
-use crate::runtime::session::ConversationMessage;
+use crate::runtime::session::{ConversationMessage, SessionState};
 
-use super::state::AppState;
+use super::state::{AppState, RuntimeInputActivation};
 
 mod attention;
 mod background;
@@ -59,6 +59,8 @@ pub struct ProviderOverride {
     #[serde(default)]
     pub thinking_params: Option<serde_json::Map<String, serde_json::Value>>,
     #[serde(default)]
+    pub thinking_level: Option<String>,
+    #[serde(default)]
     pub deferred_tools_mode: Option<String>,
     #[serde(default)]
     pub context_window: Option<u64>,
@@ -66,7 +68,7 @@ pub struct ProviderOverride {
 
 impl ProviderOverride {
     fn resolve_provider(&self, state: &AppState) -> anyhow::Result<ProviderConfig> {
-        if let Some(id) = self
+        let mut provider = if let Some(id) = self
             .provider_id
             .as_deref()
             .filter(|id| !id.trim().is_empty())
@@ -77,42 +79,114 @@ impl ProviderOverride {
                 .context("Web service is disabled")?
                 .config
                 .provider_by_id(id)?;
-            return provider_config_for_model(provider, &self.model);
-        }
-        if let Some(index) = self.provider_index {
+            provider_config_for_model(provider, &self.model)?
+        } else if let Some(index) = self.provider_index {
             let provider = state
                 .web
                 .as_ref()
                 .context("Web service is disabled")?
                 .config
                 .provider(index)?;
-            return provider_config_for_model(provider, &self.model);
-        }
-
-        let model = self.model.clone();
-        let model_entry = crate::ai::config::ModelEntry {
-            id: model.clone(),
-            name: model.clone(),
-            enabled: None,
-            max_output: None,
-            context_window: self.context_window,
-            capabilities: None,
-            request_params: self.request_params.clone(),
-            thinking_params: self.thinking_params.clone(),
-            deferred_tools_mode: self.deferred_tools_mode.clone(),
-            ..Default::default()
+            provider_config_for_model(provider, &self.model)?
+        } else {
+            let model = self.model.clone();
+            let model_entry = crate::ai::config::ModelEntry {
+                id: model.clone(),
+                name: model.clone(),
+                enabled: None,
+                max_output: None,
+                context_window: self.context_window,
+                capabilities: None,
+                request_params: self.request_params.clone(),
+                thinking_params: self.thinking_params.clone(),
+                deferred_tools_mode: self.deferred_tools_mode.clone(),
+                ..Default::default()
+            };
+            ProviderConfig {
+                name: self.name.clone().unwrap_or_else(|| "override".to_string()),
+                base_url: self.base_url.clone().context("base_url is required")?,
+                api_key: self.api_key.clone().context("api_key is required")?,
+                protocol: self.protocol.clone().context("protocol is required")?,
+                model,
+                models: vec![model_entry],
+                use_proxy: None,
+                compat_profile: None,
+            }
         };
-        Ok(ProviderConfig {
-            name: self.name.clone().unwrap_or_else(|| "override".to_string()),
-            base_url: self.base_url.clone().context("base_url is required")?,
-            api_key: self.api_key.clone().context("api_key is required")?,
-            protocol: self.protocol.clone().context("protocol is required")?,
-            model,
-            models: vec![model_entry],
-            use_proxy: None,
-            compat_profile: None,
-        })
+        apply_provider_thinking_level(&mut provider, self.thinking_level.as_deref())?;
+        Ok(provider)
     }
+}
+
+fn apply_provider_thinking_level(
+    provider: &mut ProviderConfig,
+    level: Option<&str>,
+) -> anyhow::Result<()> {
+    let Some(level) = level.filter(|level| *level != "off") else {
+        return Ok(());
+    };
+    anyhow::ensure!(
+        matches!(
+            level,
+            "minimal" | "low" | "medium" | "high" | "xhigh" | "max" | "ultra"
+        ),
+        "unsupported thinking level: {level}"
+    );
+    let model = provider
+        .models
+        .iter_mut()
+        .find(|model| model.id == provider.model || model.name == provider.model)
+        .context("active model configuration is missing")?;
+    let mapped = if let Some(levels) = model.thinking_level_map.as_ref() {
+        levels
+            .get(level)
+            .filter(|value| !value.is_null())
+            .cloned()
+            .with_context(|| format!("thinking level `{level}` is not supported by {}", model.id))?
+    } else {
+        serde_json::Value::String(level.to_string())
+    };
+    let params = model
+        .thinking_params
+        .get_or_insert_with(serde_json::Map::new);
+    let protocol = provider
+        .protocol
+        .trim()
+        .to_ascii_lowercase()
+        .replace('-', "_");
+    match protocol.as_str() {
+        "openai_responses" | "openai_codex_responses" => {
+            params.insert(
+                "reasoning".into(),
+                serde_json::json!({ "effort": mapped, "summary": "auto" }),
+            );
+        }
+        "google_antigravity" => {
+            params.insert("reasoning_effort".into(), mapped);
+        }
+        "google_generative" => {
+            params.insert(
+                "generationConfig".into(),
+                serde_json::json!({ "thinkingConfig": { "thinkingLevel": mapped, "includeThoughts": true } }),
+            );
+        }
+        "anthropic" | "anthropic_messages" => {
+            params.insert("reasoning_effort".into(), mapped);
+            let budget = match level {
+                "minimal" => 1_024,
+                "low" => 4_096,
+                "medium" => 10_240,
+                "high" => 32_768,
+                _ => 65_536,
+            };
+            params.insert("budget_tokens".into(), serde_json::json!(budget));
+        }
+        _ => {
+            params.insert("enable_thinking".into(), serde_json::Value::Bool(true));
+            params.insert("reasoning_effort".into(), mapped);
+        }
+    }
+    Ok(())
 }
 
 fn provider_config_for_model(
@@ -240,6 +314,7 @@ pub enum HarnessAction {
     Resume,
     SendNext,
     ClearQueue,
+    UpdateRuntime,
 }
 
 #[derive(Debug, Deserialize)]
@@ -247,6 +322,8 @@ pub struct HarnessControlRequest {
     pub action: HarnessAction,
     #[serde(default)]
     pub content: Option<String>,
+    #[serde(default)]
+    pub thinking_level: Option<crate::agent_core::contracts::ThinkingLevel>,
 }
 
 #[derive(Debug, Serialize)]
@@ -498,6 +575,17 @@ async fn control_harness(
                 .clear_queue(&id)
                 .map_err(|error| (axum::http::StatusCode::CONFLICT, error.to_string()))?;
             harness.clear_next_turn().await
+        }
+        HarnessAction::UpdateRuntime => {
+            let thinking_level = request.thinking_level.ok_or_else(|| {
+                (
+                    axum::http::StatusCode::BAD_REQUEST,
+                    "thinking_level is required for update_runtime".to_string(),
+                )
+            })?;
+            harness
+                .update_runtime(None, Some(thinking_level), None, false)
+                .await
         }
     };
     result.map_err(|error| (axum::http::StatusCode::CONFLICT, error.to_string()))?;
@@ -814,6 +902,16 @@ fn resolve_web_provider_selection(
         .map(crate::app::composition::ProviderSelection::resolved))
 }
 
+fn requested_thinking_level(
+    thinking: bool,
+    provider_override: Option<&ProviderOverride>,
+) -> crate::agent_core::contracts::ThinkingLevel {
+    provider_override
+        .and_then(|value| value.thinking_level.as_deref())
+        .and_then(|value| value.parse().ok())
+        .unwrap_or_else(|| thinking.into())
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn create_web_runtime(
     state: &AppState,
@@ -822,6 +920,7 @@ async fn create_web_runtime(
     work_item_id: Option<String>,
     workspace: std::path::PathBuf,
     thinking: bool,
+    thinking_level: crate::agent_core::contracts::ThinkingLevel,
     system_prompt: String,
     harness: Arc<crate::agent_core::harness::HarnessControl>,
     provider: Option<crate::app::composition::ProviderSelection>,
@@ -843,6 +942,7 @@ async fn create_web_runtime(
             workspace: workspace.clone(),
             permission_mode: crate::runtime::permissions::current_agent_permission_mode(),
             thinking,
+            thinking_level,
             session_id: Some(session_id.to_string().into()),
             worker_dispatch: None,
             system_prompt,
@@ -1273,6 +1373,7 @@ async fn chat(
         crate::runtime::visual_generation::build_image_reference_registry(&mut messages);
     let mut usage_tracker = crate::ai::usage::UsageTracker::new();
 
+    let thinking_level = requested_thinking_level(req.thinking, req.provider_override.as_ref());
     let provider = resolve_web_provider_selection(&state, req.provider_override.as_ref()).map_err(
         |error| {
             warn!(error = %error, "invalid provider override");
@@ -1288,6 +1389,7 @@ async fn chat(
         req.work_item_id.clone(),
         bound_cwd,
         req.thinking,
+        thinking_level,
         system_prompt,
         Arc::clone(&harness),
         provider,
@@ -1481,6 +1583,36 @@ impl crate::agent_core::runner::ToolEventSink for ChannelSink {
             has_tool_calls,
         });
     }
+    fn on_assistant_segment_classified(
+        &self,
+        round: u32,
+        kind: crate::agent_core::contracts::AssistantSegmentKind,
+    ) {
+        let _ = self.tx.send(StreamEvent::AssistantSegmentClassified {
+            round,
+            kind: format!("{kind:?}").to_ascii_lowercase(),
+        });
+    }
+    fn on_candidate_disposition(
+        &self,
+        round: u32,
+        disposition: crate::agent_core::contracts::CandidateDisposition,
+    ) {
+        let _ = self.tx.send(StreamEvent::AssistantCandidateDisposition {
+            round,
+            disposition: format!("{disposition:?}").to_ascii_lowercase(),
+        });
+    }
+    fn on_runtime_update(
+        &self,
+        call_index: u32,
+        thinking_level: crate::agent_core::contracts::ThinkingLevel,
+    ) {
+        let _ = self.tx.send(StreamEvent::RuntimeUpdate {
+            call_index,
+            thinking_level: thinking_level.as_str().to_string(),
+        });
+    }
     fn on_tool_call_streaming(&self, id: &str, name: &str) {
         let _ = self.tx.send(StreamEvent::ToolCallStart {
             id: id.to_string(),
@@ -1552,11 +1684,13 @@ impl crate::agent_core::runner::ToolEventSink for ChannelSink {
             risk: format!("{risk:?}").to_ascii_lowercase(),
         });
     }
-    fn on_decision_advisor(&self, id: &str, model: &str, succeeded: bool) {
+    fn on_decision_advisor(&self, id: &str, model: &str, status: &str, round: u8, summary: &str) {
         let _ = self.tx.send(StreamEvent::DecisionAdvisor {
             id: id.to_string(),
             model: model.to_string(),
-            status: if succeeded { "done" } else { "error" }.into(),
+            status: status.to_string(),
+            round,
+            summary: summary.to_string(),
         });
     }
     fn on_decision_resolved(
@@ -1818,6 +1952,7 @@ async fn stream_chat(
         }
         let image_references_for_task =
             crate::runtime::visual_generation::build_image_reference_registry(&mut messages_for_task);
+        let thinking_level = requested_thinking_level(req.thinking, req.provider_override.as_ref());
         let provider = match resolve_web_provider_selection(&state, req.provider_override.as_ref()) {
             Ok(resolved) => resolved,
             Err(error) => {
@@ -1836,6 +1971,7 @@ async fn stream_chat(
             req.work_item_id.clone(),
             bound_cwd.clone(),
             req.thinking,
+            thinking_level,
             system_prompt,
             Arc::clone(&harness_for_task),
             provider,
@@ -2000,6 +2136,164 @@ async fn background_events_global(
         }
     };
     Sse::new(stream)
+}
+
+/// 后台任务完成后的闭环投递：
+/// 1. 将结果写入会话 journal + 持久输入队列（runtime callback，带去重）；
+/// 2. 会话空闲时自动唤起一个 follow-up turn，让 agent 主动向用户汇报结果；
+///    会话正忙时由运行中的 runner 在下一个 turn 边界消费。
+pub(crate) async fn deliver_background_completion(
+    state: AppState,
+    result: crate::runtime::background::TaskResult,
+) {
+    let session_id = result.session_id.clone();
+    let Some(session) = state.session_manager.get(&session_id) else {
+        tracing::debug!(session_id = %session_id, "后台任务完成时会话已不存在，跳过回调");
+        return;
+    };
+
+    let status = if result.success { "成功" } else { "失败" };
+    let payload = serde_json::json!({
+        "kind": "background_task_completed",
+        "taskId": result.task_id,
+        "toolName": result.tool_name,
+        "success": result.success,
+        "durationSecs": result.duration_secs,
+        "summary": result.summary,
+    });
+    if let Err(error) = state
+        .session_manager
+        .append_runtime_callback(&session_id, payload)
+    {
+        tracing::warn!(%error, session_id = %session_id, "写入后台任务完成回调失败");
+        return;
+    }
+
+    let instruction = format!(
+        "【后台任务完成通知】后台任务 {task_id}（{tool}，耗时 {duration}s）已{status}。\n\
+         结果摘要：\n{summary}\n\n\
+         请向用户简要汇报该后台任务的结果（一两句话）。若失败且可重试，\
+         可先调用 background_tasks 工具（action=retry, task_id={task_id}）重试后再汇报。",
+        task_id = result.task_id,
+        tool = result.tool_name,
+        duration = result.duration_secs,
+        summary = result.summary,
+    );
+    let message = ChatMessage {
+        role: "user".into(),
+        content: instruction,
+        images: Vec::new(),
+        generated_images: Vec::new(),
+        tool_calls: None,
+        tool_call_id: None,
+    };
+    let queued = match state.session_manager.enqueue_runtime_callback(
+        &session_id,
+        result.task_id.clone(),
+        message,
+    ) {
+        Ok(queued) => queued,
+        Err(error) => {
+            tracing::warn!(%error, session_id = %session_id, "后台任务完成回调入队失败");
+            return;
+        }
+    };
+    let Some(queued) = queued else {
+        // dedupe：该任务的回调已投递过
+        return;
+    };
+
+    let runtime = state.session_manager.runtime(&session_id);
+    let paused = runtime.as_ref().is_some_and(|runtime| runtime.paused)
+        || session.state == SessionState::Paused;
+    if paused {
+        tracing::info!(session_id = %session_id, task_id = %result.task_id, "会话已暂停，后台任务完成回调等待恢复后处理");
+        return;
+    }
+    if let Err(error) = task::schedule_runtime_input(
+        state,
+        session_id.clone(),
+        RuntimeInputActivation {
+            queued,
+            task_ids: Vec::new(),
+            work_item_id: None,
+        },
+    )
+    .await
+    {
+        tracing::warn!(%error, session_id = %session_id, task_id = %result.task_id, "调度后台任务完成回调失败");
+    }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CodeAgentDecisionRequest {
+    /// code_agent 子会话 id（续聊用）
+    session_id: String,
+    /// 用户的选择或自定义答复
+    message: String,
+}
+
+/// 用户在决策卡片上直接操纵子 agent：把选择作为续聊输入，后台 resume
+/// code_agent 子会话（不经过主 agent 中转）。完成后走已有的后台闭环自动汇报。
+async fn resolve_code_agent_decision(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Json(req): Json<CodeAgentDecisionRequest>,
+) -> Result<Json<serde_json::Value>, (axum::http::StatusCode, String)> {
+    let message = req.message.trim().to_string();
+    if req.session_id.trim().is_empty() || message.is_empty() {
+        return Err((
+            axum::http::StatusCode::BAD_REQUEST,
+            "sessionId 和 message 必填".to_string(),
+        ));
+    }
+    let mut session = state.session_manager.get(&id).ok_or_else(|| {
+        (
+            axum::http::StatusCode::NOT_FOUND,
+            "session not found".to_string(),
+        )
+    })?;
+    let cwd = session
+        .workspace
+        .as_ref()
+        .map(|workspace| workspace.canonical_path.to_string_lossy().into_owned())
+        .ok_or_else(|| {
+            (
+                axum::http::StatusCode::CONFLICT,
+                "会话未绑定工作目录".to_string(),
+            )
+        })?;
+    session.add_message(ConversationMessage::new_user(format!(
+        "[直接操纵] 对子 agent 上浮的决策选择：{message}"
+    )));
+    state.session_manager.update(session);
+
+    let args = serde_json::json!({
+        "task": format!("用户对你上浮的决策给出了答复：{message}。请基于这个答复继续完成原任务。"),
+        "cwd": cwd,
+        "resume_session_id": req.session_id,
+    });
+    let brief_message: String = message.chars().take(60).collect();
+    let description = format!("code_agent(续聊决策 {brief_message})");
+    let task_id = state
+        .background_tasks
+        .spawn_tool(
+            id.clone(),
+            "code_agent".to_string(),
+            description,
+            args,
+            Arc::clone(&state.tool_registry),
+        )
+        .await
+        .map_err(|error| {
+            (
+                axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                error.to_string(),
+            )
+        })?;
+    info!(session_id = %id, code_agent_session = %req.session_id, task_id = %task_id, "用户直接续聊子 agent 决策");
+    Ok(Json(serde_json::json!({ "taskId": task_id })))
 }
 
 /// 列出所有后台任务
@@ -2212,5 +2506,39 @@ mod tests {
         let error = provider_config_for_model(provider, "missing").unwrap_err();
 
         assert!(error.to_string().contains("not configured"));
+    }
+
+    #[test]
+    fn thinking_level_uses_the_models_declared_wire_mapping() {
+        let mut provider = ProviderConfig {
+            name: "Codex".into(),
+            base_url: "https://example.com".into(),
+            api_key: "secret".into(),
+            protocol: "openai_codex_responses".into(),
+            model: "reasoner".into(),
+            models: vec![crate::ai::config::ModelEntry {
+                id: "reasoner".into(),
+                name: "Reasoner".into(),
+                thinking_level_map: Some(serde_json::Map::from_iter([
+                    ("low".into(), serde_json::json!("low")),
+                    ("high".into(), serde_json::json!("high")),
+                ])),
+                ..Default::default()
+            }],
+            use_proxy: None,
+            compat_profile: None,
+        };
+
+        apply_provider_thinking_level(&mut provider, Some("high")).unwrap();
+        assert_eq!(
+            provider
+                .current_model_entry()
+                .unwrap()
+                .thinking_params
+                .as_ref()
+                .unwrap()["reasoning"]["effort"],
+            "high"
+        );
+        assert!(apply_provider_thinking_level(&mut provider, Some("xhigh")).is_err());
     }
 }

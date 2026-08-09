@@ -10,6 +10,7 @@ use sha2::{Digest, Sha256};
 use crate::runtime::documents::{CreateDocument, DocumentKind, EvidenceEntry, UpdateDocument};
 
 use super::fs_local::FsSandbox;
+use super::register::contextual_tool_path;
 use super::registry::{ToolExecutionMode, ToolImpact, ToolOutput, ToolRegistry};
 
 #[derive(Deserialize)]
@@ -298,14 +299,14 @@ pub fn register(registry: &mut ToolRegistry) {
         }),
     );
 
-    registry.register_structured_with_impact(
+    registry.register_contextual_structured_with_impact(
         "attach_document_asset",
-        "把 tools.fsBase 内的图片或当前会话已有的 AI 生图复制进 HTML 文档 assets/，返回可直接写入 img src 的相对路径。",
+        "把当前工作区（受 tools.fsBase 边界约束）内的图片或当前会话已有的 AI 生图复制进 HTML 文档 assets/，返回可直接写入 img src 的相对路径。",
         json!({
             "type": "object",
             "properties": {
                 "documentId": { "type": "string" },
-                "sourcePath": { "type": "string", "description": "tools.fsBase 内的 PNG、JPEG 或 WebP 文件" },
+                "sourcePath": { "type": "string", "description": "当前工作区内的 PNG、JPEG 或 WebP 文件；相对路径从会话工作目录解析" },
                 "imageUrl": { "type": "string", "description": "当前会话 AI 生图的 /api/image-artifacts/... URL" }
             },
             "required": ["documentId"],
@@ -313,14 +314,16 @@ pub fn register(registry: &mut ToolRegistry) {
         }),
         ToolExecutionMode::Sequential,
         ToolImpact::ReversibleMutation,
-        Box::new(|value| {
+        Box::new(|context, value| {
             let value = value.clone();
+            let context = context.clone();
             Box::pin(async move {
                 let args: AttachArgs = serde_json::from_value(value)
                     .context("invalid attach_document_asset arguments")?;
                 let data_dir = crate::runtime::settings::local_config::data_dir();
                 let source = match (args.source_path.as_deref(), args.image_url.as_deref()) {
-                    (Some(path), None) => FsSandbox::from_config()?.resolve(path)?,
+                    (Some(path), None) => FsSandbox::from_config()?
+                        .resolve(contextual_tool_path(&context, path))?,
                     (None, Some(url)) => resolve_generated_image(&data_dir, url)?,
                     _ => bail!("provide exactly one of sourcePath or imageUrl"),
                 };

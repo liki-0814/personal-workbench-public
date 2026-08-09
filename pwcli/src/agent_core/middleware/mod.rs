@@ -1,5 +1,6 @@
 pub mod chain;
 pub mod dangling_tool_call;
+pub mod delegation_advisor;
 pub mod loop_detection;
 pub mod subagent_limit;
 pub mod summarization;

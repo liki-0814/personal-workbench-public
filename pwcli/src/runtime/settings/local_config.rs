@@ -292,6 +292,10 @@ pub struct CodeAgentSection {
     pub thinking: bool,
     #[serde(default)]
     pub fast: bool,
+    /// 单会话 code_agent 委托成本预算（美元）。0 = 不限制；达到上限后
+    /// 后续 code_agent 调用会被拒绝并提示用户调整。
+    #[serde(default)]
+    pub session_budget_usd: f64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

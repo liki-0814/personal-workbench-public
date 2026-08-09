@@ -47,6 +47,7 @@ pub enum QueueMode {
 pub enum HarnessEvent {
     RuntimeUpdate {
         model: Option<String>,
+        thinking_level: Option<crate::agent_core::contracts::ThinkingLevel>,
         active_tools: Option<Vec<String>>,
         resource_revision: u64,
     },
@@ -182,6 +183,7 @@ struct HarnessControlState {
     follow_up_mode: QueueMode,
     cancel_token: CancellationToken,
     model: Option<String>,
+    thinking_level: Option<crate::agent_core::contracts::ThinkingLevel>,
     active_tools: Option<Vec<String>>,
     resource_revision: u64,
 }
@@ -218,6 +220,7 @@ impl Default for HarnessControlState {
             follow_up_mode: QueueMode::OneAtATime,
             cancel_token: CancellationToken::new(),
             model: None,
+            thinking_level: None,
             active_tools: None,
             resource_revision: 0,
         }
@@ -613,6 +616,7 @@ impl HarnessControl {
     pub async fn update_runtime(
         &self,
         model: Option<String>,
+        thinking_level: Option<crate::agent_core::contracts::ThinkingLevel>,
         active_tools: Option<Vec<String>>,
         reload_resources: bool,
     ) -> Result<()> {
@@ -620,6 +624,9 @@ impl HarnessControl {
             let mut state = self.state.lock().expect("harness control lock poisoned");
             if let Some(model) = model {
                 state.model = Some(model);
+            }
+            if let Some(thinking_level) = thinking_level {
+                state.thinking_level = Some(thinking_level);
             }
             if let Some(tools) = active_tools {
                 state.active_tools = Some(tools);
@@ -629,6 +636,7 @@ impl HarnessControl {
             }
             HarnessEvent::RuntimeUpdate {
                 model: state.model.clone(),
+                thinking_level: state.thinking_level,
                 active_tools: state.active_tools.clone(),
                 resource_revision: state.resource_revision,
             }
@@ -642,6 +650,13 @@ impl HarnessControl {
             .expect("harness control lock poisoned")
             .model
             .clone()
+    }
+
+    pub fn requested_thinking_level(&self) -> Option<crate::agent_core::contracts::ThinkingLevel> {
+        self.state
+            .lock()
+            .expect("harness control lock poisoned")
+            .thinking_level
     }
 
     pub fn active_tool_names(&self) -> Option<Vec<String>> {
@@ -905,12 +920,17 @@ mod tests {
         control
             .update_runtime(
                 Some("model-b".to_string()),
+                Some(crate::agent_core::contracts::ThinkingLevel::High),
                 Some(vec!["read_file".to_string()]),
                 true,
             )
             .await
             .unwrap();
         assert_eq!(control.requested_model().as_deref(), Some("model-b"));
+        assert_eq!(
+            control.requested_thinking_level(),
+            Some(crate::agent_core::contracts::ThinkingLevel::High)
+        );
         assert!(control.is_tool_active("read_file"));
         assert!(!control.is_tool_active("run_command"));
     }

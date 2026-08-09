@@ -4,7 +4,7 @@ use std::sync::Arc;
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 
-use crate::agent_core::contracts::SessionId;
+use crate::agent_core::contracts::{SessionId, ThinkingLevel};
 use crate::agent_core::harness::{HarnessControl, HarnessInputs, HarnessSpec};
 use crate::agent_core::hooks::HookRunner;
 use crate::agent_core::runner::{AgentRunner, HarnessRunOptions, ToolEventSink};
@@ -59,6 +59,7 @@ pub struct RuntimeRequest {
     pub workspace: PathBuf,
     pub permission_mode: AgentPermissionMode,
     pub thinking: bool,
+    pub thinking_level: ThinkingLevel,
     pub session_id: Option<SessionId>,
     pub worker_dispatch: Option<(WorkerDispatchContext, WorkerDispatchSignal)>,
     pub system_prompt: String,
@@ -244,11 +245,13 @@ impl RuntimeFactory {
         )
         .await?;
         let mut run_options = match request.profile {
-            RuntimeProfile::WebMain => HarnessRunOptions::main(request.thinking),
+            RuntimeProfile::WebMain => {
+                HarnessRunOptions::main_with_thinking_level(request.thinking_level)
+            }
             RuntimeProfile::CliOneshot | RuntimeProfile::InternalWorker => {
-                HarnessRunOptions::oneshot_with_thinking(
+                HarnessRunOptions::oneshot_with_thinking_level(
                     request.permission_mode == AgentPermissionMode::Full,
-                    request.thinking,
+                    request.thinking_level,
                 )
             }
         };
@@ -278,8 +281,11 @@ impl RuntimeFactory {
         if tool_context.web_cache.is_none() {
             tool_context.web_cache = self.web_cache.as_ref().cloned();
         }
-        let active_model_context =
-            resolve_active_model_context(&config, &selected_provider, request.thinking);
+        let active_model_context = resolve_active_model_context(
+            &config,
+            &selected_provider,
+            request.thinking_level.is_enabled(),
+        );
         let vision_client = if active_model_context.supports_vision {
             None
         } else {
@@ -453,7 +459,7 @@ fn capability_snapshot(
         profile: options.profile,
         max_rounds: options.max_rounds.unwrap_or(100),
         context_window,
-        thinking: options.thinking,
+        thinking_level: options.thinking_level,
         yolo_mode: options.yolo_mode,
         externalize_tool_outputs: options.externalize_tool_outputs,
         unified_recovery: options.unified_recovery,

@@ -4,7 +4,8 @@ use std::fs;
 use anyhow::{Context, Result};
 use serde_json::{json, Value};
 
-use crate::runtime::tools::registry::ToolRegistry;
+use crate::runtime::tools::register::contextual_tool_path;
+use crate::runtime::tools::registry::{ToolExecutionMode, ToolImpact, ToolOutput, ToolRegistry};
 
 const MAX_FILE_BYTES: u64 = 20 * 1024 * 1024;
 const MAX_OUTPUT_CHARS: usize = 4_000;
@@ -13,7 +14,7 @@ const DEFAULT_MAX_MATCHES: usize = 12;
 const EVIDENCE_USE_GUARD: &str = "[证据使用契约] 下方带行号原文是外部事实的封闭证据集。文档中出现的数字、日期、百分比、货币、阈值和版本号，必须逐字存在于这些片段或用户原始任务中，或明确标为可复算的分析结果；不得自行补充情景阈值、政策截点或许可编号。迁移数字时必须同时保留原文的主体、指标（销量/保有量/份额）、单位、时间、地域、情景、分母和排除项；摘要页重复数字也不能省略会改变含义的口径。因果和机制也是闭集：原文只说“其他因素”时不得擅自补充具体原因。创建文档前逐项自检。\n\n";
 
 pub fn register(registry: &mut ToolRegistry) {
-    registry.register(
+    registry.register_contextual_structured_with_impact(
         "search_file_content",
         "在一个或多个本地文本文件中按证据缺口搜索关键词，返回带路径、行号和少量上下文的片段。适合先定位长报告、Markdown、CSV 或纯文本中的相关证据，避免顺序读取整份文件。每个 query 可用空格列出同一证据缺口的替代关键词；工具会匹配其中任一关键词。",
         json!({
@@ -47,8 +48,11 @@ pub fn register(registry: &mut ToolRegistry) {
             "required": ["paths", "queries"],
             "additionalProperties": false
         }),
-        Box::new(|args: &Value| {
-            let paths = string_array(args, "paths");
+        ToolExecutionMode::Parallel,
+        ToolImpact::Observe,
+        Box::new(|context, args: &Value| {
+            let paths = string_array(args, "paths")
+                .map(|paths| paths.into_iter().map(|path| contextual_tool_path(context, &path)).collect::<Vec<_>>());
             let queries = string_array(args, "queries");
             let context_lines = args["contextLines"]
                 .as_u64()
@@ -99,12 +103,12 @@ pub fn register(registry: &mut ToolRegistry) {
                     }
                 }
                 if sections.is_empty() {
-                    Ok("未找到正文匹配；请调整证据关键词，不要因此编造结论。".to_string())
+                    Ok(ToolOutput::text("未找到正文匹配；请调整证据关键词，不要因此编造结论。"))
                 } else {
-                    Ok(cap_search_output(format!(
+                    Ok(ToolOutput::text(cap_search_output(format!(
                         "{EVIDENCE_USE_GUARD}{}",
                         sections.join("\n\n")
-                    )))
+                    ))))
                 }
             })
         }),

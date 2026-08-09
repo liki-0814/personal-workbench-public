@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 
+use crate::agent_core::contracts::ThinkingLevel;
 use crate::agent_core::graph::{AgentGraph, GraphConfig};
 use crate::agent_core::middleware;
 use crate::ai::llm::ToolSchema;
@@ -24,7 +25,10 @@ pub enum HarnessProfile {
 pub struct GraphPolicySpec {
     pub max_rounds: u32,
     pub context_window: u32,
+    /// Legacy compatibility projection. New code reads `thinking_level`.
     pub thinking: bool,
+    #[serde(default)]
+    pub thinking_level: ThinkingLevel,
     pub yolo_mode: bool,
     pub allow_tool_output_externalization: bool,
     pub unified_recovery: bool,
@@ -64,6 +68,10 @@ pub enum MiddlewareSpec {
         revision: u32,
         max_concurrent: usize,
     },
+    DelegationAdvisor {
+        revision: u32,
+        threshold: u32,
+    },
 }
 
 impl MiddlewareSpec {
@@ -75,6 +83,7 @@ impl MiddlewareSpec {
             Self::XmlToolCall { .. } => "xml_tool_call",
             Self::Summarization { .. } => "summarization",
             Self::SubAgentLimit { .. } => "subagent_limit",
+            Self::DelegationAdvisor { .. } => "delegation_advisor",
         }
     }
 
@@ -85,7 +94,8 @@ impl MiddlewareSpec {
             | Self::LoopDetection { revision, .. }
             | Self::XmlToolCall { revision }
             | Self::Summarization { revision, .. }
-            | Self::SubAgentLimit { revision, .. } => *revision,
+            | Self::SubAgentLimit { revision, .. }
+            | Self::DelegationAdvisor { revision, .. } => *revision,
         }
     }
 }
@@ -138,7 +148,7 @@ pub struct HarnessInputs<'a> {
     pub profile: HarnessProfile,
     pub max_rounds: u32,
     pub context_window: u32,
-    pub thinking: bool,
+    pub thinking_level: ThinkingLevel,
     pub yolo_mode: bool,
     pub externalize_tool_outputs: bool,
     pub unified_recovery: bool,
@@ -189,6 +199,10 @@ impl HarnessSpec {
             revision: MIDDLEWARE_REVISION,
             max_concurrent: 3,
         });
+        middleware.push(MiddlewareSpec::DelegationAdvisor {
+            revision: MIDDLEWARE_REVISION,
+            threshold: 10,
+        });
 
         Ok(Self {
             schema_version: HARNESS_SCHEMA_VERSION,
@@ -196,7 +210,8 @@ impl HarnessSpec {
             graph: GraphPolicySpec {
                 max_rounds: inputs.max_rounds,
                 context_window: inputs.context_window,
-                thinking: inputs.thinking,
+                thinking: inputs.thinking_level.is_enabled(),
+                thinking_level: inputs.thinking_level,
                 yolo_mode: inputs.yolo_mode,
                 allow_tool_output_externalization: inputs.externalize_tool_outputs,
                 unified_recovery: inputs.unified_recovery,
@@ -312,13 +327,16 @@ impl HarnessFactory {
                 MiddlewareSpec::SubAgentLimit { max_concurrent, .. } => Box::new(
                     middleware::subagent_limit::SubAgentLimitMiddleware::new(*max_concurrent),
                 ),
+                MiddlewareSpec::DelegationAdvisor { threshold, .. } => Box::new(
+                    middleware::delegation_advisor::DelegationAdvisorMiddleware::new(*threshold),
+                ),
             };
             middlewares.push(middleware);
         }
 
         let graph_config = GraphConfig {
             max_rounds: spec.graph.max_rounds,
-            thinking: spec.graph.thinking,
+            thinking_level: spec.graph.thinking_level,
             yolo_mode: spec.graph.yolo_mode,
             decision_review_round_threshold: spec.decision.final_review_round_threshold,
             decision_review_tool_threshold: spec.decision.final_review_tool_threshold,
@@ -405,7 +423,7 @@ mod tests {
             profile: HarnessProfile::Main,
             max_rounds: 100,
             context_window: 100_000,
-            thinking: false,
+            thinking_level: ThinkingLevel::Off,
             yolo_mode: false,
             externalize_tool_outputs: true,
             unified_recovery: true,

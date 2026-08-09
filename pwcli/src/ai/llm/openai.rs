@@ -509,9 +509,6 @@ impl OpenAiClient {
             let mut byte_stream = res.bytes_stream();
             let mut buffer = String::new();
             let mut emitted_first = false;
-            let mut content_emitted = false;
-            let mut tool_call_emitted = false;
-            let mut reasoning_buf = String::new();
             // 工具调用按 index 累积：idx -> (id, name, thoughtSignature)
             let mut tool_calls_state: std::collections::HashMap<u64, (String, String, Option<String>)> = std::collections::HashMap::new();
 
@@ -554,13 +551,11 @@ impl OpenAiClient {
                         // DeepSeek-R1、QwQ 等会先吐推理再吐答复）。无论开关是否开启，
                         // 只要模型实际吐出推理内容，就如实转发给前端做面板渲染 ——
                         // 开关只决定请求侧是否 push `enable_thinking: true`，不影响展示。
-                        // 同时累积到 buf 用作兜底（某些模型只吐 reasoning 不吐 content）。
                         if let Some(r) = delta["reasoning_content"].as_str().filter(|s| !s.is_empty()) {
                             if !emitted_first {
                                 emitted_first = true;
                                 yield StreamEvent::FirstToken;
                             }
-                            reasoning_buf.push_str(r);
                             yield StreamEvent::ThinkingDelta(r.to_string());
                         }
 
@@ -570,14 +565,12 @@ impl OpenAiClient {
                                 emitted_first = true;
                                 yield StreamEvent::FirstToken;
                             }
-                            content_emitted = true;
                             yield StreamEvent::TextDelta(content.to_string());
                         }
 
                         // 工具调用 delta
                         if let Some(tc_arr) = v["choices"][0]["delta"]["tool_calls"].as_array() {
                             for tc in tc_arr {
-                                tool_call_emitted = true;
                                 let idx = tc["index"].as_u64().unwrap_or(0);
                                 let id = tc["id"].as_str().unwrap_or("").to_string();
                                 let name = tc["function"]["name"].as_str().unwrap_or("").to_string();
@@ -630,11 +623,6 @@ impl OpenAiClient {
                                 completion_tokens: u["completion_tokens"].as_u64().unwrap_or(0) as u32,
                                 total_tokens: u["total_tokens"].as_u64().unwrap_or(0) as u32,
                             };
-                            // 兜底：reasoning model 偶尔只吐 reasoning_content 不出 content，
-                            // 此时把 reasoning 当回复发出（避免空响应）
-                            if !content_emitted && !tool_call_emitted && !reasoning_buf.is_empty() {
-                                yield StreamEvent::TextDelta(std::mem::take(&mut reasoning_buf));
-                            }
                             yield StreamEvent::Done(Some(usage));
                             return;
                         }
@@ -642,10 +630,6 @@ impl OpenAiClient {
                 }
             }
 
-            // 兜底（无 usage chunk 时也走一遍）
-            if !content_emitted && !tool_call_emitted && !reasoning_buf.is_empty() {
-                yield StreamEvent::TextDelta(std::mem::take(&mut reasoning_buf));
-            }
             yield StreamEvent::Done(None);
         };
 
@@ -1108,5 +1092,57 @@ mod tests {
         assert!(events.iter().any(
             |event| matches!(event, StreamEvent::ToolCallStart { name, .. } if name == "generate_image")
         ));
+    }
+
+    #[tokio::test]
+    async fn reasoning_only_without_tool_call_does_not_produce_text_delta() {
+        let mut server = Server::new_async().await;
+        let sse = "data: {\"choices\":[{\"delta\":{\"reasoning_content\":\"deep thought\"},\"finish_reason\":null}]}\n\n\
+                   data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":2,\"completion_tokens\":3,\"total_tokens\":5}}\n\n\
+                   data: [DONE]\n\n";
+        let _mock = server
+            .mock("POST", "/chat/completions")
+            .with_status(200)
+            .with_header("content-type", "text/event-stream")
+            .with_body(sse)
+            .create();
+        let client = OpenAiClient::new(
+            ProviderConfig {
+                name: "t".into(),
+                base_url: server.url(),
+                api_key: "sk".into(),
+                protocol: "openai".into(),
+                model: "qwen".into(),
+                models: Vec::new(),
+                use_proxy: None,
+                compat_profile: None,
+            },
+            server.url(),
+        );
+        let request = LlmRequest {
+            messages: vec![msg("user", "你好")],
+            system_prompt: None,
+            tools: None,
+            stream: true,
+            tool_choice: None,
+            thinking: true,
+            max_tokens: None,
+            temperature: None,
+        };
+
+        let events = client.chat_stream(&request).collect::<Vec<_>>().await;
+        // 思考内容只以 ThinkingDelta 出现一次，绝不顶替成正文
+        assert!(events.iter().any(
+            |event| matches!(event, StreamEvent::ThinkingDelta(value) if value == "deep thought")
+        ));
+        assert!(
+            !events
+                .iter()
+                .any(|event| matches!(event, StreamEvent::TextDelta(_))),
+            "仅 reasoning_content 时不应产生 TextDelta"
+        );
+        assert!(events
+            .iter()
+            .any(|event| matches!(event, StreamEvent::Done(_))));
     }
 }

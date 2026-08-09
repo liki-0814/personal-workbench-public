@@ -111,6 +111,7 @@ pub trait BackgroundTaskPort: Send + Sync {
         tool_name: String,
         description: String,
         arguments: Value,
+        context: ToolInvocationContext,
     ) -> Result<String>;
 
     async fn execute_with_promotion(

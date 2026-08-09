@@ -4,7 +4,7 @@ pub mod pool;
 pub mod transfer;
 pub mod tunnel;
 
-use std::path::PathBuf;
+use std::path::Path;
 use std::sync::Arc;
 
 use serde_json::json;
@@ -32,14 +32,16 @@ fn register_execute(registry: &mut ToolRegistry, pool: Arc<SshPool>) {
         "ssh_execute",
         "在远程服务器上执行命令。通过 alias 指定服务器（可先用 ssh_list 查看已配置别名）。\
          自动复用连接池，首次连接后后续命令延迟极低。\
-         支持合并多条命令（用 && 拼接）减少往返。",
+         支持合并多条命令（用 && 拼接）减少往返。\
+         超时策略：显式传 timeout_secs 时同步等待到该时限，超时返回部分输出+错误由你决定下一步；\
+         预计会超过 60s 的长命令请直接设 background=true。",
         json!({
             "type": "object",
             "properties": {
                 "alias": { "type": "string", "description": "SSH 服务器别名" },
                 "command": { "type": "string", "description": "要执行的 shell 命令" },
-                "timeout_secs": { "type": "integer", "description": "超时秒数（默认 30）" },
-                "background": { "type": "boolean", "description": "设为 true 则后台执行，不阻塞对话" }
+                "timeout_secs": { "type": "integer", "description": "同步等待的超时秒数（默认 30）。显式传入时命令会在前台等到该时限，超时返回部分输出；超过 60s 的需求建议改用 background=true" },
+                "background": { "type": "boolean", "description": "设为 true 则后台执行，不阻塞对话；完成后会自动通知并汇报结果" }
             },
             "required": ["alias", "command"]
         }),
@@ -59,6 +61,21 @@ fn register_execute(registry: &mut ToolRegistry, pool: Arc<SshPool>) {
                 let handle_arc = pool.get_or_connect(&alias).await?;
                 let result = client::exec(&handle_arc, &command, timeout).await?;
 
+                if result.timed_out {
+                    anyhow::bail!(
+                        "命令超时 ({}s): {}\n\n[部分输出 stdout]\n{}\n[部分输出 stderr]\n{}\n\n\
+                         命令在 {}s 内未完成。你可以：\
+                         1) 调大 timeout_secs 重新执行；\
+                         2) 设 background=true 转后台执行（完成后自动通知）；\
+                         3) 优化命令（拆分/加过滤）后重试。",
+                        timeout,
+                        command,
+                        if result.stdout.is_empty() { "（无）" } else { &result.stdout },
+                        if result.stderr.is_empty() { "（无）" } else { &result.stderr },
+                        timeout
+                    );
+                }
+
                 let success = result.exit_code.map_or(result.stderr.is_empty(), |c| c == 0);
                 Ok(serde_json::to_string_pretty(&json!({
                     "success": success,
@@ -74,14 +91,16 @@ fn register_execute(registry: &mut ToolRegistry, pool: Arc<SshPool>) {
 fn register_upload(registry: &mut ToolRegistry, pool: Arc<SshPool>) {
     registry.register_with_impact(
         "ssh_upload",
-        "通过 SFTP 上传本地文件到远程服务器。支持大文件实时进度。",
+        "通过 SFTP 上传本地文件到远程服务器。支持大文件实时进度。\
+         预计耗时超过 60s 的大文件请直接设 background=true。",
         json!({
             "type": "object",
             "properties": {
                 "alias": { "type": "string", "description": "SSH 服务器别名" },
                 "local_path": { "type": "string", "description": "本地文件路径" },
                 "remote_path": { "type": "string", "description": "远程目标路径" },
-                "background": { "type": "boolean", "description": "设为 true 则后台执行，不阻塞对话" }
+                "timeout_secs": { "type": "integer", "description": "同步等待的超时秒数（默认 300），超时返回错误由你决定下一步" },
+                "background": { "type": "boolean", "description": "设为 true 则后台执行，不阻塞对话；完成后会自动通知并汇报结果" }
             },
             "required": ["alias", "local_path", "remote_path"]
         }),
@@ -91,6 +110,7 @@ fn register_upload(registry: &mut ToolRegistry, pool: Arc<SshPool>) {
             let alias = args["alias"].as_str().unwrap_or("").to_string();
             let local = args["local_path"].as_str().unwrap_or("").to_string();
             let remote = args["remote_path"].as_str().unwrap_or("").to_string();
+            let timeout = args["timeout_secs"].as_u64().unwrap_or(300);
             Box::pin(async move {
                 if alias.is_empty() || local.is_empty() || remote.is_empty() {
                     anyhow::bail!("alias、local_path、remote_path 必填");
@@ -98,7 +118,23 @@ fn register_upload(registry: &mut ToolRegistry, pool: Arc<SshPool>) {
                 progress::emit(&format!("⬆ 上传 {} → {}:{}", local, alias, remote));
 
                 let handle_arc = pool.get_or_connect(&alias).await?;
-                let bytes = transfer::upload(&handle_arc, &PathBuf::from(&local), &remote).await?;
+                let transfer = transfer::upload(&handle_arc, Path::new(&local), &remote);
+                let bytes = match tokio::time::timeout(
+                    std::time::Duration::from_secs(timeout),
+                    transfer,
+                )
+                .await
+                {
+                    Ok(result) => result?,
+                    Err(_) => anyhow::bail!(
+                        "上传超时 ({}s): {} → {}:{}\n\
+                         你可以：1) 调大 timeout_secs 重新执行；2) 设 background=true 转后台执行（完成后自动通知）。",
+                        timeout,
+                        local,
+                        alias,
+                        remote
+                    ),
+                };
 
                 Ok(format!("✅ 上传完成: {} → {}:{} ({} bytes)", local, alias, remote, bytes))
             })
@@ -109,14 +145,16 @@ fn register_upload(registry: &mut ToolRegistry, pool: Arc<SshPool>) {
 fn register_download(registry: &mut ToolRegistry, pool: Arc<SshPool>) {
     registry.register_with_impact(
         "ssh_download",
-        "通过 SFTP 从远程服务器下载文件到本地。支持大文件实时进度。",
+        "通过 SFTP 从远程服务器下载文件到本地。支持大文件实时进度。\
+         预计耗时超过 60s 的大文件请直接设 background=true。",
         json!({
             "type": "object",
             "properties": {
                 "alias": { "type": "string", "description": "SSH 服务器别名" },
                 "remote_path": { "type": "string", "description": "远程文件路径" },
                 "local_path": { "type": "string", "description": "本地目标路径" },
-                "background": { "type": "boolean", "description": "设为 true 则后台执行，不阻塞对话" }
+                "timeout_secs": { "type": "integer", "description": "同步等待的超时秒数（默认 300），超时返回错误由你决定下一步" },
+                "background": { "type": "boolean", "description": "设为 true 则后台执行，不阻塞对话；完成后会自动通知并汇报结果" }
             },
             "required": ["alias", "remote_path", "local_path"]
         }),
@@ -126,6 +164,7 @@ fn register_download(registry: &mut ToolRegistry, pool: Arc<SshPool>) {
             let alias = args["alias"].as_str().unwrap_or("").to_string();
             let remote = args["remote_path"].as_str().unwrap_or("").to_string();
             let local = args["local_path"].as_str().unwrap_or("").to_string();
+            let timeout = args["timeout_secs"].as_u64().unwrap_or(300);
             Box::pin(async move {
                 if alias.is_empty() || remote.is_empty() || local.is_empty() {
                     anyhow::bail!("alias、remote_path、local_path 必填");
@@ -133,7 +172,23 @@ fn register_download(registry: &mut ToolRegistry, pool: Arc<SshPool>) {
                 progress::emit(&format!("⬇ 下载 {}:{} → {}", alias, remote, local));
 
                 let handle_arc = pool.get_or_connect(&alias).await?;
-                let bytes = transfer::download(&handle_arc, &remote, &PathBuf::from(&local)).await?;
+                let transfer = transfer::download(&handle_arc, &remote, Path::new(&local));
+                let bytes = match tokio::time::timeout(
+                    std::time::Duration::from_secs(timeout),
+                    transfer,
+                )
+                .await
+                {
+                    Ok(result) => result?,
+                    Err(_) => anyhow::bail!(
+                        "下载超时 ({}s): {}:{} → {}\n\
+                         你可以：1) 调大 timeout_secs 重新执行；2) 设 background=true 转后台执行（完成后自动通知）。",
+                        timeout,
+                        alias,
+                        remote,
+                        local
+                    ),
+                };
 
                 Ok(format!("✅ 下载完成: {}:{} → {} ({} bytes)", alias, remote, local, bytes))
             })

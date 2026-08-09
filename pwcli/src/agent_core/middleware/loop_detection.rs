@@ -595,10 +595,7 @@ mod tests {
 
     #[test]
     fn stable_hash_same_calls_same_hash() {
-        let calls = vec![make_tool_call(
-            "read",
-            r#"{"path":"/a.txt","offset":0}"#,
-        )];
+        let calls = vec![make_tool_call("read", r#"{"path":"/a.txt","offset":0}"#)];
         let h1 = compute_stable_hash(&calls);
         let h2 = compute_stable_hash(&calls);
         assert_eq!(h1, h2);
@@ -680,27 +677,15 @@ mod tests {
 
     #[test]
     fn stable_hash_read_file_same_bucket() {
-        let c1 = vec![make_tool_call(
-            "read",
-            r#"{"path":"/a.txt","offset":10}"#,
-        )];
-        let c2 = vec![make_tool_call(
-            "read",
-            r#"{"path":"/a.txt","offset":150}"#,
-        )];
+        let c1 = vec![make_tool_call("read", r#"{"path":"/a.txt","offset":10}"#)];
+        let c2 = vec![make_tool_call("read", r#"{"path":"/a.txt","offset":150}"#)];
         assert_eq!(compute_stable_hash(&c1), compute_stable_hash(&c2));
     }
 
     #[test]
     fn stable_hash_read_file_different_bucket() {
-        let c1 = vec![make_tool_call(
-            "read",
-            r#"{"path":"/a.txt","offset":10}"#,
-        )];
-        let c2 = vec![make_tool_call(
-            "read",
-            r#"{"path":"/a.txt","offset":250}"#,
-        )];
+        let c1 = vec![make_tool_call("read", r#"{"path":"/a.txt","offset":10}"#)];
+        let c2 = vec![make_tool_call("read", r#"{"path":"/a.txt","offset":250}"#)];
         assert_ne!(compute_stable_hash(&c1), compute_stable_hash(&c2));
     }
 

@@ -88,6 +88,12 @@ where
         crate::runtime::background::BackgroundTaskManager::new(8)
             .with_task_broker(Arc::clone(&task_broker)),
     );
+    // 让模型能主动查询/取消/重试后台任务（list/cancel/retry）
+    crate::runtime::tools::background::register(
+        tool_registry.as_ref(),
+        Arc::clone(&background_tasks),
+        Arc::clone(&tool_registry),
+    );
     crate::runtime::tools::dispatch_tasks::register(
         tool_registry.as_ref(),
         Arc::new(tool_ports::DaemonSessionContextPort::new(
@@ -121,6 +127,7 @@ where
     routes::task::spawn_outbox_dispatcher(state.clone());
     routes::work_items::spawn_capture_recovery(state.clone());
     let mut background_events = background_tasks.subscribe();
+    let completion_state = state.clone();
     tokio::spawn(async move {
         loop {
             match background_events.recv().await {
@@ -134,6 +141,8 @@ where
                         );
                         background_sessions.update(session);
                     }
+                    // 闭环：写入持久队列并自动唤起 follow-up turn，让 agent 主动汇报结果
+                    routes::deliver_background_completion(completion_state.clone(), result).await;
                 }
                 Ok(crate::runtime::background::TaskEvent::Started { .. })
                 | Ok(crate::runtime::background::TaskEvent::Cancelled(_)) => {}

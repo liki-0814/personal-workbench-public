@@ -4,7 +4,7 @@ use crate::agent_core::contracts::ports::{
 };
 #[cfg(test)]
 use crate::agent_core::contracts::MessageRole;
-use crate::agent_core::contracts::Session;
+use crate::agent_core::contracts::{Session, ThinkingLevel};
 use crate::agent_core::graph::{GraphContext, GraphState};
 use crate::agent_core::harness::{
     HarnessAuditSink, HarnessControl, HarnessFactory, HarnessInputs, HarnessPhase, HarnessProfile,
@@ -34,6 +34,7 @@ pub struct TurnSummary {
     pub duration_ms: u64,
     pub ttft_ms: Option<u64>,
     pub token_usage: Option<TokenUsage>,
+    pub stop_reason: crate::agent_core::contracts::AgentStopReason,
 }
 
 #[derive(Debug, Clone)]
@@ -91,7 +92,15 @@ pub trait ToolEventSink: Send + Sync {
         _risk: crate::agent_core::decision::DecisionRisk,
     ) {
     }
-    fn on_decision_advisor(&self, _id: &str, _model: &str, _succeeded: bool) {}
+    fn on_decision_advisor(
+        &self,
+        _id: &str,
+        _model: &str,
+        _status: &str,
+        _round: u8,
+        _summary: &str,
+    ) {
+    }
     fn on_decision_resolved(
         &self,
         _id: &str,
@@ -119,6 +128,19 @@ pub trait ToolEventSink: Send + Sync {
     /// AI 助手输出结束（最后一个 delta 之后）
     fn on_assistant_end(&self) {}
     fn on_assistant_segment_end(&self, _round: u32, _has_tool_calls: bool) {}
+    fn on_assistant_segment_classified(
+        &self,
+        _round: u32,
+        _kind: crate::agent_core::contracts::AssistantSegmentKind,
+    ) {
+    }
+    fn on_candidate_disposition(
+        &self,
+        _round: u32,
+        _disposition: crate::agent_core::contracts::CandidateDisposition,
+    ) {
+    }
+    fn on_runtime_update(&self, _call_index: u32, _thinking_level: ThinkingLevel) {}
     /// Current provider stream was discarded and will be sampled again.
     fn on_stream_retry(&self, _reason: &str) {}
 
@@ -174,18 +196,25 @@ pub struct HarnessRunOptions {
     pub profile: HarnessProfile,
     pub max_rounds: Option<u32>,
     pub externalize_tool_outputs: bool,
+    /// Legacy compatibility projection. New code reads `thinking_level`.
     pub thinking: bool,
+    pub thinking_level: ThinkingLevel,
     pub yolo_mode: bool,
     pub unified_recovery: bool,
 }
 
 impl HarnessRunOptions {
     pub fn main(thinking: bool) -> Self {
+        Self::main_with_thinking_level(thinking.into())
+    }
+
+    pub fn main_with_thinking_level(thinking_level: ThinkingLevel) -> Self {
         Self {
             profile: HarnessProfile::Main,
             max_rounds: None,
             externalize_tool_outputs: true,
-            thinking,
+            thinking: thinking_level.is_enabled(),
+            thinking_level,
             yolo_mode: false,
             unified_recovery: true,
         }
@@ -196,11 +225,16 @@ impl HarnessRunOptions {
     }
 
     pub fn oneshot_with_thinking(yolo_mode: bool, thinking: bool) -> Self {
+        Self::oneshot_with_thinking_level(yolo_mode, thinking.into())
+    }
+
+    pub fn oneshot_with_thinking_level(yolo_mode: bool, thinking_level: ThinkingLevel) -> Self {
         Self {
             profile: HarnessProfile::Oneshot,
             max_rounds: None,
             externalize_tool_outputs: true,
-            thinking,
+            thinking: thinking_level.is_enabled(),
+            thinking_level,
             yolo_mode,
             unified_recovery: true,
         }
@@ -270,7 +304,7 @@ impl<'a> AgentRunner<'a> {
             profile: self.run_options.profile,
             max_rounds: self.run_options.max_rounds.unwrap_or(MAX_TURNS),
             context_window,
-            thinking: self.run_options.thinking,
+            thinking_level: self.run_options.thinking_level,
             yolo_mode: self.run_options.yolo_mode,
             externalize_tool_outputs: self.run_options.externalize_tool_outputs,
             unified_recovery: self.run_options.unified_recovery,

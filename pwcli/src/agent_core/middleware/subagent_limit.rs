@@ -8,10 +8,13 @@ use crate::agent_core::graph::GraphContext;
 use super::types::HookAction;
 use super::AgentMiddleware;
 
-/// 截断超额的 `task` tool_calls，保留前 N 个。
+/// 截断超额的子 agent 委托 tool_calls（`task` / `code_agent`），保留前 N 个。
 pub struct SubAgentLimitMiddleware {
     max_concurrent: usize,
 }
+
+/// 视为“子 agent 委托”的工具名。
+const SUBAGENT_TOOLS: &[&str] = &["task", "code_agent"];
 
 impl SubAgentLimitMiddleware {
     pub fn new(max_concurrent: usize) -> Self {
@@ -42,23 +45,23 @@ impl AgentMiddleware for SubAgentLimitMiddleware {
         let task_count = state
             .pending_tool_calls
             .iter()
-            .filter(|tc| tc.function.name == "task")
+            .filter(|tc| SUBAGENT_TOOLS.contains(&tc.function.name.as_str()))
             .count();
 
         if task_count > self.max_concurrent {
             info!(
                 task_count,
                 max = self.max_concurrent,
-                "truncating excess task tool_calls"
+                "truncating excess subagent tool_calls"
             );
 
             let mut kept_tasks = 0;
             state.pending_tool_calls.retain(|tc| {
-                if tc.function.name == "task" {
+                if SUBAGENT_TOOLS.contains(&tc.function.name.as_str()) {
                     kept_tasks += 1;
                     kept_tasks <= self.max_concurrent
                 } else {
-                    true // keep all non-task calls
+                    true // keep all non-subagent calls
                 }
             });
             ctx.record_intervention(
@@ -122,14 +125,14 @@ mod tests {
         let mut state = GraphState::new();
         state.pending_tool_calls = vec![
             make_tool_call("task", "t1"),
-            make_tool_call("task", "t2"),
+            make_tool_call("code_agent", "t2"),
             make_tool_call("read_file", "r1"),
         ];
 
         let task_count = state
             .pending_tool_calls
             .iter()
-            .filter(|tc| tc.function.name == "task")
+            .filter(|tc| SUBAGENT_TOOLS.contains(&tc.function.name.as_str()))
             .count();
         assert_eq!(task_count, 2);
         // Under limit (3), no truncation needed
@@ -142,19 +145,22 @@ mod tests {
         let mut calls = vec![
             make_tool_call("task", "t1"),
             make_tool_call("read_file", "r1"),
-            make_tool_call("task", "t2"),
+            make_tool_call("code_agent", "t2"),
             make_tool_call("task", "t3"),
-            make_tool_call("task", "t4"),
+            make_tool_call("code_agent", "t4"),
             make_tool_call("write_file", "w1"),
         ];
 
-        let task_count = calls.iter().filter(|tc| tc.function.name == "task").count();
+        let task_count = calls
+            .iter()
+            .filter(|tc| SUBAGENT_TOOLS.contains(&tc.function.name.as_str()))
+            .count();
         assert_eq!(task_count, 4);
 
         if task_count > max {
             let mut kept_tasks = 0;
             calls.retain(|tc| {
-                if tc.function.name == "task" {
+                if SUBAGENT_TOOLS.contains(&tc.function.name.as_str()) {
                     kept_tasks += 1;
                     kept_tasks <= max
                 } else {
@@ -163,12 +169,12 @@ mod tests {
             });
         }
 
-        // Should keep: t1, r1, t2, w1 (first 2 tasks + all non-tasks)
+        // Should keep: t1, r1, t2, w1 (first 2 subagent calls + all others)
         assert_eq!(calls.len(), 4);
         let remaining_names: Vec<&str> = calls.iter().map(|c| c.function.name.as_str()).collect();
         assert_eq!(
             remaining_names,
-            vec!["task", "read_file", "task", "write_file"]
+            vec!["task", "read_file", "code_agent", "write_file"]
         );
         assert_eq!(calls[0].id, "t1");
         assert_eq!(calls[2].id, "t2");

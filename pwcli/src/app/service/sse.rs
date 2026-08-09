@@ -28,6 +28,22 @@ pub fn stream_event_to_sse(event: StreamEvent) -> Event {
             })
             .to_string(),
         ),
+        StreamEvent::AssistantSegmentClassified { round, kind } => Event::default()
+            .event("assistant_segment_classified")
+            .data(serde_json::json!({ "round": round, "kind": kind }).to_string()),
+        StreamEvent::AssistantCandidateDisposition { round, disposition } => Event::default()
+            .event("assistant_candidate_disposition")
+            .data(serde_json::json!({ "round": round, "disposition": disposition }).to_string()),
+        StreamEvent::RuntimeUpdate {
+            call_index,
+            thinking_level,
+        } => Event::default().event("runtime_update").data(
+            serde_json::json!({
+                "call_index": call_index,
+                "thinking_level": thinking_level,
+            })
+            .to_string(),
+        ),
         StreamEvent::ThinkingDelta(delta) => Event::default()
             .event("thinking_delta")
             .data(format!(r#"{{"delta":{}}}"#, serde_json::json!(delta))),
@@ -128,9 +144,9 @@ pub fn stream_event_to_sse(event: StreamEvent) -> Event {
         StreamEvent::DecisionStarted { id, trigger, risk } => Event::default()
             .event("decision_started")
             .data(serde_json::json!({ "id": id, "trigger": trigger, "risk": risk }).to_string()),
-        StreamEvent::DecisionAdvisor { id, model, status } => Event::default()
+        StreamEvent::DecisionAdvisor { id, model, status, round, summary } => Event::default()
             .event("decision_advisor")
-            .data(serde_json::json!({ "id": id, "model": model, "status": status }).to_string()),
+            .data(serde_json::json!({ "id": id, "model": model, "status": status, "round": round, "summary": summary }).to_string()),
         StreamEvent::DecisionResolved {
             id,
             outcome,
@@ -238,6 +254,28 @@ mod tests {
         assert_eq!(
             end_fields.get("data").unwrap(),
             r#"{"has_tool_calls":true,"round":2}"#
+        );
+
+        let classified = stream_event_to_sse(StreamEvent::AssistantSegmentClassified {
+            round: 2,
+            kind: "candidate".into(),
+        });
+        let classified_bytes = event_to_bytes(classified).await;
+        let classified_fields = parse_sse_fields(std::str::from_utf8(&classified_bytes).unwrap());
+        assert_eq!(
+            classified_fields.get("event").unwrap(),
+            "assistant_segment_classified"
+        );
+
+        let promoted = stream_event_to_sse(StreamEvent::AssistantCandidateDisposition {
+            round: 2,
+            disposition: "promoted".into(),
+        });
+        let promoted_bytes = event_to_bytes(promoted).await;
+        let promoted_fields = parse_sse_fields(std::str::from_utf8(&promoted_bytes).unwrap());
+        assert_eq!(
+            promoted_fields.get("event").unwrap(),
+            "assistant_candidate_disposition"
         );
     }
 

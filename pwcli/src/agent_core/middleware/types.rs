@@ -42,7 +42,7 @@ impl ModelRequest {
             messages: state.messages.clone(),
             system_prompt: ctx.system_prompt.to_string(),
             tools: Some(ctx.tool_schemas.to_vec()),
-            thinking: ctx.config.thinking,
+            thinking: ctx.config.thinking_level.is_enabled(),
         }
     }
 }

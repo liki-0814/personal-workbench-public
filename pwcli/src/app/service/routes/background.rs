@@ -23,4 +23,8 @@ pub(super) fn routes() -> Router<AppState> {
             "/sessions/{id}/background-tasks",
             delete(super::cancel_session_background_tasks),
         )
+        .route(
+            "/sessions/{id}/code-agent/decision",
+            post(super::resolve_code_agent_decision),
+        )
 }

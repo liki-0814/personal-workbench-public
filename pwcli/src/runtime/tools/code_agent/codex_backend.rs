@@ -63,18 +63,14 @@ pub struct CodexBackend {
 impl CodexBackend {
     /// Native `codex-acp` adapter binary.
     pub fn new(bin: String) -> Self {
-        Self {
-            bin,
-            refresh: None,
-        }
+        Self { bin, refresh: None }
     }
 
     /// Auto-refresh launcher: re-installs the newest adapter into a private
     /// prefix before every launch, so the adapter always matches the installed
     /// Codex CLI (no stale npx cache).
     pub fn auto() -> Self {
-        let prefix = crate::runtime::settings::local_config::data_dir()
-            .join("vendor/codex-acp");
+        let prefix = crate::runtime::settings::local_config::data_dir().join("vendor/codex-acp");
         let bin = prefix.join("node_modules/.bin/codex-acp");
         Self {
             bin: bin.to_string_lossy().to_string(),
@@ -162,7 +158,9 @@ mod tests {
     #[test]
     fn auto_launcher_refreshes_the_adapter_before_every_call() {
         let backend = CodexBackend::auto();
-        assert!(backend.bin_path().ends_with("vendor/codex-acp/node_modules/.bin/codex-acp"));
+        assert!(backend
+            .bin_path()
+            .ends_with("vendor/codex-acp/node_modules/.bin/codex-acp"));
         let (program, args) = backend.prepare_command().unwrap();
         assert_eq!(program, "npm");
         assert!(args.contains(&"install".to_string()));

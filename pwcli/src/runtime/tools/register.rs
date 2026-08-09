@@ -156,7 +156,7 @@ fn register_decision_control_tool(registry: &mut ToolRegistry) {
     );
     registry.register_with_mode_and_impact(
         "request_decision_review",
-        "Request an independent Harness MoA review when the current task contains a genuine ambiguity, conflicting evidence, or materially different approaches. Do not use for routine steps.",
+        "You may request an independent Harness MoA second opinion when your own judgment says it would materially improve the result: for example genuine ambiguity, conflicting evidence, consequential tradeoffs, or materially different approaches. Do not use it merely because a task has many steps, tools, shell commands, failures, or a long answer; routine work should proceed without advisors.",
         serde_json::json!({
             "type": "object",
             "properties": {
@@ -258,7 +258,7 @@ pub async fn register_runtime_tools(
 
 fn register_fs_tools(registry: &mut ToolRegistry, backend: Arc<BackendClient>) {
     let b = Arc::clone(&backend);
-    registry.register(
+    registry.register_contextual_structured_with_impact(
         "ls",
         "列出目录内容（默认最多 500 条，目录在前）",
         serde_json::json!({
@@ -268,9 +268,11 @@ fn register_fs_tools(registry: &mut ToolRegistry, backend: Arc<BackendClient>) {
                 "limit": { "type": "integer", "minimum": 1, "maximum": 1000, "description": "最多列出的条目数，默认 500" }
             }
         }),
-        Box::new(move |args: &Value| {
+        ToolExecutionMode::Parallel,
+        ToolImpact::Observe,
+        Box::new(move |context, args: &Value| {
             let b = Arc::clone(&b);
-            let path = args["path"].as_str().unwrap_or(".").to_string();
+            let path = contextual_tool_path(context, args["path"].as_str().unwrap_or("."));
             let limit = args["limit"].as_u64().unwrap_or(500).clamp(1, 1000) as usize;
             Box::pin(async move {
                 let entries = match crate::runtime::tools::fs_local::FsSandbox::from_config()
@@ -303,7 +305,7 @@ fn register_fs_tools(registry: &mut ToolRegistry, backend: Arc<BackendClient>) {
                     Err(error) => return Err(error),
                 };
                 if entries.is_empty() {
-                    return Ok("（空目录）".to_string());
+                    return Ok(ToolOutput::text("（空目录）"));
                 }
                 let total = entries.len();
                 let truncated = total > limit;
@@ -329,7 +331,7 @@ fn register_fs_tools(registry: &mut ToolRegistry, backend: Arc<BackendClient>) {
                         "\n[已显示前 {limit} 条，共 {total} 条；可用 find/grep 精确定位]"
                     ));
                 }
-                Ok(output)
+                Ok(ToolOutput::text(output))
             })
         }),
     );
@@ -355,7 +357,7 @@ fn register_fs_tools(registry: &mut ToolRegistry, backend: Arc<BackendClient>) {
             let path = args["path"]
                 .as_str()
                 .ok_or_else(|| anyhow::anyhow!("path is required"))
-                .map(|s| s.to_string());
+                .map(|s| contextual_tool_path(context, s));
             let offset = args["offset"].as_u64().unwrap_or(1).max(1) as usize;
             let limit = args["limit"].as_u64().map(|value| value.max(1).min(10000) as usize);
             Box::pin(async move {
@@ -424,7 +426,7 @@ fn register_fs_tools(registry: &mut ToolRegistry, backend: Arc<BackendClient>) {
         }),
     );
 
-    registry.register_with_impact(
+    registry.register_contextual_structured_with_impact(
         "write",
         "写入文件（覆盖已有内容，父目录不存在时自动创建）",
         serde_json::json!({
@@ -435,20 +437,24 @@ fn register_fs_tools(registry: &mut ToolRegistry, backend: Arc<BackendClient>) {
             },
             "required": ["path", "content"]
         }),
+        ToolExecutionMode::Sequential,
         ToolImpact::ReversibleMutation,
-        Box::new(move |args: &Value| {
-            let path = args["path"].as_str().unwrap_or("").to_string();
+        Box::new(move |context, args: &Value| {
+            let path = contextual_tool_path(context, args["path"].as_str().unwrap_or(""));
             let content = args["content"].as_str().unwrap_or("").to_string();
             Box::pin(async move {
                 let sandbox = crate::runtime::tools::fs_local::FsSandbox::from_config()?;
                 let local_path = sandbox.resolve(&path)?;
                 crate::runtime::tools::edit_file::write_path(&local_path, &content).await?;
-                Ok(format!("Written to {}", local_path.display()))
+                Ok(ToolOutput::text(format!(
+                    "Written to {}",
+                    local_path.display()
+                )))
             })
         }),
     );
 
-    registry.register_with_impact(
+    registry.register_contextual_structured_with_impact(
         "remove_file",
         "删除文件或目录",
         serde_json::json!({
@@ -458,19 +464,20 @@ fn register_fs_tools(registry: &mut ToolRegistry, backend: Arc<BackendClient>) {
             },
             "required": ["path"]
         }),
+        ToolExecutionMode::Sequential,
         ToolImpact::IrreversibleMutation,
-        Box::new(move |args: &Value| {
-            let path = args["path"].as_str().unwrap_or("").to_string();
+        Box::new(move |context, args: &Value| {
+            let path = contextual_tool_path(context, args["path"].as_str().unwrap_or(""));
             Box::pin(async move {
                 let sandbox = crate::runtime::tools::fs_local::FsSandbox::from_config()?;
                 let removed = sandbox.remove(&path).await?;
-                Ok(format!("Removed {}", removed.display()))
+                Ok(ToolOutput::text(format!("Removed {}", removed.display())))
             })
         }),
     );
 
     let b = Arc::clone(&backend);
-    registry.register(
+    registry.register_contextual_structured_with_impact(
         "get_file_info",
         "获取文件元信息",
         serde_json::json!({
@@ -480,22 +487,39 @@ fn register_fs_tools(registry: &mut ToolRegistry, backend: Arc<BackendClient>) {
             },
             "required": ["path"]
         }),
-        Box::new(move |args: &Value| {
+        ToolExecutionMode::Parallel,
+        ToolImpact::Observe,
+        Box::new(move |context, args: &Value| {
             let b = Arc::clone(&b);
             let path = args["path"]
                 .as_str()
                 .ok_or_else(|| anyhow::anyhow!("path is required"))
-                .map(|s| s.to_string());
+                .map(|s| contextual_tool_path(context, s));
             Box::pin(async move {
                 let path = path?;
                 let info = b.get_file_info(&path).await?;
-                Ok(format!(
+                Ok(ToolOutput::text(format!(
                     "名称: {}\n类型: {}\n大小: {} bytes\n修改: {}\n创建: {}",
                     info.name, info.kind, info.size, info.modified, info.created
-                ))
+                )))
             })
         }),
     );
+}
+
+/// Resolve relative tool paths from the active chat workspace. `tools.fsBase`
+/// remains the sandbox boundary; it must not also become every session's cwd.
+pub(super) fn contextual_tool_path(
+    context: &crate::runtime::tools::context::ToolExecutionContext,
+    path: &str,
+) -> String {
+    let expanded = shellexpand::tilde(path);
+    let path = std::path::Path::new(expanded.as_ref());
+    if path.is_absolute() {
+        expanded.into_owned()
+    } else {
+        context.cwd.join(path).to_string_lossy().into_owned()
+    }
 }
 
 /// 按 pi 的行号语义截取文本：`offset` 为 1-based 起始行号，`limit` 为行数。
@@ -683,7 +707,10 @@ fn register_shell_tools(registry: &mut ToolRegistry) {
         bash_impact,
         Box::new(move |context, args: &Value| {
             let command = args["command"].as_str().unwrap_or("").to_string();
-            let cwd = args["cwd"].as_str().map(|s| s.to_string());
+            let cwd = Some(contextual_tool_path(
+                context,
+                args["cwd"].as_str().unwrap_or("."),
+            ));
             let timeout_secs = args["timeout"].as_u64();
             let session_id = shell_session_id(context);
             Box::pin(async move {
@@ -750,6 +777,22 @@ mod tests {
         if let (Some(target), Value::Object(addition)) = (target.as_object_mut(), addition) {
             target.extend(addition);
         }
+    }
+
+    #[test]
+    fn relative_tool_paths_follow_the_session_workspace() {
+        let context = crate::runtime::tools::context::ToolExecutionContext {
+            cwd: std::path::PathBuf::from("/tmp/pwcli-project"),
+            ..Default::default()
+        };
+        assert_eq!(
+            contextual_tool_path(&context, "src/main.rs"),
+            "/tmp/pwcli-project/src/main.rs"
+        );
+        assert_eq!(
+            contextual_tool_path(&context, "/tmp/explicit"),
+            "/tmp/explicit"
+        );
     }
 
     fn schema_example(schema: &Value) -> Value {

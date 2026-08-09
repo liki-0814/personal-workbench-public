@@ -206,6 +206,15 @@ pub enum StreamEvent {
     /// The model call finished. Calls that also produced tool calls are
     /// progress/working segments; calls without tool calls are final answers.
     AssistantSegmentEnd { round: u32, has_tool_calls: bool },
+    /// Semantic classification supplied by agent-core after the provider call.
+    AssistantSegmentClassified { round: u32, kind: String },
+    /// Final disposition of a candidate segment after completion policies.
+    AssistantCandidateDisposition { round: u32, disposition: String },
+    /// Agent-core confirmed the effective controls for a provider call.
+    RuntimeUpdate {
+        call_index: u32,
+        thinking_level: String,
+    },
     /// 扩展思考增量（Anthropic thinking_delta / OpenAI 兼容 reasoning_content）
     ThinkingDelta(String),
     /// 工具调用开始
@@ -275,6 +284,8 @@ pub enum StreamEvent {
         id: String,
         model: String,
         status: String,
+        round: u8,
+        summary: String,
     },
     DecisionResolved {
         id: String,

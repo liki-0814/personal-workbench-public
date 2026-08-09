@@ -1,6 +1,7 @@
 pub mod anysearch;
 pub mod archify;
 pub mod artifacts;
+pub mod background;
 pub mod code_agent;
 pub mod context;
 pub mod data_crud;
@@ -15,8 +16,8 @@ pub mod executor;
 pub mod extensions;
 pub mod fs_local;
 pub mod fs_search;
-pub mod jobs;
 pub mod illustrate;
+pub mod jobs;
 pub mod memory;
 pub mod pdf;
 pub mod progress;

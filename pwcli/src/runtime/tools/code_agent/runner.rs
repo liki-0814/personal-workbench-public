@@ -322,10 +322,12 @@ pub async fn execute_code_agent_with_listener(
         }),
         Err(_) => Ok(CodeAgentResult {
             status: "timeout".to_string(),
-            session_id,
+            session_id: session_id.clone(),
             output: format!(
-                "code_agent 超时（{}s 含重试）。可调大 timeout_secs 或拆任务。",
-                timeout_secs
+                "code_agent 在 {}s 内未完成（含重试）。子 agent 会话上下文已保留（session_id={}），\
+                 无需从零重跑：用 resume_session_id={} 续聊接力即可从断点继续（可调大 timeout_secs），\
+                 或拆小任务重新委托。",
+                timeout_secs, session_id, session_id
             ),
             question: None,
             options: None,
@@ -426,7 +428,10 @@ async fn refresh_backend(backend: &dyn SubAgentBackend) -> Result<(), RunError> 
 /// otherwise surface a fatal error.
 fn refresh_failure(backend: &dyn SubAgentBackend, reason: &str) -> Result<(), RunError> {
     if Path::new(backend.bin_path()).is_file() {
-        warn!(backend = backend.name(), reason, "adapter refresh failed; falling back to installed binary");
+        warn!(
+            backend = backend.name(),
+            reason, "adapter refresh failed; falling back to installed binary"
+        );
         return Ok(());
     }
     Err(RunError::FatalSubprocess {

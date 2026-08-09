@@ -5,12 +5,12 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 use async_trait::async_trait;
-use futures::future::join_all;
+use futures::stream::{FuturesUnordered, StreamExt};
 use tokio::sync::Mutex;
 
 use crate::agent_core::decision::{
-    AdvisorResult, DecisionOption, DecisionOutcome, DecisionRequest, DecisionReviewer,
-    DecisionTrigger, DecisionVerdict,
+    AdvisorResult, DecisionOption, DecisionOutcome, DecisionRequest, DecisionReviewObserver,
+    DecisionReviewer, DecisionTrigger, DecisionVerdict,
 };
 use crate::ai::config::ProviderConfig;
 use crate::ai::llm::{ChatMessage, LlmClient, TokenUsage};
@@ -419,11 +419,36 @@ impl MoaRuntime {
         .to_string()
     }
 
+    fn advisor_limit(&self, request: &DecisionRequest) -> usize {
+        if self.preset.advisors.is_empty() {
+            return 0;
+        }
+        let requested =
+            if request.trigger == crate::agent_core::decision::DecisionTrigger::FinalReview {
+                2
+            } else {
+                match request.risk {
+                    crate::agent_core::decision::DecisionRisk::Low => {
+                        self.preset.low_risk_advisors.unwrap_or(1)
+                    }
+                    crate::agent_core::decision::DecisionRisk::Elevated => {
+                        self.preset.elevated_risk_advisors.unwrap_or(2)
+                    }
+                    crate::agent_core::decision::DecisionRisk::High => self
+                        .preset
+                        .high_risk_advisors
+                        .unwrap_or(self.preset.advisors.len()),
+                }
+            };
+        requested.clamp(1, self.preset.advisors.len())
+    }
+
     async fn review_decision(
         &self,
         request: &DecisionRequest,
         messages: &[ChatMessage],
         cancel: &tokio_util::sync::CancellationToken,
+        observer: Option<&dyn DecisionReviewObserver>,
     ) -> Result<DecisionVerdict> {
         *self.usage.lock().await = TokenUsage::default();
         if !self.preset.enabled {
@@ -448,24 +473,7 @@ impl MoaRuntime {
         if self.preset.advisors.is_empty() {
             anyhow::bail!("MoA preset has no advisor models");
         }
-        let advisor_limit =
-            if request.trigger == crate::agent_core::decision::DecisionTrigger::FinalReview {
-                2
-            } else {
-                match request.risk {
-                    crate::agent_core::decision::DecisionRisk::Low => {
-                        self.preset.low_risk_advisors.unwrap_or(1)
-                    }
-                    crate::agent_core::decision::DecisionRisk::Elevated => {
-                        self.preset.elevated_risk_advisors.unwrap_or(2)
-                    }
-                    crate::agent_core::decision::DecisionRisk::High => self
-                        .preset
-                        .high_risk_advisors
-                        .unwrap_or(self.preset.advisors.len()),
-                }
-            }
-            .clamp(1, self.preset.advisors.len());
+        let advisor_limit = self.advisor_limit(request);
         let decision = serde_json::from_str::<serde_json::Value>(&prompt).unwrap_or_default();
         let mut prior_verdict: Option<DecisionVerdict> = None;
         let mut final_verdict = None;
@@ -491,7 +499,7 @@ impl MoaRuntime {
                 serde_json::json!({ "round": round, "decision": decision }).to_string()
             };
             let advisors = self
-                .run_advisor_round(advisor_prompt, advisor_limit, cancel)
+                .run_advisor_round(advisor_prompt, advisor_limit, round, cancel, observer)
                 .await;
             let successful = advisors.iter().filter(|item| item.succeeded).count();
             if successful == 0 {
@@ -543,7 +551,9 @@ impl MoaRuntime {
         &self,
         prompt: String,
         advisor_limit: usize,
+        round: u8,
         cancel: &tokio_util::sync::CancellationToken,
+        observer: Option<&dyn DecisionReviewObserver>,
     ) -> Vec<AdvisorResult> {
         let advisor_futures = self
             .preset
@@ -555,6 +565,7 @@ impl MoaRuntime {
                 let cancel = cancel.clone();
                 async move {
                     let model_name = format!("{}:{}", model_ref.provider, model_ref.model);
+                    let advisor_slot = model_name.clone();
                     let result = async {
                         let primary = self.provider_for(model_ref)?;
                         let advisor_messages = [ChatMessage {
@@ -636,7 +647,7 @@ impl MoaRuntime {
                         Err(last_error.unwrap_or_else(|| anyhow::anyhow!("no advisor provider configured")))
                     }
                     .await;
-                    match result {
+                    let advisor = match result {
                         Ok((model, summary)) => AdvisorResult {
                             model,
                             succeeded: true,
@@ -647,10 +658,33 @@ impl MoaRuntime {
                             succeeded: false,
                             summary: error.to_string(),
                         },
-                    }
+                    };
+                    (advisor_slot, advisor)
                 }
             });
-        join_all(advisor_futures).await
+        let mut pending = FuturesUnordered::new();
+        for future in advisor_futures {
+            pending.push(future);
+        }
+        for model in self.preset.advisors.iter().take(advisor_limit) {
+            if let Some(observer) = observer {
+                observer.on_advisor_started(&format!("{}:{}", model.provider, model.model), round);
+            }
+        }
+        let mut advisors = Vec::with_capacity(advisor_limit);
+        while let Some((advisor_slot, advisor)) = pending.next().await {
+            if let Some(observer) = observer {
+                let mut visible = advisor.clone();
+                if visible.model != advisor_slot {
+                    visible.summary =
+                        format!("由备用模型 {} 完成\n{}", visible.model, visible.summary);
+                    visible.model = advisor_slot;
+                }
+                observer.on_advisor_completed(&visible, round);
+            }
+            advisors.push(advisor);
+        }
+        advisors
     }
 
     async fn judge_round(
@@ -968,7 +1002,18 @@ impl DecisionReviewer for MoaRuntime {
         messages: &[ChatMessage],
         cancel: &tokio_util::sync::CancellationToken,
     ) -> Result<DecisionVerdict> {
-        self.review_decision(request, messages, cancel).await
+        self.review_decision(request, messages, cancel, None).await
+    }
+
+    async fn review_with_observer(
+        &self,
+        request: &DecisionRequest,
+        messages: &[ChatMessage],
+        cancel: &tokio_util::sync::CancellationToken,
+        observer: &dyn DecisionReviewObserver,
+    ) -> Result<DecisionVerdict> {
+        self.review_decision(request, messages, cancel, Some(observer))
+            .await
     }
 }
 

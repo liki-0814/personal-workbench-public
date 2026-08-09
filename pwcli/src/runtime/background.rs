@@ -15,8 +15,17 @@ use tokio::sync::{broadcast, RwLock};
 use tokio::task::JoinHandle;
 use tracing::{info, warn};
 
+use crate::agent_core::contracts::ports::{ToolExecutorPort, ToolInvocationContext};
 use crate::agent_core::reliability::{self, FailureEnvelope};
 use crate::runtime::task::TaskBroker;
+
+/// 生成唯一后台任务 id：毫秒时间戳 + 递增序号，避免同毫秒 spawn 碰撞覆盖记录。
+fn next_task_id() -> String {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static SEQUENCE: AtomicU64 = AtomicU64::new(0);
+    let sequence = SEQUENCE.fetch_add(1, Ordering::Relaxed);
+    format!("bg_{}_{}", chrono::Utc::now().timestamp_millis(), sequence)
+}
 
 /// 后台任务状态
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -187,7 +196,7 @@ impl BackgroundTaskManager {
             );
         }
 
-        let task_id = format!("bg_{}", chrono::Utc::now().timestamp_millis());
+        let task_id = next_task_id();
         let _ = self.event_tx.send(TaskEvent::Started {
             task_id: task_id.clone(),
             session_id: session_id.clone(),
@@ -280,11 +289,42 @@ impl BackgroundTaskManager {
         arguments: Value,
         registry: Arc<crate::runtime::tools::registry::ToolRegistry>,
     ) -> anyhow::Result<String> {
+        let context = ToolInvocationContext {
+            session_id: Some(session_id.clone()),
+            cancellation: tokio_util::sync::CancellationToken::new(),
+            progress: None,
+            image: None,
+            opaque: None,
+        };
+        self.spawn_tool_with_context(
+            session_id,
+            tool_name,
+            description,
+            arguments,
+            registry,
+            context,
+        )
+        .await
+    }
+
+    /// Spawn a tool while retaining the originating invocation context. This is
+    /// required for contextual tools such as `code_agent`, whose per-session
+    /// budget and other guards depend on the session carried by the turn.
+    pub async fn spawn_tool_with_context(
+        &self,
+        session_id: String,
+        tool_name: String,
+        description: String,
+        arguments: Value,
+        registry: Arc<crate::runtime::tools::registry::ToolRegistry>,
+        mut context: ToolInvocationContext,
+    ) -> anyhow::Result<String> {
+        context.session_id = Some(session_id.clone());
         let execute_name = tool_name.clone();
         let execute_arguments = arguments.clone();
         let replayable = reliability::is_idempotent_read_tool(&tool_name);
         // Project with placeholder background id then spawn using known ids.
-        let background_task_id = format!("bg_{}", chrono::Utc::now().timestamp_millis());
+        let background_task_id = next_task_id();
         let projected = if let Some(broker) = self.task_broker.as_ref() {
             match broker.project_background_tool(
                 &session_id,
@@ -346,8 +386,16 @@ impl BackgroundTaskManager {
         let log_file = log_dir.join(format!("{}.log", id));
 
         let handle = tokio::spawn(async move {
-            let mut result = match registry.execute(&execute_name, &execute_arguments).await {
+            let mut result = match ToolExecutorPort::execute(
+                registry.as_ref(),
+                &execute_name,
+                &execute_arguments,
+                context,
+            )
+            .await
+            {
                 Ok(output) => {
+                    let output = output.content;
                     if let Err(e) = write_log(&log_file, &output) {
                         warn!(task_id = %id, error = %e, "写后台任务日志失败");
                     }
@@ -436,7 +484,7 @@ impl BackgroundTaskManager {
                 self.max_concurrent
             );
         }
-        let background_task_id = format!("bg_{}", chrono::Utc::now().timestamp_millis());
+        let background_task_id = next_task_id();
         let _ = self.event_tx.send(TaskEvent::Started {
             task_id: background_task_id.clone(),
             session_id: session_id.clone(),
@@ -569,6 +617,16 @@ impl BackgroundTaskManager {
         .await
     }
 
+    /// Session owning a task, used by contextual control tools to prevent one
+    /// conversation from mutating another conversation's background work.
+    pub async fn task_session_id(&self, task_id: &str) -> Option<String> {
+        self.tasks
+            .read()
+            .await
+            .get(task_id)
+            .map(|task| task.session_id.clone())
+    }
+
     /// 从一个已 spawn 的 JoinHandle 创建后台任务（用于超时自动转后台场景）。
     ///
     /// `result_rx` 接收工具执行结果，内部 spawn 一个 watcher 监听完成并广播 TaskResult。
@@ -587,7 +645,7 @@ impl BackgroundTaskManager {
             );
         }
 
-        let task_id = format!("bg_{}", chrono::Utc::now().timestamp_millis());
+        let task_id = next_task_id();
         let projected = if let Some(broker) = self.task_broker.as_ref() {
             match broker.project_background_tool(
                 &session_id,
@@ -914,6 +972,8 @@ fn make_summary(output: &str, task_id: &str, duration_secs: u64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::agent_core::contracts::tool::{ToolExecutionMode, ToolImpact, ToolOutput};
+    use crate::runtime::tools::registry::ToolRegistry;
 
     async fn recv_task_result(rx: &mut broadcast::Receiver<TaskEvent>) -> TaskResult {
         loop {
@@ -943,6 +1003,42 @@ mod tests {
         let result = recv_task_result(&mut rx).await;
         assert_eq!(result.task_id, id);
         assert!(result.success);
+    }
+
+    #[tokio::test]
+    async fn contextual_tool_keeps_session_when_spawned_in_background() {
+        let registry = Arc::new(ToolRegistry::new());
+        registry.register_contextual_structured_with_impact(
+            "session_echo",
+            "session echo",
+            serde_json::json!({"type": "object"}),
+            ToolExecutionMode::Sequential,
+            ToolImpact::Observe,
+            Box::new(|context, _| {
+                let session_id = context.session_id.clone();
+                Box::pin(async move {
+                    Ok(ToolOutput::text(
+                        session_id.map(|id| id.to_string()).unwrap_or_default(),
+                    ))
+                })
+            }),
+        );
+        let manager = BackgroundTaskManager::new(4);
+        let mut events = manager.subscribe();
+        manager
+            .spawn_tool(
+                "budget-session".into(),
+                "session_echo".into(),
+                "session echo".into(),
+                serde_json::json!({}),
+                registry,
+            )
+            .await
+            .unwrap();
+
+        let result = recv_task_result(&mut events).await;
+        assert!(result.success);
+        assert!(result.summary.contains("budget-session"));
     }
 
     #[tokio::test]

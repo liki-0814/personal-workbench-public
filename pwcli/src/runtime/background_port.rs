@@ -27,14 +27,16 @@ impl BackgroundTaskPort for RuntimeBackgroundTaskPort {
         tool_name: String,
         description: String,
         arguments: serde_json::Value,
+        context: ToolInvocationContext,
     ) -> anyhow::Result<String> {
         self.manager
-            .spawn_tool(
+            .spawn_tool_with_context(
                 session_id,
                 tool_name,
                 description,
                 arguments,
                 Arc::clone(&self.tools),
+                context,
             )
             .await
     }

@@ -13,8 +13,13 @@ pub mod runtime;
 pub mod session;
 pub mod tool;
 
+pub use event::{
+    AgentEvent, AgentEventRecord, AgentStepKind, AgentStepStatus, AgentStopReason,
+    AssistantSegmentKind, CandidateDisposition,
+};
 pub use ids::{AttemptId, SessionId, TaskId, WorkItemId};
 pub use message::{ContentBlock, ConversationMessage, MessageRole};
+pub use model::{OffSemantics, ThinkingCapability, ThinkingLevel};
 pub use runtime::{
     QueuedInput, QueuedInputDelivery, QueuedInputPriority, QueuedInputSource, QueuedInputStatus,
     SessionRuntimeSnapshot,

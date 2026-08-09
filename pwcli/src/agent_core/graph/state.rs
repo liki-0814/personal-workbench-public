@@ -306,6 +306,7 @@ impl TurnSummary {
             duration_ms: 0,
             ttft_ms: None,
             token_usage: Some(state.token_usage),
+            stop_reason: crate::agent_core::contracts::AgentStopReason::Completed,
         }
     }
 
@@ -317,7 +318,14 @@ impl TurnSummary {
             duration_ms: 0,
             ttft_ms: None,
             token_usage: None,
+            stop_reason: crate::agent_core::contracts::AgentStopReason::Cancelled,
         }
+    }
+
+    pub fn max_rounds(state: &GraphState) -> Self {
+        let mut summary = Self::from_state(state);
+        summary.stop_reason = crate::agent_core::contracts::AgentStopReason::MaxRounds;
+        summary
     }
 }
 

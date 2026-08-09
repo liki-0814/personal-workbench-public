@@ -5,6 +5,7 @@
 
 use serde_json::{json, Value};
 
+use crate::runtime::tools::register::contextual_tool_path;
 use crate::runtime::tools::registry::{ToolExecutionMode, ToolImpact, ToolOutput, ToolRegistry};
 
 const MAX_FILE_BYTES: u64 = 20 * 1024 * 1024;
@@ -13,7 +14,7 @@ const DEFAULT_GREP_LIMIT: u64 = 100;
 const DEFAULT_FIND_LIMIT: u64 = 1000;
 
 pub fn register(registry: &mut ToolRegistry) {
-    registry.register_structured_with_impact(
+    registry.register_contextual_structured_with_impact(
         "grep",
         "在目录中按正则（或字面量）搜索文件内容，自动尊重 .gitignore。返回带路径和行号的匹配行，可带上下文行；适合先定位再用 read 精读。",
         json!({
@@ -32,9 +33,9 @@ pub fn register(registry: &mut ToolRegistry) {
         }),
         ToolExecutionMode::Parallel,
         ToolImpact::Observe,
-        Box::new(|args: &Value| {
+        Box::new(|context, args: &Value| {
             let pattern = args["pattern"].as_str().unwrap_or("").to_string();
-            let path = args["path"].as_str().map(str::to_string);
+            let path = Some(contextual_tool_path(context, args["path"].as_str().unwrap_or(".")));
             let glob = args["glob"].as_str().map(str::to_string);
             let ignore_case = args["ignoreCase"].as_bool().unwrap_or(false);
             let literal = args["literal"].as_bool().unwrap_or(false);
@@ -56,7 +57,7 @@ pub fn register(registry: &mut ToolRegistry) {
         }),
     );
 
-    registry.register_structured_with_impact(
+    registry.register_contextual_structured_with_impact(
         "find",
         "按 glob 模式查找文件路径（自动尊重 .gitignore），返回相对沙箱根的路径列表。示例：'**/*.rs'、'**/test_*.py'。",
         json!({
@@ -71,9 +72,9 @@ pub fn register(registry: &mut ToolRegistry) {
         }),
         ToolExecutionMode::Parallel,
         ToolImpact::Observe,
-        Box::new(|args: &Value| {
+        Box::new(|context, args: &Value| {
             let pattern = args["pattern"].as_str().unwrap_or("").to_string();
-            let path = args["path"].as_str().map(str::to_string);
+            let path = Some(contextual_tool_path(context, args["path"].as_str().unwrap_or(".")));
             let limit = args["limit"]
                 .as_u64()
                 .unwrap_or(DEFAULT_FIND_LIMIT)

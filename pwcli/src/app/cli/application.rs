@@ -137,6 +137,7 @@ async fn run_oneshot_inner(
                 crate::runtime::permissions::AgentPermissionMode::Risk
             },
             thinking,
+            thinking_level: thinking.into(),
             session_id: None,
             worker_dispatch,
             system_prompt,

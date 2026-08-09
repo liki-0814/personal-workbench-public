@@ -1751,7 +1751,7 @@ mod tests {
                 profile: crate::agent_core::harness::HarnessProfile::Main,
                 max_rounds: 100,
                 context_window: 32_000,
-                thinking: false,
+                thinking_level: crate::agent_core::contracts::ThinkingLevel::Off,
                 yolo_mode: false,
                 externalize_tool_outputs: true,
                 unified_recovery: true,

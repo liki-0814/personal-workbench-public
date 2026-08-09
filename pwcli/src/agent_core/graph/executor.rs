@@ -13,10 +13,13 @@ use crate::agent_core::contracts::ports::{
     ToolExecutorPort, ToolInvocationContext,
 };
 use crate::agent_core::contracts::tool::{ToolExecutionMode, ToolImpact};
-use crate::agent_core::contracts::{ContentBlock, ConversationMessage, MessageRole, Session};
+use crate::agent_core::contracts::{
+    AssistantSegmentKind, CandidateDisposition, ContentBlock, ConversationMessage, MessageRole,
+    Session, ThinkingLevel,
+};
 use crate::agent_core::decision::{
-    DecisionOutcome, DecisionRequest, DecisionResume, DecisionReviewer, DecisionRisk,
-    DecisionTrigger, DecisionVerdict, PendingDecision,
+    AdvisorResult, DecisionOutcome, DecisionRequest, DecisionResume, DecisionReviewObserver,
+    DecisionReviewer, DecisionRisk, DecisionTrigger, DecisionVerdict, PendingDecision,
 };
 use crate::agent_core::graph::node::{NodeId, Transition};
 use crate::agent_core::graph::state::GraphState;
@@ -39,6 +42,28 @@ const DECISION_REVIEW_TIMEOUT: std::time::Duration = std::time::Duration::from_s
 // caps one planning turn, not the task: the completion contract schedules the
 // next turn until evidence, inspection, layout and render are complete.
 const DOCUMENT_ACTION_TURN_MAX_TOKENS: u32 = 16_384;
+
+struct SinkDecisionReviewObserver<'a> {
+    id: &'a str,
+    sink: &'a dyn ToolEventSink,
+}
+
+impl DecisionReviewObserver for SinkDecisionReviewObserver<'_> {
+    fn on_advisor_started(&self, model: &str, round: u8) {
+        self.sink
+            .on_decision_advisor(self.id, model, "running", round, "");
+    }
+
+    fn on_advisor_completed(&self, advisor: &AdvisorResult, round: u8) {
+        self.sink.on_decision_advisor(
+            self.id,
+            &advisor.model,
+            if advisor.succeeded { "done" } else { "error" },
+            round,
+            &advisor.summary,
+        );
+    }
+}
 
 fn has_required_decision_consensus(verdict: &DecisionVerdict, basis_points: u16) -> bool {
     verdict.consensus > f32::from(basis_points) / 10_000.0
@@ -100,21 +125,10 @@ fn review_failure_verdict(trigger: DecisionTrigger, error: &anyhow::Error) -> De
     }
 }
 
-fn should_review_final(
-    state: &GraphState,
-    natural: &Transition,
-    round_threshold: u32,
-    tool_threshold: u32,
-) -> bool {
-    matches!(natural, Transition::End | Transition::Goto(NodeId::End))
-        && !state.final_reviewed
-        && (state.round_count >= round_threshold || state.tool_call_count >= tool_threshold)
-}
-
 /// 图配置
 pub struct GraphConfig {
     pub max_rounds: u32,
-    pub thinking: bool,
+    pub thinking_level: ThinkingLevel,
     pub yolo_mode: bool,
     pub decision_review_round_threshold: u32,
     pub decision_review_tool_threshold: u32,
@@ -129,7 +143,7 @@ impl Default for GraphConfig {
     fn default() -> Self {
         Self {
             max_rounds: 100,
-            thinking: false,
+            thinking_level: ThinkingLevel::Off,
             yolo_mode: false,
             decision_review_round_threshold: 6,
             decision_review_tool_threshold: 4,
@@ -149,7 +163,7 @@ impl Clone for GraphConfig {
     fn clone(&self) -> Self {
         Self {
             max_rounds: self.max_rounds,
-            thinking: self.thinking,
+            thinking_level: self.thinking_level,
             yolo_mode: self.yolo_mode,
             decision_review_round_threshold: self.decision_review_round_threshold,
             decision_review_tool_threshold: self.decision_review_tool_threshold,
@@ -370,7 +384,7 @@ impl AgentGraph {
             }
 
             if state.round_count >= self.config.max_rounds {
-                return Ok(TurnSummary::from_state(state));
+                return Ok(TurnSummary::max_rounds(state));
             }
 
             // ═══ Agent Node ═══
@@ -523,22 +537,46 @@ impl AgentGraph {
         // 6. after_llm
         let action = self.middlewares.dispatch_after_llm(state, ctx).await?;
 
-        match action {
+        if !state.last_content.is_empty() {
+            ctx.sink.on_assistant_segment_classified(
+                state.round_count,
+                if state.pending_tool_calls.is_empty() {
+                    AssistantSegmentKind::Candidate
+                } else {
+                    AssistantSegmentKind::Narration
+                },
+            );
+        }
+
+        let transition = match action {
             HookAction::Continue => {
                 let natural = if state.pending_tool_calls.is_empty() {
                     Transition::End
                 } else {
                     Transition::Goto(NodeId::Tool)
                 };
-                Ok(self.maybe_schedule_decision(state, ctx, natural))
+                self.maybe_schedule_decision(state, ctx, natural)
             }
-            HookAction::ForceEnd { .. } => Ok(Transition::End),
-            HookAction::JumpToAgent { .. } => Ok(Transition::Goto(NodeId::Agent)),
+            HookAction::ForceEnd { .. } => Transition::End,
+            HookAction::JumpToAgent { .. } => Transition::Goto(NodeId::Agent),
             HookAction::Abort { message, .. } => {
                 state.last_content = message;
-                Ok(Transition::End)
+                Transition::End
             }
+        };
+
+        if !state.last_content.is_empty() && state.pending_tool_calls.is_empty() {
+            ctx.sink.on_candidate_disposition(
+                state.round_count,
+                if matches!(transition, Transition::End | Transition::Goto(NodeId::End)) {
+                    CandidateDisposition::Promoted
+                } else {
+                    CandidateDisposition::Discarded
+                },
+            );
         }
+
+        Ok(transition)
     }
 
     fn maybe_schedule_decision(
@@ -578,86 +616,11 @@ impl AgentGraph {
             }
         }
 
-        if let Some(reason) = state.recovery_reason.take() {
-            let request = DecisionRequest::new(
-                DecisionTrigger::Recovery,
-                DecisionRisk::Elevated,
-                "How should the agent recover without repeating the same failure?",
-                state.last_content.clone(),
-                vec![reason],
-                state.pending_tool_calls.clone(),
-            );
-            if !state.reviewed_decisions.contains(&request.id) {
-                state.pending_decision = Some(PendingDecision {
-                    request,
-                    resume: match natural {
-                        Transition::Goto(NodeId::Tool) => DecisionResume::Tool,
-                        Transition::Goto(NodeId::Agent) => DecisionResume::Agent,
-                        _ => DecisionResume::End,
-                    },
-                });
-                return Transition::Goto(NodeId::Decision);
-            }
-        }
-
-        if !state.pending_tool_calls.is_empty() {
-            let high_impact = state.pending_tool_calls.iter().any(|call| {
-                let arguments = serde_json::from_str::<serde_json::Value>(&call.function.arguments)
-                    .unwrap_or(serde_json::Value::Null);
-                ctx.tool_registry
-                    .impact_for_call(&call.function.name, &arguments)
-                    .is_some_and(|impact| impact.requires_decision())
-            });
-            if high_impact {
-                let proposal = state
-                    .pending_tool_calls
-                    .iter()
-                    .map(|call| format!("{}({})", call.function.name, call.function.arguments))
-                    .collect::<Vec<_>>()
-                    .join("\n");
-                let request = DecisionRequest::new(
-                    DecisionTrigger::PreAction,
-                    DecisionRisk::High,
-                    "Should the proposed high-impact tool calls execute now?",
-                    proposal,
-                    Vec::new(),
-                    state.pending_tool_calls.clone(),
-                );
-                if !state.reviewed_decisions.contains(&request.id) {
-                    state.pending_decision = Some(PendingDecision {
-                        request,
-                        resume: DecisionResume::Tool,
-                    });
-                    return Transition::Goto(NodeId::Decision);
-                }
-            }
-        }
-
-        let complex_final = state.pending_tool_calls.is_empty()
-            && should_review_final(
-                state,
-                &natural,
-                ctx.config.decision_review_round_threshold,
-                ctx.config.decision_review_tool_threshold,
-            );
-        if complex_final {
-            state.final_reviewed = true;
-            let request = DecisionRequest::new(
-                DecisionTrigger::FinalReview,
-                DecisionRisk::Elevated,
-                "Is the proposed final response adequately supported and complete?",
-                state.last_content.clone(),
-                Vec::new(),
-                Vec::new(),
-            );
-            if !state.reviewed_decisions.contains(&request.id) {
-                state.pending_decision = Some(PendingDecision {
-                    request,
-                    resume: DecisionResume::End,
-                });
-                return Transition::Goto(NodeId::Decision);
-            }
-        }
+        // MoA is an agent-owned second opinion, not a counter-based policy
+        // gate. Routine shell commands, tool volume, round count and recovery
+        // markers must not summon advisors automatically. Tool permissions
+        // remain the independent safety boundary for consequential actions.
+        state.recovery_reason.take();
 
         natural
     }
@@ -690,11 +653,19 @@ impl AgentGraph {
                 })
                 .await?;
         }
-
         let decision_timeout = std::time::Duration::from_secs(ctx.config.decision_timeout_seconds);
+        let observer = SinkDecisionReviewObserver {
+            id: &pending.request.id,
+            sink: ctx.sink,
+        };
         let reviewed = tokio::time::timeout(
             decision_timeout,
-            reviewer.review(&pending.request, &state.messages, ctx.cancel_token),
+            reviewer.review_with_observer(
+                &pending.request,
+                &state.messages,
+                ctx.cancel_token,
+                &observer,
+            ),
         )
         .await
         .map_err(|_| {
@@ -732,10 +703,6 @@ impl AgentGraph {
         state.token_usage.prompt_tokens += verdict.usage.prompt_tokens;
         state.token_usage.completion_tokens += verdict.usage.completion_tokens;
         state.token_usage.total_tokens += verdict.usage.total_tokens;
-        for advisor in &verdict.advisors {
-            ctx.sink
-                .on_decision_advisor(&pending.request.id, &advisor.model, advisor.succeeded);
-        }
         ctx.sink.on_decision_resolved(&pending.request.id, &verdict);
         if let Some(harness) = ctx.harness {
             harness
@@ -751,7 +718,14 @@ impl AgentGraph {
         }
 
         match verdict.outcome {
-            DecisionOutcome::Proceed => Ok(resume_transition(&pending.resume)),
+            DecisionOutcome::Proceed => {
+                if pending.request.trigger == DecisionTrigger::AgentRequest {
+                    state
+                        .messages
+                        .push(private_decision_message(&pending.request.id, &verdict));
+                }
+                Ok(resume_transition(&pending.resume))
+            }
             DecisionOutcome::Revise | DecisionOutcome::GatherEvidence => {
                 if pending.request.trigger == DecisionTrigger::FinalReview {
                     state.final_reviewed = false;
@@ -978,17 +952,36 @@ impl AgentGraph {
 
             // === Background task: model args contain "background": true ===
             if let (Some(bg_mgr), Some(sid)) = (ctx.background_tasks, ctx.session_id) {
-                if tc.function.name != "code_agent"
+                let wants_background = args_value
+                    .get("background")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false);
+                // code_agent 新会话未选模型（无 model 也非续聊）时，选择卡片需要前台
+                // 交互，不能转后台；其余工具与已就绪的 code_agent 均可后台。
+                let needs_foreground_interaction = tc.function.name == "code_agent"
                     && args_value
-                        .get("background")
-                        .and_then(|v| v.as_bool())
-                        .unwrap_or(false)
-                {
+                        .get("resume_session_id")
+                        .and_then(Value::as_str)
+                        .map(str::is_empty)
+                        .unwrap_or(true)
+                    && args_value
+                        .get("model")
+                        .and_then(Value::as_str)
+                        .map(str::is_empty)
+                        .unwrap_or(true);
+                if wants_background && !needs_foreground_interaction {
                     let tool_name = tc.function.name.clone();
                     let desc = format!("{}({})", tool_name, truncate_for_display(&args_str, 80));
                     let args_clone = args_value.clone();
+                    let background_context = tool_invocation_context(ctx, None, None);
                     match bg_mgr
-                        .spawn_tool(sid.to_string(), tool_name.clone(), desc, args_clone)
+                        .spawn_tool(
+                            sid.to_string(),
+                            tool_name.clone(),
+                            desc,
+                            args_clone,
+                            background_context,
+                        )
                         .await
                     {
                         Ok(task_id) => {
@@ -1039,12 +1032,19 @@ impl AgentGraph {
 
             // === Execute tool (with auto-background for eligible tools) ===
             let bg_eligible = is_configured_background_tool(ctx.config, &tc.function.name);
+            // 模型显式声明了等待时限时，尊重它的决策：前台同步等到该时限，
+            // 超时把部分输出/错误交回模型自决（重试/加大超时/显式 background），
+            // 而不是 harness 悄悄转后台。想后台执行应显式传 background=true。
+            let model_declared_timeout = args_value
+                .get("timeout_secs")
+                .and_then(|v| v.as_u64())
+                .is_some();
 
             let retry_policy = tool_retry_policy(&tc.function.name);
             let unified_recovery = ctx.config.unified_recovery;
             let mut attempt = 0u32;
             let (result_str, is_err, terminate, failure) = loop {
-                let (result_str, is_err, terminate) = if bg_eligible {
+                let (result_str, is_err, terminate) = if bg_eligible && !model_declared_timeout {
                     if let Some(bg_mgr) = ctx.background_tasks {
                         let bg_timeout = std::time::Duration::from_secs(
                             ctx.config.background_promotion_timeout_seconds,
@@ -1545,6 +1545,13 @@ impl AgentGraph {
         state: &mut GraphState,
         ctx: &GraphContext<'_>,
     ) -> Result<(String, Vec<ToolCall>, TokenUsage, bool)> {
+        let thinking_level = ctx
+            .harness
+            .and_then(|harness| harness.requested_thinking_level())
+            .unwrap_or(ctx.config.thinking_level);
+        ctx.sink
+            .on_runtime_update(state.round_count, thinking_level);
+
         let runtime_tools: Vec<ToolSchema> = ctx
             .tool_schemas
             .iter()
@@ -1572,7 +1579,7 @@ impl AgentGraph {
                 tools,
                 None,
                 LlmStreamOptions {
-                    thinking: ctx.config.thinking,
+                    thinking: thinking_level.is_enabled(),
                     max_tokens: state
                         .artifact_completion
                         .is_open()
@@ -1682,6 +1689,9 @@ impl AgentGraph {
                     | StreamEvent::DecisionEscalated { .. }
                     | StreamEvent::AssistantSegmentStart { .. }
                     | StreamEvent::AssistantSegmentEnd { .. }
+                    | StreamEvent::AssistantSegmentClassified { .. }
+                    | StreamEvent::AssistantCandidateDisposition { .. }
+                    | StreamEvent::RuntimeUpdate { .. }
                     | StreamEvent::StreamReset { .. } => {}
                 }
             }
@@ -1849,7 +1859,7 @@ fn successful_batch_should_terminate(outcomes: &[(bool, bool)], expected_count: 
     expected_count > 0
         && outcomes.len() == expected_count
         && outcomes.iter().all(|(is_error, _)| !is_error)
-        && outcomes.iter().any(|(_, terminate)| *terminate)
+        && outcomes.iter().all(|(_, terminate)| *terminate)
 }
 
 const MOA_USER_DECISION_MARKER: &str = "<!-- pwb-moa-user-decision:";
@@ -1917,7 +1927,7 @@ mod tests {
         continue_incomplete_artifact_contract, has_moa_user_decision,
         has_required_decision_consensus, has_safe_conservative_outcome, is_bg_eligible_tool,
         is_configured_background_tool, is_tool_allowed, normalized_tool_arguments,
-        resolves_clarification_gate, review_failure_verdict, should_review_final,
+        private_decision_message, resolves_clarification_gate, review_failure_verdict,
         successful_batch_should_terminate, GraphConfig, DECISION_REVIEW_TIMEOUT,
         DOCUMENT_ACTION_TURN_MAX_TOKENS,
     };
@@ -1927,6 +1937,24 @@ mod tests {
     #[test]
     fn complete_decision_review_is_time_bounded() {
         assert_eq!(DECISION_REVIEW_TIMEOUT, std::time::Duration::from_secs(420));
+    }
+
+    #[test]
+    fn advisor_verdict_can_be_injected_back_into_the_acting_agent() {
+        let verdict = DecisionVerdict {
+            outcome: DecisionOutcome::Proceed,
+            confidence: 0.9,
+            consensus: 0.8,
+            rationale: "两位顾问认为方案可行".into(),
+            instruction: "按当前方案继续".into(),
+            options: Vec::new(),
+            rounds: 1,
+            advisors: Vec::new(),
+            usage: TokenUsage::default(),
+        };
+        let message = private_decision_message("decision-1", &verdict);
+        assert!(message.content.contains("两位顾问认为方案可行"));
+        assert!(message.content.contains("按当前方案继续"));
     }
 
     #[test]
@@ -2046,47 +2074,6 @@ mod tests {
     }
 
     #[test]
-    fn tool_results_return_to_agent_without_premature_final_review() {
-        let mut state = crate::agent_core::graph::state::GraphState::new();
-        state.tool_call_count = 4;
-        state.last_content = "draft planning text".into();
-        assert!(!should_review_final(
-            &state,
-            &crate::agent_core::graph::node::Transition::Goto(
-                crate::agent_core::graph::node::NodeId::Agent
-            ),
-            6,
-            4,
-        ));
-    }
-
-    #[test]
-    fn completed_complex_answer_gets_final_review() {
-        let mut state = crate::agent_core::graph::state::GraphState::new();
-        state.tool_call_count = 4;
-        state.last_content = "supported final answer".into();
-        assert!(should_review_final(
-            &state,
-            &crate::agent_core::graph::node::Transition::End,
-            6,
-            4,
-        ));
-    }
-
-    #[test]
-    fn completed_tool_only_deliverable_gets_final_review() {
-        let mut state = crate::agent_core::graph::state::GraphState::new();
-        state.tool_call_count = 4;
-        state.last_content.clear();
-        assert!(should_review_final(
-            &state,
-            &crate::agent_core::graph::node::Transition::End,
-            6,
-            4,
-        ));
-    }
-
-    #[test]
     fn incomplete_document_contract_returns_main_harness_to_agent() {
         let mut state = crate::agent_core::graph::state::GraphState::new();
         state.record_tool_result("create_document", "created", false);
@@ -2148,9 +2135,13 @@ mod tests {
     }
 
     #[test]
-    fn successful_parallel_batch_terminates_when_one_tool_is_terminal() {
-        assert!(successful_batch_should_terminate(
+    fn successful_parallel_batch_terminates_only_when_every_tool_is_terminal() {
+        assert!(!successful_batch_should_terminate(
             &[(false, false), (false, false), (false, true)],
+            3
+        ));
+        assert!(successful_batch_should_terminate(
+            &[(false, true), (false, true), (false, true)],
             3
         ));
         assert!(!successful_batch_should_terminate(

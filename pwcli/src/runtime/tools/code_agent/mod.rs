@@ -63,8 +63,7 @@ fn detect_named_backend(name: &str) -> Option<Box<dyn SubAgentBackend>> {
     match name {
         "qoder" => detect_qoder_binary()
             .map(|(bin, _)| Box::new(QoderBackend::new(bin)) as Box<dyn SubAgentBackend>),
-        "codex" => detect_codex_backend()
-            .map(|b| Box::new(b) as Box<dyn SubAgentBackend>),
+        "codex" => detect_codex_backend().map(|b| Box::new(b) as Box<dyn SubAgentBackend>),
         "kimi" => detect_kimi_binary()
             .map(|(bin, _)| Box::new(KimiBackend::new(bin)) as Box<dyn SubAgentBackend>),
         _ => None,
@@ -364,8 +363,11 @@ pub fn register(
     sandbox_root: Arc<PathBuf>,
 ) {
     let root = Arc::clone(&sandbox_root);
+    // 会话成本账本：同一 registry 生命周期内累计各会话的委托成本。
+    let costs: Arc<tokio::sync::Mutex<SessionCostLedger>> =
+        Arc::new(tokio::sync::Mutex::new(SessionCostLedger::default()));
 
-    registry.register_structured_with_impact(
+    registry.register_contextual_structured_with_impact(
         "code_agent",
         DESCRIPTION,
         json!({
@@ -424,16 +426,33 @@ pub fn register(
                 "project_rules": {
                     "type": "string",
                     "description": "项目约束规则（可选）。从 CLAUDE.md 或用户指示中提取的关键约束（如『不用 Context API』『所有 state 走 core/storage』），让子 agent 遵守项目规范。"
+                },
+                "background": {
+                    "type": "boolean",
+                    "description": "设为 true 则后台执行，不阻塞对话，完成后自动通知并汇报结果。仅当已选定模型（传了 model）或续聊（传了 resume_session_id）时可用；新会话首次调用需前台选模型，设了也会回退为前台执行。"
                 }
             },
             "required": ["task", "cwd"]
         }),
         ToolExecutionMode::Parallel,
         ToolImpact::ReversibleMutation,
-        Box::new(move |args: &serde_json::Value| {
+        Box::new(move |context: &crate::runtime::tools::context::ToolExecutionContext, args: &serde_json::Value| {
             let root = Arc::clone(&root);
+            let costs = Arc::clone(&costs);
+            let session_key = context.session_id.as_ref().map(|id| id.to_string());
             let args = args.clone();
             Box::pin(async move {
+                // 预算闸门：仅在有会话上下文且配置了预算时生效。
+                let budget = crate::runtime::settings::local_config::get()
+                    .tools
+                    .code_agent
+                    .session_budget_usd;
+                if let Some(key) = session_key.as_deref() {
+                    let spent = costs.lock().await.spent(key);
+                    if let Some(message) = SessionCostLedger::budget_gate(spent, budget) {
+                        anyhow::bail!(message);
+                    }
+                }
                 let mut parsed: CodeAgentArgs = serde_json::from_value(args)
                     .map_err(|e| anyhow::anyhow!("code_agent 参数错误: {}", e))?;
                 // An explicit per-call backend must never silently fall back to
@@ -563,25 +582,56 @@ pub fn register(
                     cost_usd = ?result.cost_usd,
                     "code_agent finished"
                 );
+                // 累计本次成本到会话账本，供后续预算闸门使用。
+                if let (Some(key), Some(cost)) = (session_key.as_deref(), result.cost_usd) {
+                    costs.lock().await.add(key, cost);
+                }
                 let content = serde_json::to_string_pretty(&result)?;
+                let mut details = json!({
+                    "codeAgentSession": {
+                        "nativeSessionId": result.session_id.clone(),
+                        "backend": backend_name,
+                        "objective": objective,
+                        "cwd": collaboration_cwd,
+                        "mode": mode,
+                        "status": result.status.clone(),
+                        "output": result.output,
+                        "model": model,
+                        "effort": effort,
+                        "contextWindow": context_window,
+                        "permissionMode": permission_mode
+                    }
+                });
+                // 决策上浮：附结构化决策卡片（含 codeAgentResume），前端可直接点选
+                // 续聊子会话，无需主 agent 中转。
+                if let (Some(question), Some(options)) =
+                    (result.question.as_deref(), result.options.as_deref())
+                {
+                    if result.status == "decision_required" && !question.is_empty() {
+                        let options: Vec<serde_json::Value> = options
+                            .iter()
+                            .enumerate()
+                            .map(|(index, option)| {
+                                json!({ "id": format!("opt_{index}"), "label": option })
+                            })
+                            .collect();
+                        details["decisionPrompt"] = json!({
+                            "id": format!("codeagent_decision_{}", uuid::Uuid::new_v4().simple()),
+                            "title": question,
+                            "rationale": "子 agent 上浮了一个决策。直接选择将续聊子 agent 会话继续执行（无需通过主对话中转）。",
+                            "options": options,
+                            "step": 1,
+                            "total": 1,
+                            "allowCustom": true,
+                            "allowSkip": false,
+                            "codeAgentResume": { "sessionId": result.session_id.clone() }
+                        });
+                    }
+                }
                 Ok(ToolOutput {
                     content,
                     terminate: code_agent_result_terminates(&result.status),
-                    details: Some(json!({
-                        "codeAgentSession": {
-                            "nativeSessionId": result.session_id,
-                            "backend": backend_name,
-                            "objective": objective,
-                            "cwd": collaboration_cwd,
-                            "mode": mode,
-                            "status": result.status,
-                            "output": result.output,
-                            "model": model,
-                            "effort": effort,
-                            "contextWindow": context_window,
-                            "permissionMode": permission_mode
-                        }
-                    })),
+                    details: Some(details),
                     added_tool_names: Vec::new(),
                 })
             })
@@ -590,7 +640,44 @@ pub fn register(
 }
 
 fn code_agent_result_terminates(status: &str) -> bool {
-    matches!(status, "error" | "timeout")
+    // timeout 不终止 turn：子 agent 会话上下文仍保留，由模型自决续聊接力（resume_session_id）、
+    // 拆任务重试还是向用户汇报（对齐 SSH 超时的“部分输出 + 模型自决”哲学）。
+    matches!(status, "error")
+}
+
+/// 单会话 code_agent 成本账本（内存态，daemon 重启后重置）。
+#[derive(Default)]
+struct SessionCostLedger {
+    spent_by_session: std::collections::HashMap<String, f64>,
+}
+
+impl SessionCostLedger {
+    fn spent(&self, session_id: &str) -> f64 {
+        self.spent_by_session
+            .get(session_id)
+            .copied()
+            .unwrap_or(0.0)
+    }
+
+    fn add(&mut self, session_id: &str, cost: f64) -> f64 {
+        let entry = self
+            .spent_by_session
+            .entry(session_id.to_string())
+            .or_insert(0.0);
+        *entry += cost;
+        *entry
+    }
+
+    /// 预算闸门：budget <= 0 不限制；已花费达到上限时返回拒绝文案。
+    fn budget_gate(spent: f64, budget: f64) -> Option<String> {
+        (budget > 0.0 && spent >= budget).then(|| {
+            format!(
+                "本会话 code_agent 委托成本已达预算上限（已花费 ${:.2} / 预算 ${:.2}），\
+                 本次调用被拒绝。请告知用户，可调高配置 tools.codeAgent.sessionBudgetUsd 后重试。",
+                spent, budget
+            )
+        })
+    }
 }
 
 fn default_permission_mode(backend: &dyn SubAgentBackend) -> Option<String> {
@@ -636,8 +723,13 @@ resume_session_id，不再次询问模型。
 - status='decision_required' 时：先看你能否凭已有信息（用户原始诉求 + 当前对话）合理决定。
   能决定 → 用同一 session_id 再调，task 写明决定。
   不能决定 → 转告用户，让他选。不要每次都甩给用户。
-- status='timeout': 部分输出在 output 里。可调大 timeout_secs 重试或拆任务。
+- status='timeout': 子 agent 的会话上下文仍保留，用 resume_session_id 续聊接力即可继续（可调大
+  timeout_secs）；也可拆小任务重新委托。不要从零重跑。
 - status='error': 见 output 字段。多半是子 agent 调用失败，告知用户。
+
+长任务后台化：
+预计耗时较长（如大型重构、全仓扫描）且已选定模型或是续聊时，可设 background=true 转后台，
+turn 不被阻塞，完成后会自动通知你来汇报；期间可用 background_tasks 工具掌握进度。
 
 实现后验证：
 复杂编码任务（跨文件重构、新 feature）完成后，建议用同一 cwd 再调一次 code_agent（mode='research'），
@@ -652,11 +744,32 @@ mod tests {
     };
 
     #[test]
-    fn failed_or_timed_out_code_agent_ends_the_parent_turn() {
+    fn failed_code_agent_ends_the_parent_turn_but_timeout_lets_the_model_decide() {
         assert!(code_agent_result_terminates("error"));
-        assert!(code_agent_result_terminates("timeout"));
+        assert!(!code_agent_result_terminates("timeout"));
         assert!(!code_agent_result_terminates("ok"));
         assert!(!code_agent_result_terminates("decision_required"));
+    }
+
+    #[test]
+    fn cost_ledger_tracks_sessions_and_enforces_budget() {
+        use super::SessionCostLedger;
+
+        let mut ledger = SessionCostLedger::default();
+        assert_eq!(ledger.spent("s1"), 0.0);
+        assert_eq!(ledger.add("s1", 0.4), 0.4);
+        assert_eq!(ledger.add("s1", 0.35), 0.75);
+        assert_eq!(ledger.add("s2", 0.1), 0.1);
+        assert_eq!(ledger.spent("s1"), 0.75);
+
+        // budget <= 0 不限制
+        assert!(SessionCostLedger::budget_gate(999.0, 0.0).is_none());
+        // 未达上限放行
+        assert!(SessionCostLedger::budget_gate(0.5, 1.0).is_none());
+        // 达到上限拒绝，文案带当前花费与预算
+        let denied = SessionCostLedger::budget_gate(1.0, 1.0).expect("gate should trip");
+        assert!(denied.contains("$1.00"));
+        assert!(denied.contains("sessionBudgetUsd"));
     }
 
     #[test]

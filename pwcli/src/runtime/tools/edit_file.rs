@@ -10,6 +10,7 @@ use tokio::sync::Mutex;
 use unicode_normalization::UnicodeNormalization;
 
 use super::fs_local::FsSandbox;
+use super::register::contextual_tool_path;
 use super::registry::{ToolExecutionMode, ToolImpact, ToolOutput, ToolRegistry};
 
 static MUTATION_LOCKS: LazyLock<Mutex<HashMap<PathBuf, Arc<Mutex<()>>>>> =
@@ -31,7 +32,7 @@ struct EditArgs {
 }
 
 pub fn register(registry: &mut ToolRegistry) {
-    registry.register_structured_with_impact(
+    registry.register_contextual_structured_with_impact(
         "edit",
         "Apply one or more unique, non-overlapping replacements to a text file. Every edit is matched against the original file.",
         json!({
@@ -55,12 +56,13 @@ pub fn register(registry: &mut ToolRegistry) {
         }),
         ToolExecutionMode::Sequential,
         ToolImpact::ReversibleMutation,
-        Box::new(|value| {
+        Box::new(|context, value| {
             let value = value.clone();
+            let cwd = context.clone();
             Box::pin(async move {
                 let args: EditArgs = serde_json::from_value(value).context("Invalid edit arguments")?;
                 let sandbox = FsSandbox::from_config()?;
-                let path = sandbox.resolve(&args.path)?;
+                let path = sandbox.resolve(contextual_tool_path(&cwd, &args.path))?;
                 edit_path(&path, &args.edits).await
             })
         }),

@@ -144,6 +144,21 @@ pub trait DecisionReviewer: Send + Sync {
         messages: &[ChatMessage],
         cancel: &CancellationToken,
     ) -> anyhow::Result<DecisionVerdict>;
+
+    async fn review_with_observer(
+        &self,
+        request: &DecisionRequest,
+        messages: &[ChatMessage],
+        cancel: &CancellationToken,
+        _observer: &dyn DecisionReviewObserver,
+    ) -> anyhow::Result<DecisionVerdict> {
+        self.review(request, messages, cancel).await
+    }
+}
+
+pub trait DecisionReviewObserver: Send + Sync {
+    fn on_advisor_started(&self, _model: &str, _round: u8) {}
+    fn on_advisor_completed(&self, _advisor: &AdvisorResult, _round: u8) {}
 }
 
 fn decision_id(
