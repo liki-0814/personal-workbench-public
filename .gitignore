@@ -52,6 +52,9 @@ e2e/
 tools/screenshots/
 coverage/
 dist/
+/.codex-audit/
+/implementation-thinking-slider*.png
+/design-qa.md
 
 /.traces/
 

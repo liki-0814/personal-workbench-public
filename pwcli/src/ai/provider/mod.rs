@@ -18,7 +18,9 @@ pub use registry::{ProviderRegistry, ProviderService};
 use crate::ai::config::ProviderConfig;
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[derive(
+    Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize,
+)]
 #[serde(rename_all = "kebab-case")]
 pub enum ProviderKind {
     KimiCoding,

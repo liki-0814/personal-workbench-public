@@ -276,11 +276,19 @@ impl DynamicProvider {
                 .and_then(|value| u32::try_from(value).ok());
             entry.context_window = value.pointer("/limit/context").and_then(Value::as_u64);
             if outputs_images {
-                entry.capabilities.get_or_insert_with(Default::default).image = Some(true);
+                entry
+                    .capabilities
+                    .get_or_insert_with(Default::default)
+                    .image = Some(true);
             }
-            entry.capabilities.get_or_insert_with(Default::default).vision =
-                Some(input.iter().any(|modality| modality == "image"));
-            entry.capabilities.get_or_insert_with(Default::default).thinking = Some(reasoning);
+            entry
+                .capabilities
+                .get_or_insert_with(Default::default)
+                .vision = Some(input.iter().any(|modality| modality == "image"));
+            entry
+                .capabilities
+                .get_or_insert_with(Default::default)
+                .thinking = Some(reasoning);
             entry.reasoning = Some(reasoning);
             entry.input = input;
             entry.cost = value.get("cost").cloned();
@@ -289,10 +297,17 @@ impl DynamicProvider {
         // Image-generation classification must work on every discovery path,
         // including native /models where no metadata exists: fall back to the
         // id heuristic.
-        if entry.capabilities.as_ref().and_then(|capabilities| capabilities.image) != Some(true)
+        if entry
+            .capabilities
+            .as_ref()
+            .and_then(|capabilities| capabilities.image)
+            != Some(true)
             && crate::ai::config::is_image_generation_model_id(id)
         {
-            entry.capabilities.get_or_insert_with(Default::default).image = Some(true);
+            entry
+                .capabilities
+                .get_or_insert_with(Default::default)
+                .image = Some(true);
         }
         // Bundled fallback metadata: the provider's /models endpoint carries
         // no limits and models.dev may be unreachable or unaware of regional
@@ -540,24 +555,20 @@ impl ProviderService for DynamicProvider {
             .expect("provider refresh deadline poisoned") =
             Some(now + std::time::Duration::from_secs(60));
         let (models, source) = match self.kind() {
-            ProviderKind::GoogleAntigravity => {
-                (
-                    self.refresh_antigravity(auth.ok_or_else(|| {
-                        anyhow::anyhow!("Antigravity refresh requires authentication")
-                    })?)
-                    .await?,
-                    "dedicated",
-                )
-            }
-            ProviderKind::OpenAiCodex => {
-                (
-                    self.refresh_openai_codex(auth.ok_or_else(|| {
-                        anyhow::anyhow!("OpenAI Codex refresh requires authentication")
-                    })?)
-                    .await?,
-                    "dedicated",
-                )
-            }
+            ProviderKind::GoogleAntigravity => (
+                self.refresh_antigravity(auth.ok_or_else(|| {
+                    anyhow::anyhow!("Antigravity refresh requires authentication")
+                })?)
+                .await?,
+                "dedicated",
+            ),
+            ProviderKind::OpenAiCodex => (
+                self.refresh_openai_codex(auth.ok_or_else(|| {
+                    anyhow::anyhow!("OpenAI Codex refresh requires authentication")
+                })?)
+                .await?,
+                "dedicated",
+            ),
             // OpenAI-compatible providers are discovered from their own
             // /models endpoint first; models.dev only enriches metadata and
             // serves as the fallback when native discovery is unavailable.
@@ -753,7 +764,20 @@ fn apply_bundled_fallbacks(kind: ProviderKind, id: &str, entry: &mut ModelEntry)
     {
         // Specialist single-purpose models (speech, translation, code, ...)
         // are not general multimodal chat models.
-        let specialist = ["audio", "tts", "asr", "speech", "ocr", "mt", "translation", "coder", "code", "math", "embedding", "rerank"];
+        let specialist = [
+            "audio",
+            "tts",
+            "asr",
+            "speech",
+            "ocr",
+            "mt",
+            "translation",
+            "coder",
+            "code",
+            "math",
+            "embedding",
+            "rerank",
+        ];
         let is_specialist = id
             .split(|c: char| c == '-' || c == '.' || c == '_')
             .any(|segment| specialist.contains(&segment));

@@ -1,44 +1,91 @@
 # Personal Workbench
 
-Personal Workbench combines an AI-native command line, a local daemon, and a
-browser workbench in one Rust executable. The web UI covers chat, tasks, goals,
-scheduled jobs, habits, documents, and provider configuration while keeping
-runtime data on your machine.
+> A local-first AI workbench that combines a browser workspace, an interactive
+> terminal, and a durable agent runtime in one Rust executable.
 
-## Highlights
+[![npm](https://img.shields.io/npm/v/%40liki030814%2Fpwcli?label=npm)](https://www.npmjs.com/package/@liki030814/pwcli)
+[![CI](https://github.com/liki-0814/personal-workbench-public/actions/workflows/ci.yml/badge.svg)](https://github.com/liki-0814/personal-workbench-public/actions/workflows/ci.yml)
+[![License: AGPL-3.0](https://img.shields.io/badge/license-AGPL--3.0-blue.svg)](LICENSE)
+[![Platform](https://img.shields.io/badge/prebuilt-macOS%20Apple%20Silicon-black)](#installation)
 
-- Streamed AI turns are shown as an ordered timeline of reasoning, tool work,
-  review decisions, and final answers, with answer-version history.
-- Model-aware thinking controls expose only the reasoning levels supported by
-  the selected provider and can be adjusted while a managed turn is running.
-- Delegated and long-running work can continue in the background, report
-  progress, request a decision, and resume without restarting from scratch.
-- Jobs can be created through a guided form or generated with AI; habits include
-  weekly progress, streaks, and a recent-history heatmap.
-- The production frontend is embedded into `pwcli`, so one binary serves both
-  the CLI and the local web application.
+Personal Workbench turns conversations into ongoing work. Chat with different
+model providers, let agents use tools, keep long-running work alive in the
+background, and manage tasks, goals, jobs, habits, documents, and generated
+artifacts from the same local application.
 
-## Install
+![Personal Workbench web interface](assets/personal-workbench-overview.jpg)
 
-The first prebuilt npm binary supports macOS on Apple Silicon:
+## Why Personal Workbench
+
+AI coding tools are excellent at answering a prompt, but real work rarely fits
+inside one prompt. It spans repositories, tools, approvals, retries, background
+jobs, documents, and decisions that must survive after a browser tab closes.
+
+Personal Workbench exists to make that work **local, durable, and inspectable**:
+
+- keep the workspace and runtime on your machine instead of moving the whole
+  workflow into a hosted black box;
+- turn conversations into resumable sessions and background tasks rather than
+  disposable chat transcripts;
+- show model reasoning events, tool activity, permission requests, artifacts,
+  and final answers in one reviewable timeline;
+- use different model providers through one consistent runtime without tying
+  the product to a single API;
+- ship the browser UI and agent backend together, so installation and upgrades
+  stay close to a normal command-line tool.
+
+The result is a personal control plane for AI-assisted work: approachable from
+the browser, scriptable from the terminal, and explicit about what runs locally
+and what can change your files. See [PWCLI design and architecture](docs/PWCLI_DESIGN_AND_ARCHITECTURE.md)
+for the engineering decisions behind it.
+
+## Quick start
+
+The prebuilt npm release currently supports **macOS on Apple Silicon** and
+requires Node.js 18 or newer:
 
 ```bash
 npm install --global @liki030814/pwcli
-pwcli --version
-```
-
-Node.js 18 or newer is required for the small npm launcher. Linux, Intel Mac,
-and Windows users should currently [build from source](#build-from-source).
-
-Start the guided provider setup, then open the workbench:
-
-```bash
 pwcli config
 pwcli web
 ```
 
-Run `pwcli` without a subcommand for the interactive terminal UI. Useful daemon
-commands include:
+`pwcli config` opens the provider setup. `pwcli web` starts the local daemon and
+opens the browser workbench at `http://127.0.0.1:3456`.
+
+Prefer the terminal? Run `pwcli` without a subcommand for the interactive TUI:
+
+```bash
+pwcli
+```
+
+## What you can do
+
+| Area | What Personal Workbench provides |
+| --- | --- |
+| AI conversations | Streamed reasoning, tool activity, review decisions, final answers, and answer-version history in one ordered timeline. |
+| Model control | Model-aware thinking levels, provider-specific capabilities, and runtime reasoning updates. |
+| Durable agent work | Background tasks, delegated sessions, progress events, decision requests, retries, and continuation without starting over. |
+| Personal planning | Todos, goals and key results, day plans, habits, streaks, history heatmaps, pomodoro, and an inbox for captured work. |
+| Scheduled jobs | Guided or AI-assisted job creation, execution history, logs, testing, and controlled activation. |
+| Documents and artifacts | Local document workflows, file tools, images, PDFs, scientific illustrations, and reviewable outputs. |
+| Local operation | One daemon owns the agent runtime, HTTP/SSE API, local data, and the embedded production web UI. |
+
+## Typical workflows
+
+### Ask once from a script
+
+```bash
+pwcli -p "Review this repository and list the three highest-risk changes"
+```
+
+Standard input can be included in a one-shot request:
+
+```bash
+git diff | pwcli -p "Summarize this diff and call out compatibility risks"
+```
+
+### Keep the daemon running
 
 ```bash
 pwcli daemon start
@@ -46,159 +93,168 @@ pwcli daemon status
 pwcli daemon stop
 ```
 
-Configuration and runtime data live under `~/.pwcli/`. The local web service
-defaults to `http://127.0.0.1:3456`.
-
-## Repository map
-
-Personal Workbench is one product with two build targets: a React frontend and a
-Rust executable that provides the CLI, local daemon, HTTP/SSE API, and embedded
-production web application.
-
-```text
-Browser
-  -> index.html -> src/main.tsx -> src/App.tsx
-  -> shell / features / domain
-  -> core HTTP, configuration, storage, and LLM clients
-  -> /api
-  -> pwcli service boundary
-  -> SessionManager / TaskBroker / RuntimeFactory
-  -> AgentRuntime -> agent core -> tools and AI provider adapters
-```
-
-| Path | Responsibility |
-| --- | --- |
-| `src/core/` | Frontend infrastructure shared across product areas: configuration, storage, LLM clients, and generic utilities. |
-| `src/domain/` | Product domains such as chat, todo, documents, jobs, habits, and pomodoro. A domain owns its types, state, domain logic, and domain-specific UI. |
-| `src/features/` | User-facing workflows that compose one or more domains, such as workbench, settings, import/export, and search. |
-| `src/shell/` | Application-wide chrome and reusable UI/state, including the header, theme, notifications, and Markdown rendering. |
-| `src/App.tsx` | Frontend composition root: connects domains and features and owns top-level navigation. |
-| `pwcli/src/` | Rust application code for CLI/TUI entry points, daemon/API, sessions, delegated tasks, the agent runtime, tools, and provider integrations. |
-| `pwcli/resources/` | Runtime resources embedded or distributed with `pwcli`. |
-| `config/` | TypeScript, Vite, Vitest, ESLint, Tailwind, and architecture-check configuration. |
-| `scripts/` | Build, migration, and architecture-check scripts. |
-| `tests/` | Cross-module frontend integration and regression tests plus shared fixtures. |
-| `docs/adr/` | Accepted architectural decisions and dependency rules. |
-
-### Frontend boundaries
-
-`src/main.tsx` bootstraps configuration and storage synchronization, then mounts
-`src/App.tsx`. `App.tsx` is the composition root; reusable product behavior
-belongs in a domain or feature rather than in the entry point.
-
-- Put framework-independent, broadly shared infrastructure in `core`.
-- Put behavior and state owned by one product concept in its `domain`.
-- Put workflows that coordinate multiple domains in `features`.
-- Put global application chrome and shared presentation primitives in `shell`.
-- Import a domain through its `index.ts` public surface when one exists; avoid
-  reaching into another domain's internal state or UI directories.
-
-The `@/` alias resolves to `src/`.
-
-### PWCLI runtime boundaries
-
-The Rust directory is intentionally a single crate. Its architecture is based
-on runtime ownership and dependency direction rather than one directory per
-layer:
-
-```text
-CLI / Web JSON / Web SSE / internal worker
-                  -> RuntimeFactory (composition)
-                  -> AgentRuntime (one model/tool turn)
-                     -> agent core -> contracts / tool ports
-                     -> AI and provider adapters
-
-SessionManager owns state across turns.
-TaskBroker owns delegated/background work across processes.
-```
-
-Agent core must not depend on `service`, `SessionManager`, or `TaskBroker`, and
-tools must not depend on `service`. `RuntimeFactory` is the only production
-composition root for an `AgentRuntime`. See
-[`docs/adr/0001-pwcli-four-layer-architecture.md`](docs/adr/0001-pwcli-four-layer-architecture.md)
-for the complete ownership model. Run `npm run check:architecture` to verify the
-enforced dependency rules.
-
-### Test placement
-
-- Keep focused unit and component tests beside the source as `*.test.ts` or
-  `*.test.tsx`.
-- Put cross-module behavior, build contracts, storage integration, and shared
-  regression fixtures under top-level `tests/`.
-- Rust unit tests stay beside their modules; crate-level integration tests live
-  in `pwcli/tests/`.
-
-## Build from source
-
-### Prerequisites
-
-- Node.js 18 or newer and npm
-- A working Rust toolchain with Cargo
-
-The setup script can install missing prerequisites, migrate a legacy `.env`,
-run first-time configuration, build both parts of the application, and start
-the daemon:
+### Diagnose local setup
 
 ```bash
+pwcli doctor
+```
+
+### Generate a scientific illustration
+
+```bash
+pwcli illustrate --intent "A clean data-flow diagram for a retrieval pipeline"
+```
+
+Run `pwcli --help` or `pwcli <command> --help` for the complete CLI reference.
+
+## Model providers
+
+Personal Workbench includes first-class provider definitions and also supports
+custom endpoints.
+
+| Built-in provider | Authentication/configuration path |
+| --- | --- |
+| OpenAI Codex | Browser or device login |
+| Google Antigravity | Browser OAuth login |
+| Kimi Coding | Device login or API configuration |
+| Grok / xAI | Device login or `XAI_API_KEY` |
+| Qwen Token Plan CN | API-key configuration |
+| Custom provider | OpenAI-, Anthropic-, or Google-compatible endpoint settings |
+
+Provider and model settings are explicit: protocol, proxy use, model
+capabilities, request parameters, thinking parameters, deferred tools, output
+limits, and context limits are stored as configuration rather than inferred
+from provider names.
+
+## Local data and security
+
+- Configuration and runtime data are stored under `~/.pwcli/`.
+- The daemon listens on loopback by default at `127.0.0.1:3456`.
+- OAuth access and refresh tokens are handled by the Rust daemon and are not
+  returned to the browser UI.
+- Mutating and external tools pass through the runtime's permission and review
+  policies; background work remains tied to its owning session.
+- This project can execute commands and edit files. Review the selected
+  workspace, provider permissions, and generated actions before approving
+  consequential operations.
+
+## Installation
+
+### npm binary — macOS Apple Silicon
+
+```bash
+npm install --global @liki030814/pwcli
+pwcli --version
+```
+
+The small launcher package installs the matching native package
+`pwcli-darwin-arm64`. Other platforms should currently build from source.
+
+### Build from source
+
+Requirements:
+
+- Node.js 18 or newer and npm
+- A current Rust toolchain with Cargo
+
+Clone and run the setup script:
+
+```bash
+git clone https://github.com/liki-0814/personal-workbench-public.git
+cd personal-workbench-public
 ./setup.sh
+```
+
+Or build each target explicitly:
+
+```bash
+npm install
+npm run build
+npm run build:pwcli:release
+./pwcli/target/release/pwcli web
 ```
 
 ## Development
 
-Install the frontend dependencies first:
+Install dependencies:
 
 ```bash
 npm install
 ```
 
-Run the Rust API/daemon and Vite frontend in separate terminals:
+Run the daemon and Vite frontend in separate terminals:
 
 ```bash
-cd pwcli
-cargo run -- daemon run
+cargo run --manifest-path pwcli/Cargo.toml -- daemon run
 ```
 
 ```bash
 npm run dev
 ```
 
-Vite serves the frontend at `http://127.0.0.1:5173` and proxies `/api` to the
-daemon. The Vite development port is fixed at `5173`. The daemon defaults to
-`http://127.0.0.1:3456`; its port or an explicit frontend backend URL can be
-set in `~/.pwcli/config.json`.
+Vite runs at `http://127.0.0.1:5173` and proxies `/api` to the daemon.
 
-## Verification
+### Verification
 
 ```bash
+npm run check:architecture
 npm run lint
-npm run test
+npm test
 npm run build
-cd pwcli
-cargo fmt --check
-cargo test
+cargo fmt --manifest-path pwcli/Cargo.toml -- --check
+cargo test --manifest-path pwcli/Cargo.toml
 ```
 
-The production build embeds the generated `dist/` frontend into the Rust binary:
+## Architecture
 
-```bash
-npm run build
-cd pwcli
-cargo build --release
+Personal Workbench has two build targets but ships as one product:
+
+```text
+Browser / TUI / CLI / internal worker
+                  │
+                  ▼
+        application and service boundary
+                  │
+                  ▼
+        RuntimeFactory → AgentRuntime
+                  │
+        ┌─────────┴─────────┐
+        ▼                   ▼
+    agent core       provider/tool adapters
+        │
+        ▼
+ SessionManager / TaskBroker / local storage
 ```
 
-Run the resulting application with:
+The React production build is embedded into the Rust executable. The daemon
+owns cross-turn state and background work; an `AgentRuntime` owns one model/tool
+turn. The agent core depends on transport-neutral contracts and tool ports, not
+on the web service or durable task broker.
 
-```bash
-./pwcli/target/release/pwcli web
-```
+<details>
+<summary>Repository map</summary>
 
-Local configuration and runtime data are stored outside the source tree under
-`~/.pwcli/`.
+| Path | Responsibility |
+| --- | --- |
+| `src/core/` | Frontend configuration, storage, LLM clients, and shared infrastructure. |
+| `src/domain/` | Chat, todo, documents, jobs, habits, pomodoro, and other product domains. |
+| `src/features/` | Cross-domain workflows such as the workbench and settings. |
+| `src/shell/` | Application chrome and reusable presentation primitives. |
+| `pwcli/src/agent_core/` | Transport-neutral agent contracts, graph, harness, middleware, and reliability policy. |
+| `pwcli/src/ai/` | Provider catalog, authentication, protocol adapters, and usage accounting. |
+| `pwcli/src/runtime/` | Durable sessions, tasks, tools, permissions, memory, and artifacts. |
+| `pwcli/src/app/` | CLI, composition, daemon, HTTP/SSE service, and web routes. |
+| `config/` | Vite, Vitest, ESLint, Tailwind, TypeScript, and architecture rules. |
+| `docs/adr/` | Architecture decisions and dependency constraints. |
 
-## Package the npm binary
+See [PWCLI design and architecture](docs/PWCLI_DESIGN_AND_ARCHITECTURE.md)
+for the full ownership model, request lifecycle, and design tradeoffs.
 
-Maintainers can build and inspect the Apple Silicon packages without publishing
-them:
+</details>
+
+## Publishing the npm binary
+
+Maintainers can build and inspect the packages without publishing them:
 
 ```bash
 npm run build
@@ -206,67 +262,19 @@ npm run build:pwcli:release
 npm run package:pwcli:npm
 ```
 
-This creates two ignored tarballs under `npm/dist/`: the platform binary package
-`pwcli-darwin-arm64` and the lightweight `@liki030814/pwcli` launcher. Test them locally
-before publishing:
+This produces ignored tarballs under `npm/dist/`:
 
-```bash
-npm install --global ./npm/dist/pwcli-darwin-arm64-0.1.1.tgz
-npm install --global ./npm/dist/liki030814-pwcli-0.1.1.tgz
-pwcli --version
-```
+- `pwcli-darwin-arm64-<version>.tgz` — the native Apple Silicon binary.
+- `liki030814-pwcli-<version>.tgz` — the scoped launcher users install.
 
-Publish the platform package first so the launcher's optional dependency is
-available immediately:
+Publish the platform package first, then the launcher:
 
 ```bash
 npm publish ./npm/dist/pwcli-darwin-arm64-0.1.1.tgz --access public
 npm publish ./npm/dist/liki030814-pwcli-0.1.1.tgz --access public
 ```
 
-## AI Provider 协议与个性化配置
+## License
 
-协议层负责“求同”，个性化 knobs 负责“存异”：
-
-- 协议：`openai_chat` / `openai_responses` / `anthropic_messages` / `google_generative`
-- Provider 级：`useProxy`
-- Model 级：`capabilities`、`requestParams`、`thinkingParams`、`deferredToolsMode`、`maxOutput`、`contextWindow`
-
-示例：
-
-```json
-{
-  "name": "Claude",
-  "protocol": "anthropic_messages",
-  "baseUrl": "https://api.anthropic.com",
-  "apiKey": "sk-...",
-  "models": [
-    {
-      "id": "claude-sonnet-4-6",
-      "name": "Sonnet",
-      "capabilities": { "vision": true, "thinking": true },
-      "thinkingParams": { "budget_tokens": 2048 }
-    }
-  ]
-}
-```
-
-```json
-{
-  "name": "Compatible Gateway",
-  "protocol": "openai_chat",
-  "baseUrl": "https://gateway.example.com/v1",
-  "useProxy": true,
-  "apiKey": "sk-...",
-  "models": [
-    {
-      "id": "demo-model",
-      "name": "Demo",
-      "deferredToolsMode": "enabled",
-      "requestParams": { "top_p": 0.95 }
-    }
-  ]
-}
-```
-
-同协议内不根据供应商名称/URL/模型 id 做暗规则；代理、延迟工具、额外参数都必须显式配置 knobs。
+Personal Workbench is licensed under the [GNU AGPL v3](LICENSE). Third-party
+components and notices are listed in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).

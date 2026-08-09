@@ -414,8 +414,7 @@ pub fn parse_retry_after_secs(message: &str) -> Option<u64> {
 pub fn is_idempotent_read_tool(tool_name: &str) -> bool {
     matches!(
         tool_name,
-        "ls"
-            | "read"
+        "ls" | "read"
             | "find"
             | "grep"
             | "search_file_content"

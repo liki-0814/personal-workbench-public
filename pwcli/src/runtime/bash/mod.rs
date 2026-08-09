@@ -494,7 +494,10 @@ mod tests {
             .parse()
             .expect("child pid marker should be numeric");
         let alive = unsafe { libc::kill(child_pid as libc::pid_t, 0) == 0 };
-        assert!(!alive, "detached child process should be killed with the group");
+        assert!(
+            !alive,
+            "detached child process should be killed with the group"
+        );
     }
 
     #[tokio::test]
