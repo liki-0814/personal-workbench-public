@@ -11,6 +11,10 @@ export default {
         sans: ['system-ui', '-apple-system', 'BlinkMacSystemFont', 'Segoe UI', 'Roboto', 'sans-serif'],
       },
       colors: {
+        brand: {
+          DEFAULT: 'rgb(var(--brand-rgb) / <alpha-value>)',
+          hover: 'rgb(var(--brand-hover-rgb) / <alpha-value>)',
+        },
         gray: {
           50: '#f7f6f3',
           100: '#e5e5ea',

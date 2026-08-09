@@ -45,7 +45,7 @@ export default function TaskMetaChips({ todo, goals }: Props) {
       )}
       {deliverableUrl && (
         hasClickableDeliverable ? (
-          <a href={deliverableUrl} target="_blank" rel="noreferrer" onClick={event => event.stopPropagation()} className="inline-flex items-center gap-1 rounded-[7px] border border-[#C9D4F6] bg-[#F1F3FC] px-2 py-1 text-[11px] font-medium text-[#3559D6] hover:border-[#8EA4F8] dark:border-[#343E60] dark:bg-[#202639] dark:text-[#9DB0FF]" title={deliverableUrl}>
+          <a href={deliverableUrl} target="_blank" rel="noreferrer" onClick={event => event.stopPropagation()} className="inline-flex items-center gap-1 rounded-[7px] border border-[#C9D4F6] bg-[#F1F3FC] px-2 py-1 text-[11px] font-medium text-brand hover:border-[#8EA4F8] dark:border-[#343E60] dark:bg-[#202639] dark:text-[#9DB0FF]" title={deliverableUrl}>
             <ExternalLink size={11} />交付产物
           </a>
         ) : (

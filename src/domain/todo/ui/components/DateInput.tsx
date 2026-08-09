@@ -222,7 +222,7 @@ export default function DateInput({
                   key={option.label}
                   type="button"
                   onClick={() => selectDate(option.value)}
-                  className="rounded-[6px] px-2 py-1 text-[10px] text-[#69717D] transition-colors hover:bg-[#EEF1FC] hover:text-[#3559D6] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#8F98A5]/50 dark:text-[#98A1AD] dark:hover:bg-[#202639] dark:hover:text-[#AEBBFF]"
+                  className="rounded-[6px] px-2 py-1 text-[10px] text-[#69717D] transition-colors hover:bg-[#EEF1FC] hover:text-brand focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#8F98A5]/50 dark:text-[#98A1AD] dark:hover:bg-[#202639] dark:hover:text-[#AEBBFF]"
                 >
                   {option.label}
                 </button>
@@ -305,7 +305,7 @@ export default function DateInput({
                     selected
                       ? 'bg-[#20242B] font-semibold text-white shadow-[0_3px_8px_rgba(32,36,43,0.18)] dark:bg-[#E9ECF1] dark:text-[#171A1F]'
                       : focused
-                        ? 'bg-[#EEF1FC] font-medium text-[#3559D6] dark:bg-[#202639] dark:text-[#AEBBFF]'
+                        ? 'bg-[#EEF1FC] font-medium text-brand dark:bg-[#202639] dark:text-[#AEBBFF]'
                         : day.inMonth
                           ? 'text-[#4B535E] hover:bg-[#F0F1F3] dark:text-[#C8CED7] dark:hover:bg-[#252A32]'
                           : 'text-[#BEC3CB] hover:bg-[#F5F6F7] dark:text-[#555E6A] dark:hover:bg-[#22272E]'

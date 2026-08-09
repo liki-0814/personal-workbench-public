@@ -23,7 +23,6 @@ interface Props {
   dayPlans: DayPlanItem[];
   objectivePanel: React.ReactNode;
   dayPlanPanel: React.ReactNode;
-  onAskAiForJob?: () => void;
   workItems?: WorkItemProjection;
   onOpenWorkItem?: (item: WorkItem, target: WorkItemNavigationTarget) => void;
   onResolveAttention?: (attentionId: string) => Promise<void>;
@@ -88,7 +87,6 @@ export default function WorkbenchRightPanel({
   dayPlans,
   objectivePanel,
   dayPlanPanel,
-  onAskAiForJob,
   workItems = EMPTY_WORK_ITEMS,
   onOpenWorkItem,
   onResolveAttention,
@@ -177,7 +175,7 @@ export default function WorkbenchRightPanel({
             }}
             className={`relative flex h-11 shrink-0 items-center gap-1.5 px-3 text-[13px] font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[#8F98A5]/50 ${
               activeView === tab.id
-                ? 'text-[#2448C5] after:absolute after:inset-x-2 after:bottom-0 after:h-0.5 after:bg-[#3559D6] dark:text-[#9DB0FF]'
+                ? 'text-[#2448C5] after:absolute after:inset-x-2 after:bottom-0 after:h-0.5 after:bg-brand dark:text-[#9DB0FF]'
                 : 'text-[#69717D] hover:text-[#171A1F] dark:text-[#98A1AD] dark:hover:text-[#E9ECF1]'
             }`}
           >
@@ -196,7 +194,7 @@ export default function WorkbenchRightPanel({
         className={`relative min-h-0 flex-1 pt-3 ${activeView === 'objectives' ? 'overflow-visible' : 'overflow-y-auto'}`}
       >
         {activeView === 'habits' && <HabitPanel />}
-        {activeView === 'jobs' && <JobsPanel onAskAi={onAskAiForJob} />}
+        {activeView === 'jobs' && <JobsPanel />}
         {activeView === 'objectives' && objectivePanel}
         {activeView === 'day_plan' && dayPlanPanel}
         {activeView === 'inbox' && (

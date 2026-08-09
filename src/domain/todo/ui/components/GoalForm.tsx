@@ -114,7 +114,7 @@ export default function GoalForm({ goal, goals = [], onSave, onUpdate, onDelete,
             <button
               type="button"
               onClick={onAiCreate}
-              className={`inline-flex h-8 items-center gap-1.5 rounded-[7px] bg-[#EEF1FC] px-2.5 text-[10px] font-medium text-[#3559D6] hover:bg-[#E3E8FB] dark:bg-[#202639] dark:text-[#AEBBFF] dark:hover:bg-[#29314A] ${KEYBOARD_FOCUS}`}
+              className={`inline-flex h-8 items-center gap-1.5 rounded-[7px] bg-[#EEF1FC] px-2.5 text-[10px] font-medium text-brand hover:bg-[#E3E8FB] dark:bg-[#202639] dark:text-[#AEBBFF] dark:hover:bg-[#29314A] ${KEYBOARD_FOCUS}`}
             >
               <Sparkles size={12} />
               AI 创建 O / KR
@@ -159,7 +159,7 @@ export default function GoalForm({ goal, goals = [], onSave, onUpdate, onDelete,
                   </div>
                 ) : (
                   <div className="group flex items-start gap-3">
-                    <span className="mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-[8px] bg-[#EEF1FC] text-[10px] font-bold text-[#3559D6] dark:bg-[#202639] dark:text-[#9DB0FF]">O</span>
+                    <span className="mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-[8px] bg-[#EEF1FC] text-[10px] font-bold text-brand dark:bg-[#202639] dark:text-[#9DB0FF]">O</span>
                     <div className="min-w-0 flex-1">
                       <h4 className="text-[13px] font-semibold text-[#30353D] dark:text-[#D9DEE6]">{item.title}</h4>
                       {item.description && <p className="mt-0.5 line-clamp-2 text-[11px] leading-5 text-[#69717D] dark:text-[#98A1AD]">{item.description}</p>}
@@ -173,7 +173,7 @@ export default function GoalForm({ goal, goals = [], onSave, onUpdate, onDelete,
                       </div>
                     </div>
                     <div className="flex shrink-0 items-center gap-0.5 opacity-100 sm:opacity-0 sm:transition-opacity sm:group-hover:opacity-100 sm:group-focus-within:opacity-100">
-                      <button type="button" onClick={() => startEditing(item)} className={`rounded-[6px] p-1.5 text-[#7A818C] hover:bg-[#EEF0F3] hover:text-[#3559D6] dark:text-[#8D96A3] dark:hover:bg-[#242932] dark:hover:text-[#9DB0FF] ${KEYBOARD_FOCUS}`} title="编辑目标">
+                      <button type="button" onClick={() => startEditing(item)} className={`rounded-[6px] p-1.5 text-[#7A818C] hover:bg-[#EEF0F3] hover:text-brand dark:text-[#8D96A3] dark:hover:bg-[#242932] dark:hover:text-[#9DB0FF] ${KEYBOARD_FOCUS}`} title="编辑目标">
                         <Edit3 size={13} />
                       </button>
                       <button type="button" onClick={() => onDelete?.(item.id)} className={`rounded-[6px] p-1.5 text-[#7A818C] hover:bg-[#FBEFEF] hover:text-[#A33D3D] dark:text-[#8D96A3] dark:hover:bg-[#2C2023] dark:hover:text-[#F19A9A] ${KEYBOARD_FOCUS}`} title="删除目标">
@@ -206,7 +206,7 @@ export default function GoalForm({ goal, goals = [], onSave, onUpdate, onDelete,
             更多设置
             <ChevronDown size={12} className={`transition-transform ${showDetails ? 'rotate-180' : ''}`} />
           </button>
-          <button type="button" onClick={() => setKeyResults(items => [...items, createKeyResult('', items.length)])} className={`inline-flex h-8 items-center gap-1 rounded-[7px] px-2 text-[11px] text-[#3559D6] hover:bg-[#EEF1FC] dark:text-[#9DB0FF] dark:hover:bg-[#202639] ${KEYBOARD_FOCUS}`}>
+          <button type="button" onClick={() => setKeyResults(items => [...items, createKeyResult('', items.length)])} className={`inline-flex h-8 items-center gap-1 rounded-[7px] px-2 text-[11px] text-brand hover:bg-[#EEF1FC] dark:text-[#9DB0FF] dark:hover:bg-[#202639] ${KEYBOARD_FOCUS}`}>
             <Plus size={12} />添加 KR
           </button>
           <span className="flex-1" />

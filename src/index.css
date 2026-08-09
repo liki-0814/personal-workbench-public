@@ -58,6 +58,11 @@
     --text-secondary: #6B7280;
     --text-muted: #9CA3AF;
 
+    /* Brand — single source of truth for the product blue.
+       RGB triplets so Tailwind can apply alpha modifiers (ring-brand/25). */
+    --brand-rgb: 53 89 214;        /* #3559D6 */
+    --brand-hover-rgb: 47 79 192;  /* #2F4FC0 */
+
     /* Chart colors */
     --chart-0: #7EB8E8;
     --chart-1: #8FD4A8;
@@ -134,6 +139,10 @@
     --text-primary: #f1f5f9;
     --text-secondary: #9ca3af;
     --text-muted: #6b7280;
+
+    /* Brand — identical to light for now; adjust here if dark needs its own value */
+    --brand-rgb: 53 89 214;        /* #3559D6 */
+    --brand-hover-rgb: 47 79 192;  /* #2F4FC0 */
 
     /* Dark chart colors - slightly deeper */
     --chart-0: #6AA8D8;
@@ -2555,8 +2564,8 @@
   line-height: 1.4;
 }
 .precision-failure-actions button.is-primary {
-  background: color-mix(in srgb, #3559D6 16%, transparent);
-  border-color: color-mix(in srgb, #3559D6 35%, transparent);
+  background: color-mix(in srgb, rgb(var(--brand-rgb)) 16%, transparent);
+  border-color: color-mix(in srgb, rgb(var(--brand-rgb)) 35%, transparent);
 }
 .precision-failure-actions button:disabled {
   opacity: 0.55;

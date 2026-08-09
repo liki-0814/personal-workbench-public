@@ -154,7 +154,7 @@ export default function TaskDrawer({ todo, goals, onClose, onUpdate, onStartAi }
                 className="min-w-0 flex-1 rounded-[6px] border-0 bg-transparent px-1 py-1 text-[17px] font-semibold tracking-[-0.02em] text-[#171A1F] outline-none transition-colors hover:bg-[#F7F8FA] focus:bg-[#F7F8FA] dark:text-[#E9ECF1] dark:hover:bg-[#1A1E25] dark:focus:bg-[#1A1E25]"
               />
               {onStartAi && (
-                <button type="button" onClick={() => { const updated = flush(); if (updated) onStartAi(updated); }} className="inline-flex h-8 items-center gap-1.5 rounded-[7px] border border-[#D7DCE5] bg-[#F7F8FA] px-2.5 text-[11px] font-medium text-[#3559D6] transition-colors hover:border-[#BFC8E8] hover:bg-[#EEF1FC] dark:border-[#363D47] dark:bg-[#1A1E25] dark:text-[#9DB0FF] dark:hover:bg-[#202639]" title="让 pwcli 协作执行">
+                <button type="button" onClick={() => { const updated = flush(); if (updated) onStartAi(updated); }} className="inline-flex h-8 items-center gap-1.5 rounded-[7px] border border-[#D7DCE5] bg-[#F7F8FA] px-2.5 text-[11px] font-medium text-brand transition-colors hover:border-[#BFC8E8] hover:bg-[#EEF1FC] dark:border-[#363D47] dark:bg-[#1A1E25] dark:text-[#9DB0FF] dark:hover:bg-[#202639]" title="让 pwcli 协作执行">
                   <Bot size={13} />AI 协作
                 </button>
               )}
@@ -362,7 +362,7 @@ export default function TaskDrawer({ todo, goals, onClose, onUpdate, onStartAi }
                     <strong className="block text-xs">我想学会</strong>
                     <small className="mt-0.5 block text-[10px] opacity-75">只在一个关键判断点邀请我参与</small>
                   </span>
-                  <span className={`h-5 w-9 rounded-full p-0.5 transition-colors ${todo?.learningIntent ? 'bg-[#3559D6]' : 'bg-[#C9CDD4] dark:bg-[#4A515C]'}`}>
+                  <span className={`h-5 w-9 rounded-full p-0.5 transition-colors ${todo?.learningIntent ? 'bg-brand' : 'bg-[#C9CDD4] dark:bg-[#4A515C]'}`}>
                     <i className={`block h-4 w-4 rounded-full bg-white transition-transform ${todo?.learningIntent ? 'translate-x-4' : ''}`} />
                   </span>
                 </button>
@@ -421,7 +421,7 @@ export default function TaskDrawer({ todo, goals, onClose, onUpdate, onStartAi }
                         className={`flex h-4 w-4 flex-shrink-0 items-center justify-center rounded-[5px] border transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#8F98A5]/50 ${
                           st.completed
                             ? 'border-[#4F7A61] bg-[#4F7A61] text-white'
-                            : 'border-[#B9BFC8] hover:border-[#3559D6] dark:border-[#4B535E] dark:hover:border-[#7B96FF]'
+                            : 'border-[#B9BFC8] hover:border-brand dark:border-[#4B535E] dark:hover:border-[#7B96FF]'
                         }`}
                       >
                         {st.completed && <Check size={9} strokeWidth={3} />}
@@ -443,7 +443,7 @@ export default function TaskDrawer({ todo, goals, onClose, onUpdate, onStartAi }
                   ))}
                   <button
                     onClick={addSub}
-                    className="inline-flex w-full items-center justify-center gap-1 rounded-[6px] border border-dashed border-[#BFC5CE] py-1.5 text-xs text-[#69717D] transition-colors hover:border-[#7B96FF] hover:text-[#3559D6] dark:border-[#4B535E] dark:text-[#98A1AD] dark:hover:border-[#7B96FF] dark:hover:text-[#9DB0FF]"
+                    className="inline-flex w-full items-center justify-center gap-1 rounded-[6px] border border-dashed border-[#BFC5CE] py-1.5 text-xs text-[#69717D] transition-colors hover:border-[#7B96FF] hover:text-brand dark:border-[#4B535E] dark:text-[#98A1AD] dark:hover:border-[#7B96FF] dark:hover:text-[#9DB0FF]"
                   >
                     <Plus size={11} /> 添加步骤
                   </button>

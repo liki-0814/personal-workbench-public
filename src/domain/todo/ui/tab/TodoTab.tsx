@@ -172,7 +172,7 @@ export default function TodoTab({
             onClick={() => setTaskFilter(value)}
             className={`relative px-0.5 pb-2.5 pt-1 text-[12px] font-medium transition-colors after:absolute after:inset-x-0 after:bottom-[-1px] after:h-0.5 after:origin-center after:rounded-full after:transition-transform focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#8F98A5]/45 focus-visible:ring-offset-2 dark:focus-visible:ring-offset-[#111318] ${
               taskFilter === value
-                ? 'text-[#3559D6] after:scale-x-100 after:bg-[#5B6FEA] dark:text-[#9DB0FF] dark:after:bg-[#8EA4F8]'
+                ? 'text-brand after:scale-x-100 after:bg-[#5B6FEA] dark:text-[#9DB0FF] dark:after:bg-[#8EA4F8]'
                 : 'text-[#69717D] after:scale-x-0 hover:text-[#20242B] dark:text-[#98A1AD] dark:hover:text-[#E9ECF1]'
             }`}
           >
@@ -208,12 +208,12 @@ export default function TodoTab({
                     else next.add(goalCollapseId);
                     return next;
                   })}
-                  className="-ml-1 rounded-[5px] p-1 text-[#8A919C] hover:bg-[#EEF0F3] hover:text-[#3559D6] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#8F98A5]/45 dark:text-[#7E8794] dark:hover:bg-[#242A32] dark:hover:text-[#9DB0FF]"
+                  className="-ml-1 rounded-[5px] p-1 text-[#8A919C] hover:bg-[#EEF0F3] hover:text-brand focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#8F98A5]/45 dark:text-[#7E8794] dark:hover:bg-[#242A32] dark:hover:text-[#9DB0FF]"
                   aria-label={`${goalCollapsed ? '展开' : '收起'} ${title}`}
                 >
                   {goalCollapsed ? <ChevronRight size={14} /> : <ChevronDown size={14} />}
                 </button>
-                <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-[9px] bg-[#EEF1FC] text-[#3559D6] dark:bg-[#202639] dark:text-[#9DB0FF]">
+                <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-[9px] bg-[#EEF1FC] text-brand dark:bg-[#202639] dark:text-[#9DB0FF]">
                   {group.goal?.emoji ?? <Target size={14} />}
                 </span>
                 <div className="min-w-0 flex-1">

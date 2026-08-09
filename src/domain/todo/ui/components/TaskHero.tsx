@@ -241,7 +241,7 @@ export default function TaskHero({
             type="button"
             onClick={() => void handleSubmit()}
             disabled={loading || !value.trim()}
-            className={`absolute right-1.5 top-1/2 flex h-8 w-8 -translate-y-1/2 items-center justify-center rounded-[7px] bg-[#3559D6] text-white transition-colors hover:bg-[#2F4FC0] disabled:bg-[#D8DCE5] disabled:text-[#949BA6] dark:disabled:bg-[#303640] dark:disabled:text-[#737C88] ${KEYBOARD_FOCUS}`}
+            className={`absolute right-1.5 top-1/2 flex h-8 w-8 -translate-y-1/2 items-center justify-center rounded-[7px] bg-brand text-white transition-colors hover:bg-brand-hover disabled:bg-[#D8DCE5] disabled:text-[#949BA6] dark:disabled:bg-[#303640] dark:disabled:text-[#737C88] ${KEYBOARD_FOCUS}`}
             aria-label="提交 AI 创建"
           >
             {loading ? <Loader2 size={14} className="animate-spin" /> : <ArrowUp size={14} />}
@@ -283,7 +283,7 @@ function DraftEditor({ draft, parentGoal, onChange, onCancel, onConfirm }: { dra
   return (
     <div className="mt-3 rounded-[10px] border border-[#DDE1E7] bg-[#FAFAFB] p-3 dark:border-[#303640] dark:bg-[#181B21]">
       <div className="mb-3 flex items-start gap-2">
-        <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-[8px] bg-[#E9EDFF] text-[#3559D6] dark:bg-[#202639] dark:text-[#AEBBFF]"><Sparkles size={13} /></span>
+        <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-[8px] bg-[#E9EDFF] text-brand dark:bg-[#202639] dark:text-[#AEBBFF]"><Sparkles size={13} /></span>
         <div className="min-w-0 flex-1">
           <div className="text-[11px] font-semibold text-[#30353D] dark:text-[#D9DEE6]">{draft.intent === 'objective' ? '目标草稿' : `KR 草稿 · ${parentGoal?.title ?? ''}`}</div>
           <div className="mt-0.5 text-[9px] text-[#8A919C]">AI 已识别创建意图，修改后确认保存</div>
