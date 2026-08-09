@@ -23,7 +23,7 @@ runtime data on your machine.
 The first prebuilt npm binary supports macOS on Apple Silicon:
 
 ```bash
-npm install --global pwcli
+npm install --global @liki030814/pwcli
 pwcli --version
 ```
 
@@ -207,12 +207,12 @@ npm run package:pwcli:npm
 ```
 
 This creates two ignored tarballs under `npm/dist/`: the platform binary package
-`pwcli-darwin-arm64` and the lightweight `pwcli` launcher. Test them locally
+`pwcli-darwin-arm64` and the lightweight `@liki030814/pwcli` launcher. Test them locally
 before publishing:
 
 ```bash
 npm install --global ./npm/dist/pwcli-darwin-arm64-0.1.1.tgz
-npm install --global ./npm/dist/pwcli-0.1.1.tgz
+npm install --global ./npm/dist/liki030814-pwcli-0.1.1.tgz
 pwcli --version
 ```
 
@@ -221,7 +221,7 @@ available immediately:
 
 ```bash
 npm publish ./npm/dist/pwcli-darwin-arm64-0.1.1.tgz --access public
-npm publish ./npm/dist/pwcli-0.1.1.tgz --access public
+npm publish ./npm/dist/liki030814-pwcli-0.1.1.tgz --access public
 ```
 
 ## AI Provider 协议与个性化配置
