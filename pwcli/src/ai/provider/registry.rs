@@ -111,6 +111,7 @@ struct DynamicProvider {
     http: reqwest::Client,
     refresh_lock: tokio::sync::Mutex<()>,
     refresh_after: RwLock<Option<std::time::Instant>>,
+    last_refresh_had_auth: RwLock<bool>,
     discovery_source: RwLock<Option<&'static str>>,
 }
 
@@ -123,6 +124,7 @@ impl DynamicProvider {
             http: crate::ai::http::default_client(crate::ai::http::ClientProfile::Llm),
             refresh_lock: tokio::sync::Mutex::new(()),
             refresh_after: RwLock::new(None),
+            last_refresh_had_auth: RwLock::new(false),
             // A cache-restored list has no live source; discovery_source is
             // only trustworthy once this process performs a real refresh.
             discovery_source: RwLock::new(None),
@@ -166,11 +168,22 @@ impl DynamicProvider {
         let auth = auth.ok_or_else(|| {
             anyhow::anyhow!("{} native discovery requires credentials", self.id())
         })?;
-        let body = self
+        let base = self.base_url().trim_end_matches('/');
+        let models_url = if self.kind() == ProviderKind::KimiCoding && !base.ends_with("/v1") {
+            format!("{base}/v1/models")
+        } else {
+            format!("{base}/models")
+        };
+        let mut request = self
             .http
-            .get(format!("{}/models", self.base_url().trim_end_matches('/')))
+            .get(models_url)
             .bearer_auth(&auth.api_key)
             .timeout(std::time::Duration::from_secs(10))
+            .header("Accept", "application/json");
+        if self.kind() == ProviderKind::KimiCoding {
+            request = request.header("User-Agent", "KimiCLI/1.5");
+        }
+        let body = request
             .send()
             .await?
             .error_for_status()?
@@ -178,13 +191,92 @@ impl DynamicProvider {
             .await?;
         let raw = body
             .get("data")
+            .or_else(|| body.get("models"))
             .and_then(Value::as_array)
-            .ok_or_else(|| anyhow::anyhow!("{} /models has no data array", self.id()))?;
+            .ok_or_else(|| anyhow::anyhow!("{} /models has no model array", self.id()))?;
         let metadata = self.models_dev_metadata().await.unwrap_or_default();
         let models = raw
             .iter()
-            .filter_map(|value| value.get("id").and_then(Value::as_str))
-            .map(|id| self.model_entry(id, metadata.get(id)))
+            .filter_map(|value| {
+                let wire_id = value
+                    .get("id")
+                    .or_else(|| value.get("model"))
+                    .and_then(Value::as_str)?;
+                let id = normalize_model_id(self.kind(), wire_id, value);
+                let mut entry = self.model_entry(&id, metadata.get(&id));
+                if let Some(name) = value
+                    .get("display_name")
+                    .or_else(|| value.get("displayName"))
+                    .or_else(|| value.get("name"))
+                    .and_then(Value::as_str)
+                {
+                    entry.name = name.to_string();
+                }
+                entry.context_window = [
+                    "context_length",
+                    "max_context_size",
+                    "maxContextSize",
+                    "context_window",
+                ]
+                .into_iter()
+                .find_map(|key| value.get(key).and_then(Value::as_u64))
+                .or(entry.context_window);
+                entry.max_output = ["max_output_size", "maxOutputSize", "max_output_tokens"]
+                    .into_iter()
+                    .find_map(|key| value.get(key).and_then(Value::as_u64))
+                    .and_then(|limit| u32::try_from(limit).ok())
+                    .or(entry.max_output);
+                if self.kind() == ProviderKind::KimiCoding {
+                    let reasoning = value
+                        .get("supports_reasoning")
+                        .and_then(Value::as_bool)
+                        .unwrap_or(false);
+                    let vision = value
+                        .get("supports_image_in")
+                        .and_then(Value::as_bool)
+                        .unwrap_or(false)
+                        || value
+                            .get("supports_video_in")
+                            .and_then(Value::as_bool)
+                            .unwrap_or(false);
+                    let capabilities = entry.capabilities.get_or_insert_with(Default::default);
+                    capabilities.thinking = Some(reasoning);
+                    capabilities.vision = Some(vision);
+                    entry.reasoning = Some(reasoning);
+                    entry.input = if vision {
+                        vec!["text".into(), "image".into()]
+                    } else {
+                        vec!["text".into()]
+                    };
+                    if let Some(protocol) = value.get("protocol").and_then(Value::as_str) {
+                        entry.api = Some(
+                            match protocol {
+                                "anthropic" => "anthropic-messages",
+                                "openai" => "openai-completions",
+                                "openai_responses" => "openai-responses",
+                                "google-genai" => "google-generative-ai",
+                                _ => self.model_api(&id),
+                            }
+                            .to_string(),
+                        );
+                    }
+                    let efforts = value
+                        .pointer("/think_efforts/valid_efforts")
+                        .and_then(Value::as_array)
+                        .into_iter()
+                        .flatten()
+                        .filter_map(Value::as_str)
+                        .map(|effort| (effort.to_string(), Value::String(effort.to_string())))
+                        .collect::<serde_json::Map<_, _>>();
+                    if !efforts.is_empty() {
+                        entry.thinking_level_map = Some(efforts);
+                    }
+                }
+                Some(entry)
+            })
+            .map(|model| (model.id.clone(), model))
+            .collect::<BTreeMap<_, _>>()
+            .into_values()
             .collect::<Vec<_>>();
         if models.is_empty() {
             anyhow::bail!("{} /models returned no models", self.id());
@@ -534,15 +626,21 @@ impl ProviderService for DynamicProvider {
         }
     }
     async fn refresh_models(&self, auth: Option<&ResolvedAuth>) -> anyhow::Result<Vec<ModelEntry>> {
-        let Ok(_guard) = self.refresh_lock.try_lock() else {
-            return Ok(self.get_models());
-        };
+        // An authenticated refresh must not be dropped behind the anonymous
+        // catalog warm-up that commonly runs while the user is logging in.
+        let _guard = self.refresh_lock.lock().await;
         let now = std::time::Instant::now();
+        let authenticated_upgrade = auth.is_some()
+            && !*self
+                .last_refresh_had_auth
+                .read()
+                .expect("provider refresh auth state poisoned");
         if self
             .refresh_after
             .read()
             .expect("provider refresh deadline poisoned")
             .is_some_and(|deadline| deadline > now)
+            && !authenticated_upgrade
         {
             return Ok(self.get_models());
         }
@@ -554,6 +652,10 @@ impl ProviderService for DynamicProvider {
             .write()
             .expect("provider refresh deadline poisoned") =
             Some(now + std::time::Duration::from_secs(60));
+        *self
+            .last_refresh_had_auth
+            .write()
+            .expect("provider refresh auth state poisoned") = auth.is_some();
         let (models, source) = match self.kind() {
             ProviderKind::GoogleAntigravity => (
                 self.refresh_antigravity(auth.ok_or_else(|| {
@@ -572,7 +674,7 @@ impl ProviderService for DynamicProvider {
             // OpenAI-compatible providers are discovered from their own
             // /models endpoint first; models.dev only enriches metadata and
             // serves as the fallback when native discovery is unavailable.
-            ProviderKind::Xai | ProviderKind::QwenTokenPlanCn => {
+            ProviderKind::KimiCoding | ProviderKind::Xai | ProviderKind::QwenTokenPlanCn => {
                 match self.refresh_native_openai(auth).await {
                     Ok(models) => (models, "native"),
                     Err(error) => {
@@ -936,6 +1038,85 @@ mod tests {
         assert_eq!(
             collapse_antigravity_model("gemini-pro-agent"),
             "gemini-3.1-pro"
+        );
+    }
+
+    #[tokio::test]
+    async fn kimi_discovers_models_from_managed_v1_endpoint() {
+        let mut server = mockito::Server::new_async().await;
+        let mock = server
+            .mock("GET", "/v1/models")
+            .match_header("authorization", "Bearer kimi-access")
+            .match_header("user-agent", "KimiCLI/1.5")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(
+                serde_json::json!({
+                    "data": [
+                        {
+                            "id": "k3",
+                            "display_name": "Kimi K3",
+                            "context_length": 262_144,
+                            "supports_reasoning": true,
+                            "supports_image_in": true,
+                            "protocol": "anthropic",
+                            "think_efforts": {
+                                "support": true,
+                                "valid_efforts": ["low", "high", "max"],
+                                "default_effort": "high"
+                            }
+                        },
+                        { "id": "kimi-for-coding-highspeed" }
+                    ]
+                })
+                .to_string(),
+            )
+            .create_async()
+            .await;
+        let base_url: &'static str = Box::leak(server.url().into_boxed_str());
+        let provider = DynamicProvider::new(ProviderDefinition {
+            kind: ProviderKind::KimiCoding,
+            name: "Kimi Coding",
+            base_url,
+            api: "anthropic-messages",
+            models_dev_key: None,
+            env_key: None,
+            default_model: "kimi-for-coding",
+        });
+        let models = provider
+            .refresh_native_openai(Some(&ResolvedAuth {
+                api_key: "kimi-access".into(),
+                source: "test",
+                account_id: None,
+                project_id: None,
+            }))
+            .await
+            .unwrap();
+
+        mock.assert_async().await;
+        assert_eq!(
+            models
+                .iter()
+                .map(|model| model.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["k3", "kimi-for-coding-highspeed"]
+        );
+        assert_eq!(models[0].name, "Kimi K3");
+        assert_eq!(models[0].context_window, Some(262_144));
+        assert_eq!(models[0].api.as_deref(), Some("anthropic-messages"));
+        assert_eq!(
+            models[0]
+                .capabilities
+                .as_ref()
+                .and_then(|capabilities| capabilities.thinking),
+            Some(true)
+        );
+        assert_eq!(
+            models[0]
+                .thinking_level_map
+                .as_ref()
+                .map(|levels| levels.keys().cloned().collect::<Vec<_>>()),
+            Some(vec!["high".into(), "low".into(), "max".into()])
         );
     }
 }

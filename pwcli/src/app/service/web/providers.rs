@@ -212,7 +212,9 @@ async fn list(State(state): State<AppState>, Query(query): Query<ProvidersQuery>
         if provider.models.is_empty()
             && matches!(
                 provider_kind(&provider),
-                ProviderKind::OpenAiCodex | ProviderKind::GoogleAntigravity
+                ProviderKind::KimiCoding
+                    | ProviderKind::OpenAiCodex
+                    | ProviderKind::GoogleAntigravity
             )
         {
             if let Err(error) = refresh_and_seed_provider_models(&state, id).await {
@@ -783,8 +785,9 @@ async fn logout(State(state): State<AppState>, Path(id): Path<String>) -> ApiRes
 /// only reported for the provider's authoritative source.
 fn removal_is_trustworthy(kind: ProviderKind, source: Option<&'static str>) -> bool {
     match kind {
-        ProviderKind::KimiCoding => source == Some("models-dev"),
-        ProviderKind::Xai | ProviderKind::QwenTokenPlanCn => source == Some("native"),
+        ProviderKind::KimiCoding | ProviderKind::Xai | ProviderKind::QwenTokenPlanCn => {
+            source == Some("native")
+        }
         ProviderKind::OpenAiCodex | ProviderKind::GoogleAntigravity => source == Some("dedicated"),
         ProviderKind::Custom => false,
     }
