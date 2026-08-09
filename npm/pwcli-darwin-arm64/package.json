@@ -1,0 +1,19 @@
+{
+  "name": "pwcli-darwin-arm64",
+  "version": "0.1.1",
+  "description": "Apple Silicon binary for pwcli",
+  "license": "AGPL-3.0-only",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/liki-0814/personal-workbench-public.git"
+  },
+  "os": [
+    "darwin"
+  ],
+  "cpu": [
+    "arm64"
+  ],
+  "files": [
+    "bin/pwcli"
+  ]
+}

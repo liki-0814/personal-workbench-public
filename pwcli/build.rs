@@ -40,6 +40,7 @@ fn main() {
 }
 
 fn emit_build_metadata() {
+    emit_git_rerun_paths();
     let commit = command_output("git", &["rev-parse", "--short=12", "HEAD"])
         .unwrap_or_else(|| "unknown".to_string());
     let dirty = Command::new("git")
@@ -75,8 +76,20 @@ fn emit_build_metadata() {
     println!("cargo:rustc-env=PWCLI_BUILD_DATE={build_date}");
     println!("cargo:rustc-env=PWCLI_BUILD_TARGET={target}");
     println!("cargo:rustc-env=PWCLI_VERSION_INFO={version_info}");
-    println!("cargo:rerun-if-changed=../.git/HEAD");
-    println!("cargo:rerun-if-changed=../.git/index");
+}
+
+fn emit_git_rerun_paths() {
+    for git_path in ["HEAD", "index", "packed-refs"] {
+        if let Some(path) = command_output("git", &["rev-parse", "--git-path", git_path]) {
+            println!("cargo:rerun-if-changed={path}");
+        }
+    }
+
+    if let Some(reference) = command_output("git", &["symbolic-ref", "-q", "HEAD"]) {
+        if let Some(path) = command_output("git", &["rev-parse", "--git-path", &reference]) {
+            println!("cargo:rerun-if-changed={path}");
+        }
+    }
 }
 
 fn command_output(program: &str, args: &[&str]) -> Option<String> {

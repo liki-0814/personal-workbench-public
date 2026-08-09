@@ -1,0 +1,30 @@
+{
+  "name": "pwcli",
+  "version": "0.1.1",
+  "description": "Personal Workbench CLI and local web application",
+  "license": "AGPL-3.0-only",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/liki-0814/personal-workbench-public.git"
+  },
+  "homepage": "https://github.com/liki-0814/personal-workbench-public#readme",
+  "bugs": "https://github.com/liki-0814/personal-workbench-public/issues",
+  "bin": {
+    "pwcli": "bin/pwcli.js"
+  },
+  "files": [
+    "bin"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "optionalDependencies": {
+    "pwcli-darwin-arm64": "0.1.1"
+  },
+  "keywords": [
+    "ai",
+    "agent",
+    "cli",
+    "personal-workbench"
+  ]
+}

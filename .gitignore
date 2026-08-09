@@ -58,6 +58,10 @@ dist/
 # Staging directory for packaging artifacts
 /.pkg-staging/
 /.release/
+/npm/dist/
+/npm/.cache/
+/npm/pwcli-*/bin/pwcli
+/npm/pwcli-*/bin/pwcli.exe
 /.env.bak
 /.env.bak.20260604
 /temp_dir/

@@ -7,7 +7,9 @@
   "scripts": {
     "dev": "vite --config config/vite.config.ts",
     "build": "npm run build:archify && tsc -b && vite build --config config/vite.config.ts",
+    "build:pwcli:release": "cargo build --release --manifest-path pwcli/Cargo.toml",
     "build:archify": "node scripts/build-archify-runtime.mjs",
+    "package:pwcli:npm": "node scripts/package-pwcli-npm.mjs",
     "check:architecture": "node scripts/check-pwcli-architecture.mjs",
     "test": "vitest run --config config/vitest.config.ts",
     "test:coverage": "vitest run --coverage --config config/vitest.config.ts",

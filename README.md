@@ -1,6 +1,53 @@
 # Personal Workbench
 
-Source-only distribution of the Personal Workbench web application and `pwcli` daemon.
+Personal Workbench combines an AI-native command line, a local daemon, and a
+browser workbench in one Rust executable. The web UI covers chat, tasks, goals,
+scheduled jobs, habits, documents, and provider configuration while keeping
+runtime data on your machine.
+
+## Highlights
+
+- Streamed AI turns are shown as an ordered timeline of reasoning, tool work,
+  review decisions, and final answers, with answer-version history.
+- Model-aware thinking controls expose only the reasoning levels supported by
+  the selected provider and can be adjusted while a managed turn is running.
+- Delegated and long-running work can continue in the background, report
+  progress, request a decision, and resume without restarting from scratch.
+- Jobs can be created through a guided form or generated with AI; habits include
+  weekly progress, streaks, and a recent-history heatmap.
+- The production frontend is embedded into `pwcli`, so one binary serves both
+  the CLI and the local web application.
+
+## Install
+
+The first prebuilt npm binary supports macOS on Apple Silicon:
+
+```bash
+npm install --global pwcli
+pwcli --version
+```
+
+Node.js 18 or newer is required for the small npm launcher. Linux, Intel Mac,
+and Windows users should currently [build from source](#build-from-source).
+
+Start the guided provider setup, then open the workbench:
+
+```bash
+pwcli config
+pwcli web
+```
+
+Run `pwcli` without a subcommand for the interactive terminal UI. Useful daemon
+commands include:
+
+```bash
+pwcli daemon start
+pwcli daemon status
+pwcli daemon stop
+```
+
+Configuration and runtime data live under `~/.pwcli/`. The local web service
+defaults to `http://127.0.0.1:3456`.
 
 ## Repository map
 
@@ -81,7 +128,9 @@ enforced dependency rules.
 - Rust unit tests stay beside their modules; crate-level integration tests live
   in `pwcli/tests/`.
 
-## Prerequisites
+## Build from source
+
+### Prerequisites
 
 - Node.js 18 or newer and npm
 - A working Rust toolchain with Cargo
@@ -145,6 +194,35 @@ Run the resulting application with:
 
 Local configuration and runtime data are stored outside the source tree under
 `~/.pwcli/`.
+
+## Package the npm binary
+
+Maintainers can build and inspect the Apple Silicon packages without publishing
+them:
+
+```bash
+npm run build
+npm run build:pwcli:release
+npm run package:pwcli:npm
+```
+
+This creates two ignored tarballs under `npm/dist/`: the platform binary package
+`pwcli-darwin-arm64` and the lightweight `pwcli` launcher. Test them locally
+before publishing:
+
+```bash
+npm install --global ./npm/dist/pwcli-darwin-arm64-0.1.1.tgz
+npm install --global ./npm/dist/pwcli-0.1.1.tgz
+pwcli --version
+```
+
+Publish the platform package first so the launcher's optional dependency is
+available immediately:
+
+```bash
+npm publish ./npm/dist/pwcli-darwin-arm64-0.1.1.tgz --access public
+npm publish ./npm/dist/pwcli-0.1.1.tgz --access public
+```
 
 ## AI Provider 协议与个性化配置
 
