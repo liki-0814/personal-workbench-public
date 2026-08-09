@@ -1,6 +1,6 @@
 mod plot;
-pub mod python_env;
 mod ports;
+pub mod python_env;
 mod references;
 mod router;
 mod run_store;

@@ -333,13 +333,7 @@ mod tests {
         let waiting = Arc::clone(&broker);
         let task = tokio::spawn(async move {
             waiting
-                .request(
-                    "cancelled",
-                    "bash",
-                    "{}",
-                    "/tmp",
-                    Duration::from_secs(2),
-                )
+                .request("cancelled", "bash", "{}", "/tmp", Duration::from_secs(2))
                 .await
         });
         tokio::task::yield_now().await;
