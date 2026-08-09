@@ -13,7 +13,31 @@ model providers, let agents use tools, keep long-running work alive in the
 background, and manage tasks, goals, jobs, habits, documents, and generated
 artifacts from the same local application.
 
-![Personal Workbench web interface](implementation-thinking-slider-dark-full.png)
+![Personal Workbench web interface](assets/personal-workbench-overview.jpg)
+
+## Why Personal Workbench
+
+AI coding tools are excellent at answering a prompt, but real work rarely fits
+inside one prompt. It spans repositories, tools, approvals, retries, background
+jobs, documents, and decisions that must survive after a browser tab closes.
+
+Personal Workbench exists to make that work **local, durable, and inspectable**:
+
+- keep the workspace and runtime on your machine instead of moving the whole
+  workflow into a hosted black box;
+- turn conversations into resumable sessions and background tasks rather than
+  disposable chat transcripts;
+- show model reasoning events, tool activity, permission requests, artifacts,
+  and final answers in one reviewable timeline;
+- use different model providers through one consistent runtime without tying
+  the product to a single API;
+- ship the browser UI and agent backend together, so installation and upgrades
+  stay close to a normal command-line tool.
+
+The result is a personal control plane for AI-assisted work: approachable from
+the browser, scriptable from the terminal, and explicit about what runs locally
+and what can change your files. See [PWCLI design and architecture](docs/PWCLI_DESIGN_AND_ARCHITECTURE.md)
+for the engineering decisions behind it.
 
 ## Quick start
 
@@ -223,9 +247,8 @@ on the web service or durable task broker.
 | `config/` | Vite, Vitest, ESLint, Tailwind, TypeScript, and architecture rules. |
 | `docs/adr/` | Architecture decisions and dependency constraints. |
 
-See
-[`docs/adr/0001-pwcli-four-layer-architecture.md`](docs/adr/0001-pwcli-four-layer-architecture.md)
-for the full ownership model.
+See [PWCLI design and architecture](docs/PWCLI_DESIGN_AND_ARCHITECTURE.md)
+for the full ownership model, request lifecycle, and design tradeoffs.
 
 </details>
 
