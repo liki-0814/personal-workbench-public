@@ -14,6 +14,7 @@ export { default as MarkdownRenderer } from './ui/MarkdownRenderer';
 export { default as SelectField } from './ui/SelectField';
 export type { SelectOption } from './ui/SelectField';
 export { default as IconButton } from './ui/IconButton';
+export { default as ConfirmDialog } from './ui/ConfirmDialog';
 export { DropdownMenu, DropdownMenuHint, DropdownMenuItem, DropdownMenuSeparator } from './ui/DropdownMenu';
 export { default as PanelHeader } from './ui/PanelHeader';
 export { useModalDialog } from './ui/useModalDialog';

@@ -34,6 +34,21 @@ export function streakUnit(frequency: HabitFrequency): 'day' | 'week' {
   return frequency.type === 'weekly' ? 'week' : 'day';
 }
 
+/** Human label for a habit frequency, e.g. "每天" / "每周 3 次" / "周一·三·五". */
+export function formatFrequency(frequency: HabitFrequency): string {
+  switch (frequency.type) {
+    case 'daily':
+      return '每天';
+    case 'weekly':
+      return `每周 ${frequency.timesPerWeek} 次`;
+    case 'weekdays': {
+      const labels = ['日', '一', '二', '三', '四', '五', '六'];
+      const ordered = [...frequency.days].sort((a, b) => (a === 0 ? 7 : a) - (b === 0 ? 7 : b));
+      return '周' + ordered.map(d => labels[d]).join('·');
+    }
+  }
+}
+
 /**
  * Current streak for a habit.
  * Daily/weekdays: consecutive due days completed, counting back from today.
@@ -80,6 +95,24 @@ export function computeWeekStatus(records: HabitRecord[], today: Date): boolean[
     result.push(doneSet.has(formatDate(d)));
   }
   return result;
+}
+
+/** Done count in the current calendar week (Mon-Sun, up to today). */
+export function computeWeeklyProgress(records: HabitRecord[], today: Date): number {
+  const doneSet = toDoneSet(records);
+  const dayOfWeek = today.getDay();
+  const diffToMonday = dayOfWeek === 0 ? 6 : dayOfWeek - 1;
+  const monday = new Date(today);
+  monday.setDate(today.getDate() - diffToMonday);
+
+  let count = 0;
+  for (let i = 0; i < 7; i++) {
+    const d = new Date(monday);
+    d.setDate(monday.getDate() + i);
+    if (d > today) break;
+    if (doneSet.has(formatDate(d))) count++;
+  }
+  return count;
 }
 
 /**

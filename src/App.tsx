@@ -1,4 +1,5 @@
 import { useEffect, useState, useMemo, useRef, lazy, Suspense } from 'react';
+import { MotionConfig } from 'framer-motion';
 import {
   Header,
   ToastContainer,
@@ -48,7 +49,11 @@ function TabLoading() {
 }
 
 export default function App() {
-  return <SyncedWorkbenchApp />;
+  return (
+    <MotionConfig reducedMotion="user">
+      <SyncedWorkbenchApp />
+    </MotionConfig>
+  );
 }
 
 function SyncedWorkbenchApp() {
@@ -327,9 +332,6 @@ function WorkbenchApp() {
                     }}
                     todos={normalTodos}
                     dayPlans={dayPlans.plans}
-                    onAskAiForJob={() => {
-                      requestNewChat('请帮我创建一个定时调度任务。先询问我执行目标、时间、工作目录和可接受的副作用，再生成配置并真实测试；只有测试通过后才正式启用。');
-                    }}
                     workItems={workItems}
                     onOpenWorkItem={openWorkItem}
                     onResolveAttention={taskRuntime.resolveAttention}

@@ -1,5 +1,6 @@
 import { useState, useMemo } from 'react';
-import { X } from 'lucide-react';
+import { motion } from 'framer-motion';
+import { X, CheckCircle2, Trophy, Flame, CalendarDays } from 'lucide-react';
 import type { HabitItem } from '../../types';
 import { formatDate } from '@/core/utils/date';
 import { SelectField } from '@/shell';
@@ -10,104 +11,160 @@ interface Props {
   onClose: () => void;
 }
 
+const WEEKDAY_LABELS = ['一', '二', '三', '四', '五', '六', '日'];
+const WEEKS = 14;
+
+/** Emerald intensity level (0-4) for a per-day check-in count. */
+function levelClass(count: number): string {
+  switch (Math.min(count, 4)) {
+    case 0:
+      return 'bg-gray-100 dark:bg-white/[0.06]';
+    case 1:
+      return 'bg-emerald-200 dark:bg-emerald-500/25';
+    case 2:
+      return 'bg-emerald-300 dark:bg-emerald-500/45';
+    case 3:
+      return 'bg-emerald-400 dark:bg-emerald-500/65';
+    default:
+      return 'bg-emerald-500 dark:bg-emerald-400';
+  }
+}
+
+function StatCard({ icon, value, label, tint }: {
+  icon: React.ReactNode;
+  value: number;
+  label: string;
+  tint: string;
+}) {
+  return (
+    <div className={`flex items-center gap-2.5 rounded-[12px] px-3 py-2.5 ${tint}`}>
+      <span className="flex-shrink-0">{icon}</span>
+      <span className="min-w-0">
+        <span className="block text-[17px] font-bold leading-tight tabular-nums text-gray-900 dark:text-[#E5E7EB]">{value}</span>
+        <span className="block text-[10px] text-gray-500 dark:text-[#9CA3AF]">{label}</span>
+      </span>
+    </div>
+  );
+}
+
 export default function HabitHistory({ habits, getStreak, onClose }: Props) {
   const [selectedHabitId, setSelectedHabitId] = useState<string | ''>('');
 
   const activeHabits = useMemo(() => habits.filter(h => !h.archived), [habits]);
+  const selectedHabit = selectedHabitId ? habits.find(h => h.id === selectedHabitId) : undefined;
 
-  // Build lookup of dates where habits were done
-  const doneSet = useMemo(() => {
-    const set = new Set<string>();
-    const source = selectedHabitId
-      ? habits.filter(h => h.id === selectedHabitId)
-      : activeHabits;
+  // Per-date check-in counts (sums across habits when unfiltered)
+  const countByDate = useMemo(() => {
+    const map = new Map<string, number>();
+    const source = selectedHabit ? [selectedHabit] : activeHabits;
     for (const habit of source) {
       for (const rec of habit.records) {
-        if (rec.done) set.add(rec.date);
+        if (rec.done) map.set(rec.date, (map.get(rec.date) ?? 0) + 1);
       }
     }
-    return set;
-  }, [habits, activeHabits, selectedHabitId]);
+    return map;
+  }, [activeHabits, selectedHabit]);
 
-  // Generate 12 weeks of dates (columns = weeks, rows = Mon-Sun)
+  // Generate N weeks of dates (columns = weeks, rows = Mon-Sun)
   const { weeks, totalDone, longestStreak, currentStreak } = useMemo(() => {
     const today = new Date();
-    // Start from the Monday of 12 weeks ago
     const startDate = new Date(today);
     const dayOfWeek = today.getDay(); // 0=Sun
     const mondayOffset = dayOfWeek === 0 ? 6 : dayOfWeek - 1;
-    startDate.setDate(today.getDate() - mondayOffset - 11 * 7);
+    startDate.setDate(today.getDate() - mondayOffset - (WEEKS - 1) * 7);
 
-    const wks: { date: Date; dateStr: string; done: boolean }[][] = [];
+    const wks: { dateStr: string; count: number; inFuture: boolean }[][] = [];
     let total = 0;
     let longest = 0;
     let tempStreak = 0;
 
     const cursor = new Date(startDate);
-    let weekArr: { date: Date; dateStr: string; done: boolean }[] = [];
+    let weekArr: { dateStr: string; count: number; inFuture: boolean }[] = [];
 
-    while (cursor <= today || weekArr.length > 0) {
-      if (cursor > today && weekArr.length > 0) {
-        wks.push(weekArr);
-        break;
-      }
-
+    while (true) {
+      const inFuture = cursor > today;
       const dateStr = formatDate(cursor);
-      const done = doneSet.has(dateStr);
-      weekArr.push({ date: new Date(cursor), dateStr, done });
+      const count = inFuture ? 0 : (countByDate.get(dateStr) ?? 0);
+      weekArr.push({ dateStr, count, inFuture });
 
-      if (done) {
-        total++;
+      if (count > 0) {
+        total += count;
         tempStreak++;
         if (tempStreak > longest) longest = tempStreak;
-      } else {
+      } else if (!inFuture) {
         tempStreak = 0;
       }
 
       if (weekArr.length === 7) {
         wks.push(weekArr);
         weekArr = [];
+        if (cursor > today) break;
       }
-
       cursor.setDate(cursor.getDate() + 1);
-      if (cursor > today && weekArr.length > 0) {
-        wks.push(weekArr);
-        break;
-      }
     }
 
-    // Calculate current streak from today backwards
+    // Current streak: consecutive days with any check-in, today allowed to be pending
+    const check = new Date(today);
+    if (!(countByDate.get(formatDate(check)) ?? 0)) {
+      check.setDate(check.getDate() - 1);
+    }
     let cs = 0;
-    const checkDate = new Date(today);
-    while (true) {
-      const ds = formatDate(checkDate);
-      if (doneSet.has(ds)) {
-        cs++;
-        checkDate.setDate(checkDate.getDate() - 1);
-      } else {
-        break;
-      }
+    while ((countByDate.get(formatDate(check)) ?? 0) > 0) {
+      cs++;
+      check.setDate(check.getDate() - 1);
     }
 
     return { weeks: wks, totalDone: total, longestStreak: longest, currentStreak: cs };
-  }, [doneSet]);
+  }, [countByDate]);
 
-  const dayLabels = ['一', '二', '三', '四', '五', '六', '日'];
+  // Month labels above the columns that start a new month
+  const monthLabels = useMemo(() => {
+    let prevMonth = -1;
+    return weeks.map(week => {
+      const first = week[0];
+      const month = new Date(first.dateStr + 'T00:00:00').getMonth();
+      if (month !== prevMonth) {
+        prevMonth = month;
+        return `${month + 1}月`;
+      }
+      return '';
+    });
+  }, [weeks]);
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm" onClick={onClose}>
-      <div
-        className="w-full max-w-lg mx-4 bg-[var(--surface-0)] backdrop-blur-xl rounded-2xl border border-[var(--border-default)] p-6 shadow-xl"
+    <motion.div
+      initial={{ opacity: 0 }}
+      animate={{ opacity: 1 }}
+      exit={{ opacity: 0 }}
+      transition={{ duration: 0.18, ease: 'easeOut' }}
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/45 backdrop-blur-sm"
+      onClick={onClose}
+    >
+      <motion.div
+        initial={{ opacity: 0, scale: 0.96, y: 10 }}
+        animate={{ opacity: 1, scale: 1, y: 0 }}
+        exit={{ opacity: 0, scale: 0.97, transition: { duration: 0.15, ease: 'easeOut' } }}
+        transition={{ type: 'spring', stiffness: 320, damping: 26 }}
+        className="w-full max-w-[420px] mx-4 rounded-2xl border border-[var(--border-default)] bg-[var(--surface-0)] p-5 shadow-2xl"
         onClick={e => e.stopPropagation()}
       >
         {/* Header */}
-        <div className="flex items-center justify-between mb-4">
-          <h3 className="text-lg font-semibold text-[var(--text-primary)]">打卡历史</h3>
+        <div className="mb-4 flex items-center justify-between">
+          <div className="flex items-center gap-2.5">
+            <span className="w-8 h-8 rounded-[10px] flex items-center justify-center text-white shadow-sm" style={{ background: 'var(--chart-gradient-1)' }}>
+              <CalendarDays size={15} />
+            </span>
+            <div>
+              <h3 className="text-[15px] font-semibold text-[var(--text-primary)]">打卡历史</h3>
+              <p className="text-[10px] text-[var(--text-secondary)]">最近 {WEEKS} 周</p>
+            </div>
+          </div>
           <button
             onClick={onClose}
-            className="p-1.5 rounded-lg hover:bg-[var(--surface-2)] text-[var(--text-secondary)] transition-colors"
+            className="w-7 h-7 flex items-center justify-center rounded-[8px] text-[var(--text-secondary)] hover:bg-[var(--surface-2)] transition-colors"
+            title="关闭"
           >
-            <X size={18} />
+            <X size={16} />
           </button>
         </div>
 
@@ -117,7 +174,7 @@ export default function HabitHistory({ habits, getStreak, onClose }: Props) {
             value={selectedHabitId}
             onValueChange={setSelectedHabitId}
             options={[
-              { value: '', label: '全部' },
+              { value: '', label: '全部习惯' },
               ...activeHabits.map(habit => ({ value: habit.id, label: `${habit.emoji} ${habit.title}` })),
             ]}
             className="w-full text-sm"
@@ -125,67 +182,75 @@ export default function HabitHistory({ habits, getStreak, onClose }: Props) {
           />
         </div>
 
-        {/* Heatmap Grid */}
-        <div className="mb-4 overflow-x-auto">
-          <div className="flex gap-0.5">
-            {/* Day labels column */}
-            <div className="flex flex-col gap-0.5 mr-1">
-              {dayLabels.map((label, i) => (
-                <div key={i} className="w-3 h-3 flex items-center justify-center text-[9px] text-[var(--text-tertiary)]">
+        {/* Heatmap */}
+        <div className="mb-4 flex justify-center">
+          <div className="flex gap-[3px]">
+            {/* Weekday labels column */}
+            <div className="mr-1 flex flex-col gap-[3px] pt-[18px]">
+              {WEEKDAY_LABELS.map((label, i) => (
+                <div key={i} className="w-4 h-4 flex items-center justify-center text-[9px] text-[var(--text-muted)]">
                   {i % 2 === 0 ? label : ''}
                 </div>
               ))}
             </div>
-            {/* Weeks */}
             {weeks.map((week, wi) => (
-              <div key={wi} className="flex flex-col gap-0.5">
+              <div key={wi} className="flex flex-col gap-[3px]">
+                <div className="h-[15px] text-[9px] leading-[15px] text-[var(--text-muted)] whitespace-nowrap">
+                  {monthLabels[wi]}
+                </div>
                 {week.map((day, di) => (
                   <div
                     key={di}
-                    className={`w-3 h-3 rounded-sm transition-colors ${
-                      day.done
-                        ? 'bg-emerald-500'
-                        : 'bg-gray-200 dark:bg-gray-700'
+                    className={`w-4 h-4 rounded-[4px] transition-shadow hover:ring-1 hover:ring-emerald-400/60 ${
+                      day.inFuture ? 'bg-transparent' : levelClass(day.count)
                     }`}
-                    title={`${day.dateStr}${day.done ? ' ✓' : ''}`}
+                    title={day.inFuture ? day.dateStr : `${day.dateStr} · ${day.count} 次打卡`}
                   />
-                ))}
-                {/* Pad incomplete weeks */}
-                {week.length < 7 && Array.from({ length: 7 - week.length }).map((_, pi) => (
-                  <div key={`pad-${pi}`} className="w-3 h-3 rounded-sm bg-transparent" />
                 ))}
               </div>
             ))}
           </div>
         </div>
 
+        {/* Legend */}
+        <div className="mb-4 flex items-center justify-end gap-1 text-[9px] text-[var(--text-muted)]">
+          少
+          {[0, 1, 2, 3, 4].map(level => (
+            <span key={level} className={`w-2.5 h-2.5 rounded-[3px] ${levelClass(level)}`} />
+          ))}
+          多
+        </div>
+
         {/* Stats */}
-        <div className="grid grid-cols-3 gap-3">
-          <div className="text-center p-3 rounded-xl bg-[var(--surface-1)]">
-            <div className="text-xl font-bold text-[var(--text-primary)]">{totalDone}</div>
-            <div className="text-xs text-[var(--text-secondary)]">总打卡次数</div>
-          </div>
-          <div className="text-center p-3 rounded-xl bg-[var(--surface-1)]">
-            <div className="text-xl font-bold text-[var(--text-primary)]">{longestStreak}</div>
-            <div className="text-xs text-[var(--text-secondary)]">最长连续</div>
-          </div>
-          <div className="text-center p-3 rounded-xl bg-[var(--surface-1)]">
-            <div className="text-xl font-bold text-[var(--text-primary)]">{currentStreak}</div>
-            <div className="text-xs text-[var(--text-secondary)]">当前连续</div>
-          </div>
+        <div className="grid grid-cols-3 gap-2">
+          <StatCard
+            icon={<CheckCircle2 size={17} className="text-emerald-500" />}
+            value={totalDone}
+            label="总打卡次数"
+            tint="bg-emerald-50 dark:bg-emerald-500/10"
+          />
+          <StatCard
+            icon={<Trophy size={17} className="text-violet-500" />}
+            value={longestStreak}
+            label="最长连续(天)"
+            tint="bg-violet-50 dark:bg-violet-500/10"
+          />
+          <StatCard
+            icon={<Flame size={17} className="text-amber-500" />}
+            value={currentStreak}
+            label="当前连续(天)"
+            tint="bg-amber-50 dark:bg-amber-500/10"
+          />
         </div>
 
         {/* Per-habit streak if filtered */}
-        {selectedHabitId && (() => {
-          const habit = habits.find(h => h.id === selectedHabitId);
-          if (!habit) return null;
-          return (
-            <div className="mt-3 text-center text-sm text-[var(--text-secondary)]">
-              当前连续: {getStreak(selectedHabitId)} {habit.frequency.type === 'weekly' ? '周' : '天'}
-            </div>
-          );
-        })()}
-      </div>
-    </div>
+        {selectedHabit && (
+          <div className="mt-3 flex items-center justify-center gap-1.5 rounded-full bg-amber-50 dark:bg-amber-500/10 py-1.5 text-[12px] font-medium text-amber-600 dark:text-amber-400">
+            <Flame size={13} fill="currentColor" />
+            当前连续 {getStreak(selectedHabit.id)} {selectedHabit.frequency.type === 'weekly' ? '周' : '天'}
+          </div>
+        )}
+      </motion.div>
+    </motion.div>
   );
 }

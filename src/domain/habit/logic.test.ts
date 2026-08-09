@@ -3,6 +3,7 @@ import type { HabitFrequency, HabitRecord } from './types';
 import {
   computeStreak,
   computeWeekStatus,
+  computeWeeklyProgress,
   getDayOfWeekForDate,
   isDueOnDate,
   streakUnit,
@@ -131,6 +132,20 @@ describe('computeWeekStatus', () => {
       false, // 08-07
       true,  // 08-08
     ]);
+  });
+});
+
+describe('computeWeeklyProgress', () => {
+  it('counts done days in the current Mon-Sun week up to today', () => {
+    // Week of Mon 08-03 … Sun 08-09, viewed on Sat 08-08
+    const records = doneRecords('2026-08-03', '2026-08-05', '2026-08-08', '2026-07-31');
+    expect(computeWeeklyProgress(records, SATURDAY)).toBe(3);
+  });
+
+  it('ignores future days of the current week', () => {
+    const monday = new Date('2026-08-03T09:00:00');
+    const records = doneRecords('2026-08-04', '2026-08-05');
+    expect(computeWeeklyProgress(records, monday)).toBe(0);
   });
 });
 
