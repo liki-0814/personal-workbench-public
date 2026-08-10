@@ -80,7 +80,12 @@ export async function* streamLlm(
         messages: anthropicMessages,
         stream,
       };
-      if (tools?.length) body.tools = buildAnthropicTools(tools);
+      if (tools?.length) {
+        body.tools = buildAnthropicTools(
+          tools,
+          info.capabilities?.toolSchemaTopLevelCombinators !== false,
+        );
+      }
       mergeModelRequestParams(body, info.requestParams);
       if (thinking) {
         if (info.thinkingParams && Object.keys(info.thinkingParams).length > 0) {

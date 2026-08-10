@@ -121,12 +121,31 @@ export function parseAnthropicResponse(data: Record<string, unknown>): {
   };
 }
 
-export function buildAnthropicTools(tools?: ToolSchema[]) {
+export function normalizeAnthropicInputSchema(
+  schema: Record<string, unknown>,
+  supportsRootCombinators: boolean,
+): Record<string, unknown> {
+  if (supportsRootCombinators) return schema;
+  const normalized = { ...schema };
+  delete normalized.oneOf;
+  delete normalized.anyOf;
+  delete normalized.allOf;
+  if (!normalized.type) normalized.type = 'object';
+  return normalized;
+}
+
+export function buildAnthropicTools(
+  tools?: ToolSchema[],
+  supportsRootCombinators = true,
+) {
   if (!tools) return undefined;
   return tools.map(t => ({
     name: t.function.name,
     description: t.function.description,
-    input_schema: t.function.parameters as Record<string, unknown>,
+    input_schema: normalizeAnthropicInputSchema(
+      t.function.parameters as Record<string, unknown>,
+      supportsRootCombinators,
+    ),
   }));
 }
 

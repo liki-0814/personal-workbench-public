@@ -1,6 +1,6 @@
 {
   "name": "pwcli-darwin-arm64",
-  "version": "0.1.9",
+  "version": "0.2.0",
   "description": "Apple Silicon binary for pwcli",
   "license": "AGPL-3.0-only",
   "repository": {

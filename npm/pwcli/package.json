@@ -1,6 +1,6 @@
 {
   "name": "@liki030814/pwcli",
-  "version": "0.1.9",
+  "version": "0.2.0",
   "description": "Personal Workbench CLI and local web application",
   "license": "AGPL-3.0-only",
   "repository": {
@@ -22,7 +22,7 @@
     "node": ">=18"
   },
   "optionalDependencies": {
-    "pwcli-darwin-arm64": "0.1.9"
+    "pwcli-darwin-arm64": "0.2.0"
   },
   "keywords": [
     "ai",
