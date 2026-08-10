@@ -41,6 +41,7 @@ export interface ProviderView {
   baseUrl?: string;
   protocol?: ProviderProtocol;
   useProxy?: boolean;
+  userAgent?: string;
 }
 
 export interface ProviderCatalogEntry {
@@ -75,6 +76,7 @@ export interface CustomProviderInput {
   defaultModel: string;
   models: ModelEntry[];
   useProxy?: boolean;
+  userAgent?: string;
 }
 
 interface ProviderSnapshot {
@@ -150,6 +152,7 @@ function normalizeProvider(raw: unknown, index: number): ProviderView {
     baseUrl: read<string>(endpoint, 'baseUrl', 'base_url'),
     protocol: protocol ? normalizeProviderProtocol(protocol) : undefined,
     useProxy: read<boolean>(endpoint, 'useProxy', 'use_proxy'),
+    userAgent: read<string>(endpoint, 'userAgent', 'user_agent'),
   };
 }
 
@@ -286,6 +289,7 @@ export async function saveCustomProvider(input: CustomProviderInput, id?: string
     defaultModel: input.defaultModel,
     models: input.models,
     useProxy: input.useProxy,
+    userAgent: input.userAgent?.trim() || undefined,
   };
   await apiFetch(id ? `/api/providers/${encodeURIComponent(id)}` : '/api/providers', {
     method: id ? 'PATCH' : 'POST',

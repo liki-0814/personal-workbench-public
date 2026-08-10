@@ -289,8 +289,8 @@ This produces ignored tarballs under `npm/dist/`:
 Publish the platform package first, then the launcher:
 
 ```bash
-npm publish ./npm/dist/pwcli-darwin-arm64-0.1.2.tgz --access public
-npm publish ./npm/dist/liki030814-pwcli-0.1.2.tgz --access public
+npm publish ./npm/dist/pwcli-darwin-arm64-0.1.3.tgz --access public
+npm publish ./npm/dist/liki030814-pwcli-0.1.3.tgz --access public
 ```
 
 ## License

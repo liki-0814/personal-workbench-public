@@ -8,6 +8,7 @@ import {
   getProviderSnapshot,
   refreshProviders,
   reorderProviderIds,
+  saveCustomProvider,
   startProviderAuth,
   updateProviderModels,
 } from './providerStore';
@@ -113,6 +114,36 @@ describe('providerStore', () => {
     expect(apiFetch).toHaveBeenNthCalledWith(1, '/api/providers/provider-1', {
       method: 'PATCH',
       body: JSON.stringify({ models, imageModels, defaultModel: 'grok-4.5' }),
+    });
+  });
+
+  it('persists a custom API key and trimmed proxy User-Agent', async () => {
+    apiFetch.mockResolvedValue({ success: true, data: [] });
+
+    await saveCustomProvider({
+      name: 'Gateway',
+      baseUrl: 'https://example.test/v1',
+      protocol: 'anthropic_messages',
+      apiKey: 'secret-key',
+      defaultModel: '',
+      models: [],
+      useProxy: true,
+      userAgent: '  claude-code/1.0.0  ',
+    });
+
+    expect(apiFetch).toHaveBeenNthCalledWith(1, '/api/providers', {
+      method: 'POST',
+      body: JSON.stringify({
+        kind: 'custom',
+        name: 'Gateway',
+        baseUrl: 'https://example.test/v1',
+        protocol: 'anthropic_messages',
+        apiKey: 'secret-key',
+        defaultModel: '',
+        models: [],
+        useProxy: true,
+        userAgent: 'claude-code/1.0.0',
+      }),
     });
   });
 });

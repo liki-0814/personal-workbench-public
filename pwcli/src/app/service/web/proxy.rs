@@ -56,6 +56,11 @@ async fn forward(
     } else {
         request.bearer_auth(provider.api_key)
     };
+    let request = if let Some(user_agent) = provider.user_agent.as_deref() {
+        request.header(header::USER_AGENT, user_agent)
+    } else {
+        request
+    };
     let upstream = match request.send().await {
         Ok(response) => response,
         Err(cause) => return error(StatusCode::BAD_GATEWAY, &cause.to_string()),

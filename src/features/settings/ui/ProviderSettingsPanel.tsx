@@ -43,6 +43,14 @@ const EMPTY_CUSTOM: CustomProviderInput = {
   name: '', baseUrl: '', protocol: 'openai_chat', apiKey: '', defaultModel: '', models: [],
 };
 
+const USER_AGENT_PRESETS = [
+  { value: 'claude-cli/2.1.161 (external, cli)', label: 'Claude CLI（external）' },
+  { value: 'claude-cli/2.1.161', label: 'Claude CLI' },
+  { value: 'claude-code/1.0.0', label: 'Claude Code 1.0' },
+  { value: 'claude-code/0.1.0', label: 'Claude Code 0.1' },
+  { value: 'Kilo-Code/1.0', label: 'Kilo Code' },
+];
+
 function statusView(provider: ProviderView): { text: string; tone: string } {
   switch (provider.auth.status) {
     case 'connected': return { text: '已连接', tone: 'text-emerald-600 bg-emerald-500/10' };
@@ -158,20 +166,24 @@ export default function ProviderSettingsPanel({ onManageModels }: { onManageMode
     setModelsDraft(models.map(model => `${model.id}|${model.name || model.id}`).join('\n'));
     setCustom(provider ? {
       name: provider.name, baseUrl: provider.baseUrl ?? '', protocol: (provider.protocol === 'openai' ? 'openai_chat' : provider.protocol === 'anthropic' ? 'anthropic_messages' : provider.protocol) ?? 'openai_chat',
-      defaultModel: provider.defaultModel ?? models[0]?.id ?? '', models, useProxy: provider.useProxy, apiKey: '',
+      defaultModel: provider.defaultModel ?? models[0]?.id ?? '', models, useProxy: provider.useProxy, userAgent: provider.userAgent, apiKey: '',
     } : { ...EMPTY_CUSTOM });
   };
 
   const saveCustom = async () => {
-    if (!custom || !custom.name.trim() || !custom.baseUrl.trim() || !custom.defaultModel.trim()) {
-      showToast({ message: '请填写名称、API 地址和默认模型', type: 'error' }); return;
+    if (!custom || !custom.name.trim() || !custom.baseUrl.trim()) {
+      showToast({ message: '请填写名称和 API 地址', type: 'error' }); return;
+    }
+    if (!customId && !custom.apiKey?.trim()) {
+      showToast({ message: '请输入 API Key', type: 'error' }); return;
     }
     const models = modelsDraft.split('\n').map(line => line.trim()).filter(Boolean).map(line => {
       const [id, name] = line.split('|').map(part => part.trim());
       return { id, name: name || id, enabled: true };
     });
-    if (!models.some(model => model.id === custom.defaultModel)) models.unshift({ id: custom.defaultModel, name: custom.defaultModel, enabled: true });
-    await perform(async () => { await saveCustomProvider({ ...custom, models }, customId); setCustom(null); }, customId ? '自定义服务已更新' : '自定义服务已添加');
+    const defaultModel = custom.defaultModel.trim() || models[0]?.id || '';
+    if (defaultModel && !models.some(model => model.id === defaultModel)) models.unshift({ id: defaultModel, name: defaultModel, enabled: true });
+    await perform(async () => { await saveCustomProvider({ ...custom, defaultModel, models }, customId); setCustom(null); }, customId ? '自定义服务已更新' : '自定义服务已添加');
   };
 
   const move = (index: number, direction: -1 | 1) => {
@@ -262,9 +274,9 @@ export default function ProviderSettingsPanel({ onManageModels }: { onManageMode
         </div>
       </div>
       <label className="block text-xs text-gray-600 dark:text-gray-300">API 地址<input value={custom.baseUrl} onChange={e => setCustom({ ...custom, baseUrl: e.target.value })} className="input-field mt-1.5 w-full dark:bg-white/5 dark:border-white/10 dark:text-white" placeholder="https://api.example.com/v1" /></label>
-      <div className="grid gap-3 sm:grid-cols-2"><label className="text-xs text-gray-600 dark:text-gray-300">API Key<input type="password" value={custom.apiKey} onChange={e => setCustom({ ...custom, apiKey: e.target.value })} className="input-field mt-1.5 w-full dark:bg-white/5 dark:border-white/10 dark:text-white" placeholder={customId ? '留空表示不修改' : 'sk-...'} /></label><label className="text-xs text-gray-600 dark:text-gray-300">默认模型<input value={custom.defaultModel} onChange={e => setCustom({ ...custom, defaultModel: e.target.value })} className="input-field mt-1.5 w-full dark:bg-white/5 dark:border-white/10 dark:text-white" placeholder="模型 ID" /></label></div>
+      <div className="grid gap-3 sm:grid-cols-2"><label className="text-xs text-gray-600 dark:text-gray-300">API Key<input type="password" autoComplete="new-password" value={custom.apiKey ?? ''} onChange={e => setCustom({ ...custom, apiKey: e.target.value })} className="input-field mt-1.5 w-full dark:bg-white/5 dark:border-white/10 dark:text-white" placeholder={customId ? '留空表示不修改' : 'sk-...'} /></label><label className="text-xs text-gray-600 dark:text-gray-300">默认模型（可稍后设置）<input value={custom.defaultModel} onChange={e => setCustom({ ...custom, defaultModel: e.target.value })} className="input-field mt-1.5 w-full dark:bg-white/5 dark:border-white/10 dark:text-white" placeholder="模型 ID" /></label></div>
       <button onClick={() => setAdvanced(value => !value)} className="flex items-center gap-1 text-xs font-medium text-purple-600 dark:text-purple-300">{advanced ? <ChevronDown size={14} /> : <ChevronRight size={14} />}高级设置</button>
-      {advanced && <div className="space-y-3 rounded-xl bg-gray-50 p-4 dark:bg-white/[0.03]"><label className="block text-xs text-gray-600 dark:text-gray-300">模型列表（每行 ID|显示名称）<textarea value={modelsDraft} onChange={e => setModelsDraft(e.target.value)} rows={5} className="input-field mt-1.5 w-full font-mono text-xs dark:bg-white/5 dark:border-white/10 dark:text-white" placeholder={'gpt-4.1|GPT-4.1\ngpt-4.1-mini|GPT-4.1 Mini'} /></label><label className="flex items-center gap-2 text-xs text-gray-600 dark:text-gray-300"><input type="checkbox" checked={!!custom.useProxy} onChange={e => setCustom({ ...custom, useProxy: e.target.checked || undefined })} />通过本地代理访问</label><p className="text-[11px] text-gray-400">模型能力、上下文窗口和请求参数可在保存后由服务端模型配置继续维护。</p></div>}
+      {advanced && <div className="space-y-4 rounded-xl bg-gray-50 p-4 dark:bg-white/[0.03]"><label className="block text-xs text-gray-600 dark:text-gray-300">模型列表（每行 ID|显示名称）<textarea value={modelsDraft} onChange={e => setModelsDraft(e.target.value)} rows={5} className="input-field mt-1.5 w-full font-mono text-xs dark:bg-white/5 dark:border-white/10 dark:text-white" placeholder={'gpt-4.1|GPT-4.1\ngpt-4.1-mini|GPT-4.1 Mini'} /></label><label className="flex min-h-11 cursor-pointer items-center gap-2 text-xs text-gray-600 dark:text-gray-300"><input type="checkbox" checked={!!custom.useProxy} onChange={e => setCustom({ ...custom, useProxy: e.target.checked || undefined })} />通过本地代理访问</label>{custom.useProxy && <div><label className="block text-xs text-gray-600 dark:text-gray-300">自定义 User-Agent</label><div className="mt-1.5 grid gap-2 sm:grid-cols-[minmax(0,1fr)_180px]"><input value={custom.userAgent ?? ''} onChange={e => setCustom({ ...custom, userAgent: e.target.value })} className="input-field w-full font-mono text-xs dark:border-white/10 dark:bg-white/5 dark:text-white" placeholder="Mozilla/5.0 ..." aria-label="自定义 User-Agent" /><SelectField value={USER_AGENT_PRESETS.some(option => option.value === custom.userAgent) ? custom.userAgent ?? '' : ''} options={USER_AGENT_PRESETS} onValueChange={value => setCustom({ ...custom, userAgent: value })} placeholder="选择预设" ariaLabel="User-Agent 预设" className="w-full dark:border-white/10 dark:bg-white/5 dark:text-white" /></div><p className="mt-2 text-[11px] leading-5 text-gray-400">仅在本地代理接管请求后生效，会替换转发到供应商 API 的 User-Agent。</p></div>}<p className="text-[11px] text-gray-400">模型能力、上下文窗口和请求参数可在保存后由服务端模型配置继续维护。</p></div>}
       <div className="flex justify-end gap-2 border-t border-gray-100 pt-4 dark:border-white/5"><button onClick={() => setCustom(null)} className="rounded-lg border px-4 py-2 text-sm dark:border-white/10">取消</button><button onClick={() => void saveCustom()} disabled={busy} className="rounded-lg bg-purple-500 px-4 py-2 text-sm text-white disabled:opacity-50">保存</button></div>
     </div></Modal>}
 

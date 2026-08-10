@@ -22,6 +22,7 @@ pub struct ProviderEndpoint {
     pub protocol: String,
     pub models: Vec<Value>,
     pub use_proxy: Option<bool>,
+    pub user_agent: Option<String>,
     pub compat_profile: Option<String>,
 }
 
@@ -213,6 +214,13 @@ fn provider_endpoint(provider: &Value) -> Result<ProviderEndpoint> {
             .get("useProxy")
             .or_else(|| provider.get("use_proxy"))
             .and_then(Value::as_bool),
+        user_agent: provider
+            .get("userAgent")
+            .or_else(|| provider.get("user_agent"))
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string),
         compat_profile: provider
             .get("compatProfile")
             .or_else(|| provider.get("compat_profile"))

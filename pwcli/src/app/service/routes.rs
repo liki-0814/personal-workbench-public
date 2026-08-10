@@ -2473,6 +2473,7 @@ mod tests {
             api_key: "server-secret".into(),
             protocol: "openai".into(),
             use_proxy: None,
+            user_agent: None,
             compat_profile: Some("credential:provider-example".into()),
             models: vec![serde_json::json!({
                 "id": "Qwen3.7-Max-DogFooding",
@@ -2499,6 +2500,7 @@ mod tests {
             api_key: "server-secret".into(),
             protocol: "openai".into(),
             use_proxy: None,
+            user_agent: None,
             compat_profile: Some("credential:provider-example".into()),
             models: vec![],
         };

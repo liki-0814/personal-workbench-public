@@ -44,6 +44,8 @@ struct CreateProviderRequest {
     models: Vec<crate::ai::config::ModelEntry>,
     #[serde(default)]
     use_proxy: Option<bool>,
+    #[serde(default)]
+    user_agent: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -60,6 +62,7 @@ struct PatchProviderRequest {
     image_models: Option<Vec<crate::ai::config::ModelEntry>>,
     enabled: Option<bool>,
     use_proxy: Option<bool>,
+    user_agent: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -149,6 +152,9 @@ async fn catalog(State(state): State<AppState>) -> ApiResult {
     for provider in registry.all() {
         let available = !matches!(provider.kind(), ProviderKind::GoogleAntigravity)
             || crate::ai::provider::antigravity_oauth_configured();
+        if provider.kind() == ProviderKind::KimiCoding && provider.get_models().is_empty() {
+            provider.seed_models(&kimi_fallback_models());
+        }
         let (image_models, chat_models) = partition_image_models(provider.get_models());
         // Catalog reads are part of the settings and login UI's critical path.
         // Never make them wait for an external model-discovery service.  The
@@ -292,6 +298,7 @@ async fn create(
         "models": models,
         "enabled": true,
         "useProxy": request.use_proxy,
+        "userAgent": request.user_agent.as_deref().map(str::trim).filter(|value| !value.is_empty()),
         "compatProfile": compat_profile,
     });
     let stored_id = id.clone();
@@ -432,6 +439,17 @@ async fn update(
             }
             if let Some(use_proxy) = request.use_proxy {
                 provider["useProxy"] = json!(use_proxy);
+            }
+            if let Some(user_agent) = request.user_agent {
+                let user_agent = user_agent.trim();
+                if user_agent.is_empty() {
+                    if let Some(object) = provider.as_object_mut() {
+                        object.remove("userAgent");
+                        object.remove("user_agent");
+                    }
+                } else {
+                    provider["userAgent"] = json!(user_agent);
+                }
             }
             if kind == ProviderKind::Custom {
                 if let Some(name) = request.name.filter(|value| !value.trim().is_empty()) {
@@ -1205,12 +1223,37 @@ async fn provider_view(state: &AppState, raw: &Value, full_diff: bool) -> Result
         "baseUrl": custom.then_some(provider.base_url.clone()),
         "protocol": custom.then_some(provider.protocol.clone()),
         "useProxy": custom.then_some(provider.use_proxy.unwrap_or(false)),
+        "userAgent": custom.then(|| raw.get("userAgent").or_else(|| raw.get("user_agent")).and_then(Value::as_str)).flatten(),
         "customEndpoint": if custom { Some(json!({
             "baseUrl": provider.base_url,
             "protocol": provider.protocol,
             "useProxy": provider.use_proxy,
+            "userAgent": raw.get("userAgent").or_else(|| raw.get("user_agent")).and_then(Value::as_str),
         })) } else { None },
     }))
+}
+
+fn kimi_fallback_models() -> Vec<crate::ai::config::ModelEntry> {
+    [
+        ("k3", "Kimi K3", Some(1_048_576)),
+        ("k3-256k", "Kimi K3 256K", Some(262_144)),
+        ("kimi-for-coding", "Kimi for Coding", None),
+        (
+            "kimi-for-coding-highspeed",
+            "Kimi for Coding Highspeed",
+            None,
+        ),
+    ]
+    .into_iter()
+    .map(|(id, name, context_window)| {
+        let mut model = crate::ai::config::ModelEntry::default();
+        model.id = id.to_string();
+        model.name = name.to_string();
+        model.context_window = context_window;
+        model.enabled = Some(true);
+        model
+    })
+    .collect()
 }
 
 fn provider_for_auth(web: &WebState, id: &str) -> Result<ProviderConfig> {
@@ -1366,6 +1409,15 @@ mod tests {
             vec!["grok-imagine-1", "qwen-image-2.0-pro", "custom-renderer"]
         );
         assert_eq!(chat_ids, vec!["grok-4"]);
+    }
+
+    #[test]
+    fn kimi_catalog_has_immediate_fallback_models() {
+        let models = kimi_fallback_models();
+        let ids: Vec<&str> = models.iter().map(|model| model.id.as_str()).collect();
+        assert!(ids.contains(&"k3"));
+        assert!(ids.contains(&"kimi-for-coding"));
+        assert!(models.iter().all(|model| model.enabled == Some(true)));
     }
 
     #[test]
