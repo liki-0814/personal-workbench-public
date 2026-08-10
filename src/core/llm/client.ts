@@ -6,7 +6,13 @@ import {
 import { getModelMeta } from '@/core/config/modelMetadata';
 import type { ToolCall, LlmRequest, LlmResponse, LlmStreamEvent } from './types';
 import { streamOpenAI, toOpenAIMessages, parseOpenAIMultimodalContent, type StreamDelta } from './openai';
-import { streamAnthropic, toAnthropicMessages, buildAnthropicTools, parseAnthropicResponse } from './anthropic';
+import {
+  streamAnthropic,
+  toAnthropicMessages,
+  buildAnthropicTools,
+  isRestrictedAnthropicSchemaError,
+  parseAnthropicResponse,
+} from './anthropic';
 export { parseOpenAIMultimodalContent } from './openai';
 export { parseAnthropicResponse } from './anthropic';
 export { parseDataUrl } from './media';
@@ -98,6 +104,13 @@ export async function* streamLlm(
         if (typeof mapped === 'string') body.reasoning_effort = mapped;
       }
       res = await fetch(url, { method: 'POST', signal, headers, body: JSON.stringify(body) });
+      if (!res.ok && tools?.length) {
+        const errorText = await res.clone().text().catch(() => '');
+        if (isRestrictedAnthropicSchemaError(res.status, errorText)) {
+          body.tools = buildAnthropicTools(tools, false);
+          res = await fetch(url, { method: 'POST', signal, headers, body: JSON.stringify(body) });
+        }
+      }
     } else {
       const body: Record<string, unknown> = {
         model: info.id,

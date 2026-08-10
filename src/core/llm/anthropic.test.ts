@@ -1,6 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import type { ToolSchema } from './types';
-import { buildAnthropicTools, normalizeAnthropicInputSchema } from './anthropic';
+import {
+  buildAnthropicTools,
+  isRestrictedAnthropicSchemaError,
+  normalizeAnthropicInputSchema,
+} from './anthropic';
 
 const schemaWithRootUnion = {
   type: 'object',
@@ -50,5 +54,16 @@ describe('buildAnthropicTools', () => {
       expect(tool.input_schema).not.toHaveProperty('anyOf');
       expect(tool.input_schema).not.toHaveProperty('allOf');
     }
+  });
+});
+
+describe('isRestrictedAnthropicSchemaError', () => {
+  it('matches the provider error independently of the tool index', () => {
+    expect(isRestrictedAnthropicSchemaError(
+      400,
+      'tools.15.custom.input_schema: input_schema does not support oneOf, allOf, or anyOf at the top level',
+    )).toBe(true);
+    expect(isRestrictedAnthropicSchemaError(500, 'input_schema does not support oneOf')).toBe(false);
+    expect(isRestrictedAnthropicSchemaError(400, 'unrelated bad request')).toBe(false);
   });
 });

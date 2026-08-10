@@ -164,6 +164,35 @@ fn anthropic_tools(tools: &[ToolSchema], provider: &ProviderConfig) -> Vec<Value
         .collect()
 }
 
+fn strip_root_combinators_from_payload_tools(payload: &mut Value) -> bool {
+    let Some(tools) = payload.get_mut("tools").and_then(Value::as_array_mut) else {
+        return false;
+    };
+    let mut changed = false;
+    for tool in tools {
+        let Some(schema) = tool.get_mut("input_schema").and_then(Value::as_object_mut) else {
+            continue;
+        };
+        for keyword in ["oneOf", "anyOf", "allOf"] {
+            changed |= schema.remove(keyword).is_some();
+        }
+        if !schema.contains_key("type") {
+            schema.insert("type".into(), Value::String("object".into()));
+            changed = true;
+        }
+    }
+    changed
+}
+
+fn is_root_combinator_schema_error(status: u16, body: &str) -> bool {
+    status == 400
+        && body.contains("input_schema")
+        && body.contains("does not support")
+        && ["oneOf", "anyOf", "allOf"]
+            .iter()
+            .any(|keyword| body.contains(keyword))
+}
+
 fn provider_request_param(provider: &ProviderConfig, key: &str) -> Option<String> {
     provider
         .current_model_entry()
@@ -361,6 +390,9 @@ impl AnthropicClient {
         if let Some(tools) = &request.tools {
             payload["tools"] = serde_json::to_value(anthropic_tools(tools, &self.provider))?;
         }
+        if !supports_root_schema_combinators(&self.provider) {
+            strip_root_combinators_from_payload_tools(&mut payload);
+        }
 
         apply_thinking(&mut payload, &self.provider, request.thinking);
         if request.thinking {
@@ -369,6 +401,7 @@ impl AnthropicClient {
         }
 
         let mut attempt: u32 = 0;
+        let mut schema_fallback_attempted = false;
         let res = loop {
             let res = self
                 .http
@@ -387,6 +420,14 @@ impl AnthropicClient {
                 .and_then(|value| value.to_str().ok())
                 .map(str::to_owned);
             let text = res.text().await.unwrap_or_default();
+            if !schema_fallback_attempted
+                && is_root_combinator_schema_error(status.as_u16(), &text)
+                && strip_root_combinators_from_payload_tools(&mut payload)
+            {
+                schema_fallback_attempted = true;
+                info!(model = %self.provider.model, "retrying with restricted Anthropic tool schemas");
+                continue;
+            }
             if super::retry::is_provider_error(status.as_u16(), &text) {
                 if let Some(delay) =
                     super::retry::next_backoff_with_hint(attempt, retry_after.as_deref())
@@ -576,6 +617,9 @@ impl AnthropicClient {
             if let Some(tools) = &request.tools {
                 if let Ok(v) = serde_json::to_value(anthropic_tools(tools, &provider)) { payload["tools"] = v; }
             }
+            if !supports_root_schema_combinators(&provider) {
+                strip_root_combinators_from_payload_tools(&mut payload);
+            }
 
             apply_thinking(&mut payload, &provider, request.thinking);
             if request.thinking {
@@ -585,6 +629,7 @@ impl AnthropicClient {
             debug!(model = %provider.model, url = %url, "anthropic stream request");
             let res = {
                 let mut attempt: u32 = 0;
+                let mut schema_fallback_attempted = false;
                 loop {
                     let res = match http.post(&url).headers(headers.clone()).json(&payload).send().await {
                         Ok(r) => r,
@@ -604,6 +649,14 @@ impl AnthropicClient {
                         .and_then(|value| value.to_str().ok())
                         .map(str::to_owned);
                     let text = res.text().await.unwrap_or_default();
+                    if !schema_fallback_attempted
+                        && is_root_combinator_schema_error(status.as_u16(), &text)
+                        && strip_root_combinators_from_payload_tools(&mut payload)
+                    {
+                        schema_fallback_attempted = true;
+                        info!(model = %provider.model, "retrying stream with restricted Anthropic tool schemas");
+                        continue;
+                    }
                     if super::retry::is_provider_error(status.as_u16(), &text) {
                         if let Some(delay) = super::retry::next_backoff_with_hint(attempt, retry_after.as_deref()) {
                             attempt += 1;
@@ -848,6 +901,87 @@ mod tests {
         assert_eq!(serialized[0]["input_schema"]["type"], "object");
         assert!(serialized[0]["input_schema"].get("oneOf").is_none());
         assert!(tools[0].function.parameters.get("oneOf").is_some());
+    }
+
+    #[test]
+    fn final_payload_guard_normalizes_every_tool() {
+        let mut payload = serde_json::json!({
+            "tools": (0..20).map(|index| serde_json::json!({
+                "name": format!("tool_{index}"),
+                "input_schema": {
+                    "properties": { "value": { "type": "string" } },
+                    "oneOf": [{ "required": ["value"] }],
+                    "anyOf": [{ "required": ["value"] }],
+                    "allOf": [{ "required": ["value"] }]
+                }
+            })).collect::<Vec<_>>()
+        });
+
+        assert!(strip_root_combinators_from_payload_tools(&mut payload));
+        for tool in payload["tools"].as_array().unwrap() {
+            let schema = &tool["input_schema"];
+            assert_eq!(schema["type"], "object");
+            assert!(schema.get("oneOf").is_none());
+            assert!(schema.get("anyOf").is_none());
+            assert!(schema.get("allOf").is_none());
+        }
+    }
+
+    #[tokio::test]
+    async fn every_registered_tool_passes_the_restricted_payload_gate() {
+        use crate::runtime::backend::BackendClient;
+        use crate::runtime::tools::register::register_all_tools;
+        use crate::runtime::tools::registry::ToolRegistry;
+        use std::sync::Arc;
+
+        let backend = Arc::new(BackendClient::new("http://127.0.0.1:9"));
+        let mut registry = ToolRegistry::new();
+        register_all_tools(&mut registry, backend);
+        let schemas = registry.to_schemas();
+        assert!(schemas.len() >= 30, "unexpectedly small tool registry");
+
+        let mut payload = serde_json::json!({
+            "tools": schemas.iter().map(|tool| serde_json::json!({
+                "name": tool.function.name,
+                "description": tool.function.description,
+                "input_schema": tool.function.parameters,
+            })).collect::<Vec<_>>()
+        });
+        assert!(
+            payload["tools"].as_array().unwrap().iter().any(|tool| {
+                ["oneOf", "anyOf", "allOf"]
+                    .iter()
+                    .any(|keyword| tool["input_schema"].get(keyword).is_some())
+            }),
+            "fixture must contain at least one restricted root combinator"
+        );
+
+        strip_root_combinators_from_payload_tools(&mut payload);
+
+        for (index, tool) in payload["tools"].as_array().unwrap().iter().enumerate() {
+            let schema = &tool["input_schema"];
+            let name = tool["name"].as_str().unwrap_or("unknown");
+            assert_eq!(schema["type"], "object", "tools.{index} ({name})");
+            for keyword in ["oneOf", "anyOf", "allOf"] {
+                assert!(
+                    schema.get(keyword).is_none(),
+                    "tools.{index} ({name}) still contains root {keyword}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn recognizes_only_the_targeted_provider_schema_error() {
+        assert!(is_root_combinator_schema_error(
+            400,
+            "tools.15.custom.input_schema: input_schema does not support oneOf, allOf, or anyOf at the top level"
+        ));
+        assert!(!is_root_combinator_schema_error(500, "input_schema oneOf"));
+        assert!(!is_root_combinator_schema_error(
+            400,
+            "unrelated bad request"
+        ));
     }
 
     #[test]

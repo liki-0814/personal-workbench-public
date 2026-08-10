@@ -134,6 +134,13 @@ export function normalizeAnthropicInputSchema(
   return normalized;
 }
 
+export function isRestrictedAnthropicSchemaError(status: number, body: string): boolean {
+  return status === 400
+    && body.includes('input_schema')
+    && body.includes('does not support')
+    && ['oneOf', 'anyOf', 'allOf'].some(keyword => body.includes(keyword));
+}
+
 export function buildAnthropicTools(
   tools?: ToolSchema[],
   supportsRootCombinators = true,
