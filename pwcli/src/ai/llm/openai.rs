@@ -196,8 +196,10 @@ impl OpenAiClient {
             let url = format!("{}/api/proxy/openai", self.backend_url);
             let mut headers = reqwest::header::HeaderMap::new();
             headers.insert("Content-Type", "application/json".parse()?);
-            headers.insert("X-Base-Url", self.provider.base_url.parse()?);
-            headers.insert("X-Api-Key", self.provider.api_key.parse()?);
+            headers.insert(
+                "X-Provider-Id",
+                crate::ai::provider::provider_id(&self.provider).parse()?,
+            );
             (url, headers)
         } else {
             let url = format!("{}/chat/completions", self.provider.base_url);
@@ -422,8 +424,9 @@ impl OpenAiClient {
                 let url = format!("{}/api/proxy/openai", backend_url);
                 let mut h = reqwest::header::HeaderMap::new();
                 h.insert("Content-Type", "application/json".parse().unwrap());
-                if let Ok(v) = provider.base_url.parse() { h.insert("X-Base-Url", v); }
-                if let Ok(v) = provider.api_key.parse() { h.insert("X-Api-Key", v); }
+                if let Ok(v) = crate::ai::provider::provider_id(&provider).parse() {
+                    h.insert("X-Provider-Id", v);
+                }
                 (url, h)
             } else {
                 let url = format!("{}/chat/completions", provider.base_url);

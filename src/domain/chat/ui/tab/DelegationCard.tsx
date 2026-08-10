@@ -26,6 +26,7 @@ import {
 } from 'lucide-react';
 import type {
   RuntimeTask,
+  RuntimeTaskEvent,
   RuntimeTaskExecutor,
   RuntimeTaskResult,
   RuntimeTaskReviewAction,
@@ -83,6 +84,7 @@ function StatusIcon({ kind }: { kind: RuntimeStatusIcon }) {
 
 export interface DelegationCardProps {
   tasks: RuntimeTask[];
+  taskEvents?: Record<string, RuntimeTaskEvent[]>;
   onCancel: (taskId: string) => Promise<void>;
   onRetry?: (
     taskId: string,
@@ -105,7 +107,79 @@ export interface DelegationCardProps {
   onOpenDocument?: (documentId: string, task: RuntimeTask, title?: string) => void;
   onOpenDiff?: (ref: WorkspaceRef, task: RuntimeTask) => void;
   onOpenPanorama?: (batchId: string) => void;
+  onOpenSettings?: (tab: 'ai' | 'integrations') => void;
   focusTaskId?: string;
+}
+
+const TASK_ACTIVITY_LABELS: Record<string, string> = {
+  task_published: '任务已创建',
+  task_leased: '执行器已接单',
+  task_started: '开始执行',
+  task_native_session_started: '已连接子 Agent 会话',
+  task_waiting_children: '正在等待下级协作者',
+  task_children_ready: '下级协作者已返回',
+  task_child_result_buffered: '收到一份协作者结果',
+  task_child_results_queued: '正在汇总协作者结果',
+  task_waiting_user: '等待你的选择',
+  task_waiting_configuration: '等待完成配置',
+  task_follow_up_queued: '继续对话已排队',
+  task_output_materializing: '正在整理交付物',
+  task_output_ready: '交付物已就绪',
+  task_output_failed: '交付物整理失败',
+  task_completed: '任务已完成',
+  task_failed: '任务执行失败',
+  task_start_failed: '任务启动失败',
+  task_cancelled: '任务已取消',
+  task_recovery_required: '任务需要恢复',
+};
+
+function activityLabel(event: RuntimeTaskEvent): string {
+  return TASK_ACTIVITY_LABELS[event.kind]
+    || event.kind.replace(/^task_/, '').replace(/_/g, ' ');
+}
+
+function configurationGuidance(task: RuntimeTask): {
+  title: string;
+  detail?: string;
+  settingsTab: 'ai' | 'integrations';
+} {
+  const executor = task.resolvedExecutorId || task.backend || task.executorRequest;
+  const detail = task.error;
+  const normalizedDetail = detail?.toLowerCase() ?? '';
+  const label = RETRY_EXECUTOR_OPTIONS.find(item => item.value === executor)?.label || executor;
+  if (normalizedDetail.includes('not enabled')) {
+    return {
+      title: `${label || '该执行器'} 已安装，但未在委派设置中启用`,
+      detail,
+      settingsTab: 'integrations',
+    };
+  }
+  if (normalizedDetail.includes('does not support model')) {
+    return {
+      title: `${label || '该执行器'} 与指定模型不兼容`,
+      detail,
+      settingsTab: executor === 'pwcli' ? 'ai' : 'integrations',
+    };
+  }
+  if (normalizedDetail.includes('git isolation')) {
+    return {
+      title: '当前项目无法创建安全的 Git 隔离工作区',
+      detail,
+      settingsTab: 'integrations',
+    };
+  }
+  if (executor === 'pwcli' || !executor || executor === 'auto') {
+    return {
+      title: 'Workbench Agent 缺少可用的 AI Provider 或模型',
+      detail,
+      settingsTab: 'ai',
+    };
+  }
+  return {
+    title: `${label} 尚未安装、登录或启用`,
+    detail,
+    settingsTab: 'integrations',
+  };
 }
 
 function reviewRevision(task: RuntimeTask): number {
@@ -185,6 +259,7 @@ function TaskDocumentList({
 
 export function DelegateBatchCard({
   tasks,
+  taskEvents = {},
   onCancel,
   onRetry,
   onResolveDecision,
@@ -194,6 +269,7 @@ export function DelegateBatchCard({
   onOpenDocument,
   onOpenDiff,
   onOpenPanorama,
+  onOpenSettings,
   focusTaskId,
 }: DelegationCardProps) {
   const [expanded, setExpanded] = useState(false);
@@ -412,6 +488,10 @@ export function DelegateBatchCard({
                   ? result.options.filter((option): option is string => typeof option === 'string' && Boolean(option.trim()))
                   : [];
                 const detailsOpen = detailTaskIds.has(task.id);
+                const events = taskEvents[task.id] ?? [];
+                const configuration = task.status === 'waiting_configuration'
+                  ? configurationGuidance(task)
+                  : undefined;
                 const documentConfirmationReady = task.access !== 'mutating'
                   && task.status === 'succeeded'
                   && task.outputStatus === 'ready'
@@ -457,12 +537,13 @@ export function DelegateBatchCard({
                       )}
                       <button
                         type="button"
-                        className="delegation-action"
+                        className="delegation-action is-labeled"
                         onClick={() => toggleDetails(task.id)}
-                        title={detailsOpen ? '收起详情' : '查看详情'}
+                        title={detailsOpen ? '收起进度' : '查看进度'}
                         aria-expanded={detailsOpen}
                       >
-                        {detailsOpen ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+                        {detailsOpen ? <ChevronDown size={14} /> : <MessageSquareMore size={14} />}
+                        <span>{detailsOpen ? '收起' : '查看进度'}</span>
                       </button>
                       {onRetry && ['waiting_configuration', 'failed', 'recovery_required', 'cancelled'].includes(task.status) && (
                         <>
@@ -489,11 +570,12 @@ export function DelegateBatchCard({
                       {['succeeded', 'failed'].includes(task.status) && (
                         <button
                           type="button"
-                          className="delegation-action"
+                          className="delegation-action is-labeled"
                           onClick={() => openFollowUp(task.id)}
                           title="追加要求"
                         >
                           <MessageSquareMore size={14} />
+                          <span>继续对话</span>
                         </button>
                       )}
                       {!TERMINAL_TASK_STATUSES.has(task.status) && (
@@ -515,6 +597,8 @@ export function DelegateBatchCard({
                     {detailsOpen && (
                       <>
                         <div className="delegation-details">
+                          <strong className="delegation-progress-heading">正在做什么</strong>
+                          <span className="delegation-current-step">{view.statusLabel} · {view.documentTitle}</span>
                           <span>{view.modelLabel || '默认模型'}</span>
                           {view.effortLabel && <span>推理 {view.effortLabel}</span>}
                           {view.permissionLabel && <span>权限 {view.permissionLabel}</span>}
@@ -522,6 +606,16 @@ export function DelegateBatchCard({
                           {view.totalTokens != null && <span>{view.totalTokens.toLocaleString()} tokens</span>}
                           {view.routingModeLabel && <span>{view.routingModeLabel}</span>}
                           {view.routingReason && <span className="delegation-routing-reason">{view.routingReason}</span>}
+                          {events.length > 0 && (
+                            <ol className="delegation-activity-list" aria-label="任务进度记录">
+                              {events.slice(-5).map(event => (
+                                <li key={event.eventId}>
+                                  <time>{new Date(event.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</time>
+                                  <span>{activityLabel(event)}</span>
+                                </li>
+                              ))}
+                            </ol>
+                          )}
                         </div>
                         {view.documentId && onOpenDocument && (
                           <TaskDocumentList
@@ -531,6 +625,21 @@ export function DelegateBatchCard({
                           />
                         )}
                       </>
+                    )}
+
+                    {configuration && (
+                      <div className="delegation-configuration" role="alert">
+                        <CircleAlert size={15} />
+                        <div>
+                          <strong>{configuration.title}</strong>
+                          {configuration.detail && <span>{configuration.detail}</span>}
+                        </div>
+                        {onOpenSettings && (
+                          <button type="button" onClick={() => onOpenSettings(configuration.settingsTab)}>
+                            打开对应设置
+                          </button>
+                        )}
+                      </div>
                     )}
 
                     {retryPickerTaskId === task.id && onRetry && (
@@ -854,6 +963,11 @@ export function DelegateBatchCard({
                   <span>更深层协作</span>
                   {batch.deepTasks.map(task => {
                     const view = presentRuntimeTask(task);
+                    const detailsOpen = detailTaskIds.has(task.id);
+                    const events = taskEvents[task.id] ?? [];
+                    const configuration = task.status === 'waiting_configuration'
+                      ? configurationGuidance(task)
+                      : undefined;
                     return (
                       <div
                         id={`delegation-task-${task.id}`}
@@ -871,10 +985,35 @@ export function DelegateBatchCard({
                             {view.documentTitle}
                           </button>
                         ) : <span>{view.documentTitle}</span>}
-                        <span className={`delegation-state is-${view.statusIcon}`}>
-                          <StatusIcon kind={view.statusIcon} />
-                          {view.statusLabel}
-                        </span>
+                        <div className="delegation-deep-actions">
+                          <span className={`delegation-state is-${view.statusIcon}`}>
+                            <StatusIcon kind={view.statusIcon} />
+                            {view.statusLabel}
+                          </span>
+                          <button type="button" onClick={() => toggleDetails(task.id)}>
+                            {detailsOpen ? '收起' : '查看进度'}
+                          </button>
+                        </div>
+                        {detailsOpen && (
+                          <div className="delegation-deep-details">
+                            <strong>正在做什么</strong>
+                            <span>{view.statusLabel} · {task.objective}</span>
+                            {events.slice(-5).map(event => (
+                              <span key={event.eventId}>{activityLabel(event)}</span>
+                            ))}
+                          </div>
+                        )}
+                        {configuration && (
+                          <div className="delegation-deep-configuration" role="alert">
+                            <strong>{configuration.title}</strong>
+                            {configuration.detail && <span>{configuration.detail}</span>}
+                            {onOpenSettings && (
+                              <button type="button" onClick={() => onOpenSettings(configuration.settingsTab)}>
+                                打开对应设置
+                              </button>
+                            )}
+                          </div>
+                        )}
                       </div>
                     );
                   })}

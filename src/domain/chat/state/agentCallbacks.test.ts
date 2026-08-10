@@ -30,6 +30,25 @@ const record: GeneratedImageRecord = {
   createdAt: '2026-07-21T00:00:00Z',
 };
 
+describe('thinking event projection', () => {
+  it('starts the timeline before a reasoning summary delta arrives', () => {
+    let messages: ChatMessage[] = [{ role: 'assistant', content: '' }];
+    const callbacks = buildAgentStreamCallbacks({
+      getMessages: () => messages,
+      setMessages: next => { messages = next; },
+      assistantIndex: 0,
+      target: 'session',
+    });
+
+    callbacks.onThinkingStart?.();
+    callbacks.onThinkingDelta?.('摘要');
+
+    const item = (messages[0].timeline ?? [])[0];
+    expect(item.kind === 'thinking' && item.text).toBe('摘要');
+    expect(item.kind === 'thinking' && item.status).toBe('running');
+  });
+});
+
 describe('image tool projection', () => {
   it('keeps the legacy URL and the structured generation record together', async () => {
     let messages: ChatMessage[] = [{ role: 'assistant', content: '' }];

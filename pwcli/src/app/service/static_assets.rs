@@ -31,8 +31,16 @@ async fn asset_or_spa(Path(path): Path<String>) -> Response<Body> {
             .body(Body::from(r#"{"success":false,"error":"Not found"}"#))
             .expect("static 404 response");
     }
-    if generated_asset(path.trim_start_matches('/')).is_some() {
-        asset_response(path.trim_start_matches('/'))
+    let path = path.trim_start_matches('/');
+    if generated_asset(path).is_some() {
+        asset_response(path)
+    } else if path.starts_with("assets/") {
+        Response::builder()
+            .status(StatusCode::NOT_FOUND)
+            .header(header::CONTENT_TYPE, "text/plain; charset=utf-8")
+            .header(header::CACHE_CONTROL, "no-store")
+            .body(Body::from("Asset not found; reload the application."))
+            .expect("missing asset response")
     } else {
         asset_response("index.html")
     }
@@ -72,5 +80,11 @@ mod tests {
         let asset = generated_asset("index.html").expect("run npm run build before cargo test");
         assert_eq!(asset.content_type, "text/html; charset=utf-8");
         assert!(asset.bytes.starts_with(b"<!doctype html>"));
+    }
+
+    #[tokio::test]
+    async fn missing_hashed_asset_returns_not_found() {
+        let response = asset_or_spa(Path("assets/old-build.js".into())).await;
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
     }
 }

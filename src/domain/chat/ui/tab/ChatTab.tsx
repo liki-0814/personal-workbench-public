@@ -32,6 +32,7 @@ import { isSessionTurnRunning, useSessionRuntime } from '../../state/sessionRunt
 import { useSessionJournalSync } from '../../state/sessionJournalSync';
 import type {
   RuntimeTask,
+  RuntimeTaskEvent,
   RuntimeTaskExecutor,
   RuntimeTaskResult,
   RuntimeTaskReviewAction,
@@ -75,6 +76,7 @@ interface Props {
   onOpenTodo: (id: string) => void;
   isDark: boolean;
   runtimeTasks: RuntimeTask[];
+  runtimeTaskEvents?: Record<string, RuntimeTaskEvent[]>;
   attentionCounts?: Record<string, number>;
   onCancelRuntimeTask: (taskId: string) => Promise<void>;
   onRetryRuntimeTask: (
@@ -93,6 +95,7 @@ interface Props {
       memoryEntries?: RuntimeTaskResult['decisionCandidates'];
     },
   ) => Promise<void>;
+  onOpenRuntimeSettings?: (tab: 'ai' | 'integrations') => void;
   runtimeNavigation?: RuntimeNavigationRequest;
   onRuntimeNavigationHandled?: (id: number) => void;
 }
@@ -247,12 +250,14 @@ export default function ChatTab({
   onOpenTodo,
   isDark,
   runtimeTasks,
+  runtimeTaskEvents,
   attentionCounts,
   onCancelRuntimeTask,
   onRetryRuntimeTask,
   onResolveRuntimeTaskDecision,
   onFollowUpRuntimeTask,
   onReviewRuntimeTask,
+  onOpenRuntimeSettings,
   runtimeNavigation,
   onRuntimeNavigationHandled,
 }: Props) {
@@ -1153,11 +1158,13 @@ export default function ChatTab({
                   <div className="delegation-timeline-entry" aria-label="协作者进度">
                     <DelegateBatchCard
                       tasks={sessionRuntimeTasks}
+                      taskEvents={runtimeTaskEvents}
                       onCancel={onCancelRuntimeTask}
                       onRetry={onRetryRuntimeTask}
                       onResolveDecision={onResolveRuntimeTaskDecision}
                       onFollowUp={onFollowUpRuntimeTask}
                       onReview={onReviewRuntimeTask}
+                      onOpenSettings={onOpenRuntimeSettings}
                       onOpenFile={openStudio}
                       onOpenDocument={(documentId, task, title) => openTaskDocument(documentId, task, title)}
                       onOpenDiff={openTaskDiff}

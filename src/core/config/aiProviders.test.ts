@@ -9,6 +9,10 @@ import {
   needsProxy,
   templatesForProtocol,
   validateProviderConfig,
+  getModelInfo,
+  modelSelectionKey,
+  resolveModelSelection,
+  setProviders,
   type AiProvider,
 } from './aiProviders';
 
@@ -39,6 +43,30 @@ describe('supportsDeferredTools', () => {
   });
 });
 
+describe('provider-scoped model identity', () => {
+  it('routes duplicate model ids only when the provider is explicit', () => {
+    setProviders([
+      provider('Provider A', 'https://a.example/v1', {
+        id: 'provider-a',
+        models: [{ id: 'shared-model', name: 'Shared Model' }],
+      }),
+      provider('Provider B', 'https://b.example/v1', {
+        id: 'provider-b',
+        models: [{ id: 'shared-model', name: 'Shared Model' }],
+      }),
+    ]);
+    try {
+      const key = modelSelectionKey({ id: 'shared-model', providerId: 'provider-b' });
+      expect(key).toBe('provider:provider-b/shared-model');
+      expect(resolveModelSelection(key)).toBe(key);
+      expect(getModelInfo(key)).toMatchObject({ providerId: 'provider-b', baseUrl: 'https://b.example/v1' });
+      expect(getModelInfo('shared-model')).toMatchObject({ id: '', name: '请选择具体服务商' });
+    } finally {
+      setProviders([]);
+    }
+  });
+});
+
 describe('thinking levels', () => {
   it('keeps Pi ordering and hides levels the model marks unsupported', () => {
     const levels = supportedThinkingLevelsForModel({
@@ -66,6 +94,7 @@ describe('normalizeProviderProtocol', () => {
     expect(normalizeProviderProtocol('openai')).toBe('openai_chat');
     expect(normalizeProviderProtocol('anthropic')).toBe('anthropic_messages');
     expect(normalizeProviderProtocol('openai-responses')).toBe('openai_responses');
+    expect(normalizeProviderProtocol('openai-codex-responses')).toBe('openai_responses');
     expect(normalizeProviderProtocol('google-generative')).toBe('google_generative');
   });
 });

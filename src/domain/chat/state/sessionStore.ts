@@ -3,7 +3,7 @@ import { load, save, KEYS, useStorageSync } from '@/core/storage';
 import { generateId } from '@/core/utils/id';
 import { now } from '@/core/utils/date';
 import type { ChatSession, ChatMessage, AiModel, LocalProject } from '../types';
-import { getModels } from '@/core/config';
+import { getModels, modelSelectionKey } from '@/core/config';
 import { apiFetch } from '@/core/utils';
 
 // --- Throttled persistence for streaming (module-level singleton) ---
@@ -223,7 +223,7 @@ export function useChatSessions() {
       id,
       title: '新对话',
       messages: [],
-      model: model || getModels()[0]?.id || '',
+      model: model || (getModels()[0] ? modelSelectionKey(getModels()[0]) : ''),
       ...options,
       projectId: project?.id,
       workspaceStatus: options.cwd ? 'ready' : 'awaiting_binding',
@@ -391,7 +391,7 @@ export function useChatSessions() {
       id: snapshot.id,
       title: snapshot.name || '后台会话',
       messages: snapshot.messages,
-      model: getModels()[0]?.id || '',
+      model: getModels()[0] ? modelSelectionKey(getModels()[0]) : '',
       projectId: project?.id,
       cwd: snapshot.cwd,
       workspaceStatus: snapshot.cwd ? 'ready' : 'awaiting_binding',

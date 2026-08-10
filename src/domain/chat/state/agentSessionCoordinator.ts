@@ -1,5 +1,15 @@
 export type AgentSessionFactory = (name: string, cwd: string) => Promise<string>;
 
+export function formatAgentSessionCreationError(error: unknown): string {
+  const detail = error instanceof Error ? error.message.trim() : '';
+  const daemonUnavailable = error instanceof TypeError
+    || /failed to fetch|networkerror|load failed|connection refused|无法连接|网络错误/i.test(detail);
+
+  if (daemonUnavailable) return '无法连接 daemon，请运行 pwcli daemon start';
+  if (detail) return `创建会话失败：${detail}`;
+  return '创建会话失败，请查看 daemon 日志';
+}
+
 /**
  * Coalesces concurrent daemon-session creation for the same local chat.
  * The coordinator is intentionally keyed by both chat id and canonical cwd so

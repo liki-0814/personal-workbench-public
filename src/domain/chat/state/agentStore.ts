@@ -3,7 +3,7 @@ import type { ChatMessage, ContextUsageSnapshot, DecisionOption, DecisionPromptR
 import type { DocumentRef } from '@/domain/documents';
 import { requestSyncFromServer } from '@/core/storage';
 import { getModelInfo } from '@/core/config';
-import type { ThinkingLevel } from '@/core/config';
+import type { ResponseVerbosity, ThinkingLevel } from '@/core/config';
 import { getBackendUrl } from '@/core/config/backendUrl';
 import { apiFetch } from '@/core/utils';
 
@@ -24,6 +24,8 @@ export interface AgentChatOptions {
   thinking?: boolean;
   /** Pi-style reasoning depth, mapped to the selected model's supported wire value. */
   thinkingLevel?: ThinkingLevel;
+  /** Visible answer detail for Responses providers; independent of reasoning depth. */
+  responseVerbosity?: ResponseVerbosity;
   /** 会话级工作目录（绝对路径），注入 system prompt 并作为 code_agent 默认 cwd */
   cwd?: string;
   requirePermissionApproval?: boolean;
@@ -34,6 +36,7 @@ export interface AgentChatOptions {
   onAssistantSegmentClassified?: (round: number, kind: 'narration' | 'candidate' | 'final') => void;
   onCandidateDisposition?: (round: number, disposition: 'promoted' | 'discarded' | 'superseded') => void;
   onRuntimeUpdate?: (update: { callIndex: number; thinkingLevel: ThinkingLevel }) => void;
+  onThinkingStart?: () => void;
   onThinkingDelta?: (delta: string) => void;
   onStreamReset?: (reason: string) => void;
   onToolCall?: (toolCall: { id: string; name: string; arguments: string }) => void;
@@ -55,7 +58,11 @@ export interface AgentChatOptions {
   onError?: (error: string) => void;
 }
 
-export function buildProviderOverride(model?: string, thinkingLevel?: ThinkingLevel) {
+export function buildProviderOverride(
+  model?: string,
+  thinkingLevel?: ThinkingLevel,
+  responseVerbosity?: ResponseVerbosity,
+) {
   if (!model) return undefined;
   const info = getModelInfo(model);
   if (!info) return undefined;
@@ -65,6 +72,7 @@ export function buildProviderOverride(model?: string, thinkingLevel?: ThinkingLe
     name: info.providerName,
     model: info.id,
     thinking_level: thinkingLevel,
+    response_verbosity: responseVerbosity,
   };
 }
 
@@ -99,7 +107,11 @@ export function useAgentChat() {
             })),
             system_prompt: options.systemPrompt,
             session_name: options.sessionName,
-            provider_override: buildProviderOverride(options.model, options.thinkingLevel),
+            provider_override: buildProviderOverride(
+              options.model,
+              options.thinkingLevel,
+              options.responseVerbosity,
+            ),
             thinking: options.thinking ?? false,
             cwd: options.cwd || undefined,
             require_permission_approval: options.requirePermissionApproval ?? false,
@@ -141,6 +153,9 @@ export function useAgentChat() {
               try {
                 const parsed = JSON.parse(data);
                 switch (currentEvent) {
+                  case 'thinking_start':
+                    options.onThinkingStart?.();
+                    break;
                   case 'assistant_segment_start':
                     if (Number.isFinite(parsed.round)) {
                       options.onAssistantSegmentStart?.(parsed.round);

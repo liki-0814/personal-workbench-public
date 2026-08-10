@@ -163,11 +163,19 @@ pub async fn execute(command: DaemonCommand) -> Result<()> {
 pub async fn start() -> Result<()> {
     let current = status().await;
     if current.running && current.healthy {
+        if daemon_version_matches(&current, env!("CARGO_PKG_VERSION")) {
+            println!(
+                "pwcli daemon is already running at {}",
+                current.http_address
+            );
+            return Ok(());
+        }
         println!(
-            "pwcli daemon is already running at {}",
-            current.http_address
+            "pwcli daemon version changed (running: {}, installed: {}); restarting",
+            current.version.as_deref().unwrap_or("unknown"),
+            env!("CARGO_PKG_VERSION")
         );
-        return Ok(());
+        stop().await?;
     }
 
     let paths = DaemonPaths::current();
@@ -213,6 +221,14 @@ pub async fn start() -> Result<()> {
         }
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
+}
+
+fn daemon_version_matches(status: &DaemonStatus, expected: &str) -> bool {
+    status
+        .version
+        .as_deref()
+        .and_then(|version| version.split_whitespace().next())
+        .is_some_and(|version| version == expected)
 }
 
 pub async fn stop() -> Result<()> {
@@ -866,6 +882,26 @@ mod tests {
         assert!(is_pwcli_daemon_command("pwcli daemon run"));
         assert!(!is_pwcli_daemon_command("pwcli daemon status"));
         assert!(!is_pwcli_daemon_command("other daemon run"));
+    }
+
+    #[test]
+    fn daemon_version_match_uses_the_semver_prefix() {
+        let directory = PathBuf::from("/tmp/pwcli-test-data");
+        let status = DaemonStatus {
+            running: true,
+            pid: Some(42),
+            instance_id: Some("instance".to_string()),
+            version: Some("0.1.6 (commit abc, built today)".to_string()),
+            started_at: None,
+            http_address: "http://127.0.0.1:23817".to_string(),
+            data_dir: directory.clone(),
+            config_file: directory.join("config.toml"),
+            active_tasks: 0,
+            active_acp_sessions: 0,
+            healthy: true,
+        };
+        assert!(daemon_version_matches(&status, "0.1.6"));
+        assert!(!daemon_version_matches(&status, "0.1.7"));
     }
 
     #[test]

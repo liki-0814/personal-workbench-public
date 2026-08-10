@@ -131,6 +131,8 @@ pub struct AiSection {
     pub mineru_token: String,
     #[serde(default)]
     pub response_language: ResponseLanguage,
+    #[serde(default)]
+    pub response_verbosity: ResponseVerbosity,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
@@ -142,6 +144,15 @@ pub enum ResponseLanguage {
     English,
     #[serde(rename = "auto")]
     Auto,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum ResponseVerbosity {
+    Low,
+    #[default]
+    Medium,
+    High,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
@@ -301,6 +312,10 @@ pub struct CodeAgentSection {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct DelegationSection {
+    /// False for legacy/migrated configs where the user never explicitly
+    /// chose an executor allow-list in the current settings UI.
+    #[serde(default)]
+    pub manage_executors_explicitly: bool,
     #[serde(default = "default_enabled_executors")]
     pub enabled_executors: Vec<String>,
     #[serde(default = "default_cli_priority")]
@@ -314,6 +329,7 @@ pub struct DelegationSection {
 impl Default for DelegationSection {
     fn default() -> Self {
         Self {
+            manage_executors_explicitly: false,
             enabled_executors: default_enabled_executors(),
             cli_priority: default_cli_priority(),
             roles: default_delegation_roles(),
@@ -330,6 +346,7 @@ impl DelegationSection {
         enabled_executors.push("pwcli".to_string());
         enabled_executors.extend(cli_priority.iter().cloned());
         Self {
+            manage_executors_explicitly: false,
             enabled_executors,
             cli_priority,
             ..Self::default()
@@ -696,6 +713,11 @@ fn extract_typed(root: &Value) -> LocalConfig {
                     out.ai.moa = Some(parsed);
                 }
             }
+            if let Some(verbosity) = ai.get("responseVerbosity") {
+                if let Ok(parsed) = serde_json::from_value::<ResponseVerbosity>(verbosity.clone()) {
+                    out.ai.response_verbosity = parsed;
+                }
+            }
         }
     }
 
@@ -908,6 +930,7 @@ mod tests {
         cfg.tools.any_search.api_key = "anysearch-test-key".into();
         cfg.ai.mineru_token = "tok-xyz".into();
         cfg.ai.response_language = ResponseLanguage::English;
+        cfg.ai.response_verbosity = ResponseVerbosity::High;
         cfg.memory.max_results = 9;
         cfg.features.auto_memory_extract = false;
 
@@ -933,6 +956,22 @@ mod tests {
         assert_eq!(
             serde_json::to_value(ResponseLanguage::Auto).unwrap(),
             serde_json::json!("auto")
+        );
+    }
+
+    #[test]
+    fn response_verbosity_serializes_supported_values() {
+        assert_eq!(
+            serde_json::to_value(ResponseVerbosity::Low).unwrap(),
+            serde_json::json!("low")
+        );
+        assert_eq!(
+            serde_json::to_value(ResponseVerbosity::Medium).unwrap(),
+            serde_json::json!("medium")
+        );
+        assert_eq!(
+            serde_json::to_value(ResponseVerbosity::High).unwrap(),
+            serde_json::json!("high")
         );
     }
 

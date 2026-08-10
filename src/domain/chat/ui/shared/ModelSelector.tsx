@@ -1,5 +1,6 @@
 import { useMemo } from 'react';
 import { useChatModels } from '@/core/config/hooks';
+import { modelSelectionKey, resolveModelSelection } from '@/core/config/aiProviders';
 import { SelectField } from '@/shell';
 import type { AiModel } from '../../types';
 
@@ -15,12 +16,13 @@ const MENU_MIN_WIDTH = 220;
 export default function ModelSelector({ value, onChange, className, size = 'md' }: Props) {
   const chatModels = useChatModels();
   const modelOptions = useMemo(
-    () => chatModels.map(m => ({ value: m.id, label: m.name, group: m.providerName ?? 'Models' })),
+    () => chatModels.map(m => ({ value: modelSelectionKey(m), label: m.name, group: m.providerName ?? 'Models' })),
     [chatModels]
   );
 
   const resolvedValue = useMemo(() => {
-    const byId = modelOptions.find(m => m.value === value);
+    const selection = resolveModelSelection(value);
+    const byId = modelOptions.find(m => m.value === selection);
     if (byId) return byId.value;
     const byLabel = modelOptions.find(m => m.label === value);
     return byLabel?.value ?? value;

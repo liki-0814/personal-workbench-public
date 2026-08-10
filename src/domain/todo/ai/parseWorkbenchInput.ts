@@ -1,5 +1,5 @@
 import { callLlm } from '@/core/llm';
-import { getModels, getFeatureModel } from '@/core/config';
+import { getModels, getFeatureModel, modelSelectionKey } from '@/core/config';
 
 export interface WorkbenchTaskDraft {
   intent: 'task';
@@ -102,7 +102,8 @@ export function parseWorkbenchResponse(content: string): WorkbenchAiDraft {
 }
 
 export async function parseWorkbenchInput(description: string, context: { availableGoals?: Array<{ title: string; keyResults: Array<{ code: string; title: string }> }> } = {}): Promise<WorkbenchAiDraft> {
-  const model = getFeatureModel('task') || getModels()[0]?.id;
+  const fallback = getModels()[0];
+  const model = getFeatureModel('task') || (fallback ? modelSelectionKey(fallback) : '');
   if (!model) throw new Error('未配置 AI 模型');
 
   const now = new Date();

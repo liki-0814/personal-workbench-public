@@ -410,6 +410,12 @@ fn validate_managed_patch(incoming: &Value) -> Result<()> {
             _ => anyhow::bail!("ai.responseLanguage must be one of: zh-CN, en, auto"),
         }
     }
+    if let Some(value) = incoming.pointer("/ai/responseVerbosity") {
+        match value.as_str() {
+            Some("low" | "medium" | "high") => {}
+            _ => anyhow::bail!("ai.responseVerbosity must be one of: low, medium, high"),
+        }
+    }
     if let Some(value) = incoming.pointer("/permissions/agent_mode") {
         match value.as_str() {
             Some("prompt" | "risk" | "full") => {}
@@ -460,7 +466,12 @@ fn pick_managed(root: &Value) -> Value {
         root,
         &mut output,
         "ai",
-        &["moa", "mineruToken", "responseLanguage"],
+        &[
+            "moa",
+            "mineruToken",
+            "responseLanguage",
+            "responseVerbosity",
+        ],
     );
     copy_section(
         root,
@@ -1195,6 +1206,20 @@ mod tests {
         .is_ok());
         assert!(validate_managed_patch(&json!({
             "ai": { "responseLanguage": "fr" }
+        }))
+        .is_err());
+    }
+
+    #[test]
+    fn validates_response_verbosity() {
+        for verbosity in ["low", "medium", "high"] {
+            assert!(validate_managed_patch(&json!({
+                "ai": { "responseVerbosity": verbosity }
+            }))
+            .is_ok());
+        }
+        assert!(validate_managed_patch(&json!({
+            "ai": { "responseVerbosity": "verbose" }
         }))
         .is_err());
     }

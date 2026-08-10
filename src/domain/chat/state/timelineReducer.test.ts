@@ -22,6 +22,20 @@ function tools(msg: ChatMessage): TimelineToolItem[] {
 }
 
 describe('ordering & nesting', () => {
+  it('counts thinking from model-call start before the first summary delta', () => {
+    let msg = base();
+    msg = reduceTimeline(msg, { type: 'thinking_start' });
+    const started = (msg.timeline ?? [])[0];
+    expect(started.kind === 'thinking' && started.text).toBe('');
+    expect(started.kind === 'thinking' && started.status).toBe('running');
+    const startedAt = started.startedAt;
+
+    msg = reduceTimeline(msg, { type: 'thinking_delta', delta: 'summary' });
+    const updated = (msg.timeline ?? [])[0];
+    expect(updated.kind === 'thinking' && updated.text).toBe('summary');
+    expect(updated.startedAt).toBe(startedAt);
+  });
+
   it('interleaves thinking / text / tool groups in arrival order and nests thinking inside open groups', () => {
     let msg = base();
     msg = reduceTimeline(msg, { type: 'segment_start', round: 1 });

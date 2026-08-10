@@ -216,7 +216,8 @@ fn candidate_error(
     executor: &str,
     capabilities: &[ExecutorCapabilities],
 ) -> Option<String> {
-    if !contains_executor(&config.enabled_executors, executor) {
+    if config.manage_executors_explicitly && !contains_executor(&config.enabled_executors, executor)
+    {
         return Some(format!("executor {executor} is not enabled"));
     }
     let Some(capability) = find_capability(capabilities, executor) else {
@@ -331,12 +332,20 @@ fn configured_role<'a>(config: &'a DelegationSection, requested: &'a str) -> &'a
 
 fn configured_cli_priority(config: &DelegationSection) -> Vec<String> {
     let mut seen = HashSet::new();
-    config
+    let mut priority = config
         .cli_priority
         .iter()
         .map(|executor| canonical_executor(executor))
         .filter(|executor| executor != "pwcli" && seen.insert(executor.clone()))
-        .collect()
+        .collect::<Vec<_>>();
+    if !config.manage_executors_explicitly {
+        for executor in ["codex", "qoder", "kimi"] {
+            if seen.insert(executor.to_string()) {
+                priority.push(executor.to_string());
+            }
+        }
+    }
+    priority
 }
 
 fn canonical_executor(executor: &str) -> String {
@@ -407,6 +416,7 @@ mod tests {
     #[test]
     fn explicit_executor_never_falls_back() {
         let mut config = DelegationSection::default();
+        config.manage_executors_explicitly = true;
         config
             .enabled_executors
             .retain(|executor| executor != "codex");
@@ -424,6 +434,19 @@ mod tests {
                 reason: "executor codex is not enabled".to_string(),
             })
         );
+    }
+
+    #[test]
+    fn migrated_executor_list_does_not_hide_newly_detected_cli() {
+        let mut config = DelegationSection::default();
+        config.enabled_executors = vec!["pwcli".into(), "qoder".into()];
+        config.cli_priority = vec!["qoder".into()];
+        let mut request = RoutingRequest::new("engineer");
+        request.executor = Some("codex".into());
+
+        let snapshot = resolved(resolve_routing(&config, &request, &[capability("codex")]));
+
+        assert_eq!(snapshot.resolved_executor_id, "codex");
     }
 
     #[test]

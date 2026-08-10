@@ -12,6 +12,7 @@ pub type SseStream = axum::response::Sse<Box<dyn Stream<Item = Result<Event, Inf
 pub fn stream_event_to_sse(event: StreamEvent) -> Event {
     match event {
         StreamEvent::FirstToken => Event::default().event("first_token").data("{}"),
+        StreamEvent::ThinkingStart => Event::default().event("thinking_start").data("{}"),
         StreamEvent::TextDelta(delta) => Event::default()
             .event("text_delta")
             .data(format!(r#"{{"delta":{}}}"#, serde_json::json!(delta))),
@@ -212,6 +213,15 @@ mod tests {
         let bytes = event_to_bytes(evt).await;
         let fields = parse_sse_fields(std::str::from_utf8(&bytes).unwrap());
         assert_eq!(fields.get("event").unwrap(), "first_token");
+        assert_eq!(fields.get("data").unwrap(), "{}");
+    }
+
+    #[tokio::test]
+    async fn test_thinking_start() {
+        let evt = stream_event_to_sse(StreamEvent::ThinkingStart);
+        let bytes = event_to_bytes(evt).await;
+        let fields = parse_sse_fields(std::str::from_utf8(&bytes).unwrap());
+        assert_eq!(fields.get("event").unwrap(), "thinking_start");
         assert_eq!(fields.get("data").unwrap(), "{}");
     }
 

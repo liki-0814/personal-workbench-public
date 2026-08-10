@@ -37,7 +37,34 @@ import { apiFetch } from '@/core/utils';
 import { resolveInitialWorkspace } from '@/shell/state/workspaceNavigation';
 import type { TodoItem, AppTab } from './types';
 
-const ChatTab = lazy(() => import('@/domain/chat/ui/tab/ChatTab'));
+const CHAT_CHUNK_RELOAD_KEY = 'pwb_chat_chunk_reload_at';
+let chatTabImport: ReturnType<typeof importChatTab> | undefined;
+
+function importChatTab() {
+  return import('@/domain/chat/ui/tab/ChatTab');
+}
+
+function loadChatTab() {
+  if (chatTabImport) return chatTabImport;
+  chatTabImport = importChatTab()
+    .then(module => {
+      sessionStorage.removeItem(CHAT_CHUNK_RELOAD_KEY);
+      return module;
+    })
+    .catch(error => {
+      chatTabImport = undefined;
+      const lastReload = Number(sessionStorage.getItem(CHAT_CHUNK_RELOAD_KEY) || 0);
+      if (Date.now() - lastReload > 60_000) {
+        sessionStorage.setItem(CHAT_CHUNK_RELOAD_KEY, String(Date.now()));
+        window.location.reload();
+        return new Promise<Awaited<ReturnType<typeof importChatTab>>>(() => undefined);
+      }
+      throw error;
+    });
+  return chatTabImport;
+}
+
+const ChatTab = lazy(loadChatTab);
 const TodoTab = lazy(() => import('@/domain/todo/ui/tab/TodoTab'));
 
 function TabLoading() {
@@ -65,6 +92,7 @@ function WorkbenchApp() {
   const [initialWorkspace] = useState(() => resolveInitialWorkspace(sessionStorage.getItem('pwb_active_tab')));
   const [activeTab, setActiveTab] = useState<AppTab>(initialWorkspace.activeTab);
   const [showSettings, setShowSettings] = useState(false);
+  const [settingsInitialTab, setSettingsInitialTab] = useState<'ai' | 'integrations'>('ai');
   const [showToolbox, setShowToolbox] = useState(initialWorkspace.openToolbox);
   const [workbenchView, setWorkbenchView] = useState<WorkbenchView>('day_plan');
   const workbenchViewTouchedRef = useRef(false);
@@ -73,6 +101,14 @@ function WorkbenchApp() {
   const [boundTodoId, setBoundTodoId] = useState<string | null>(null);
   const [runtimeNavigation, setRuntimeNavigation] = useState<RuntimeNavigationRequest>();
   const runtimeNavigationIdRef = useRef(0);
+
+  useEffect(() => {
+    // Chat is a sizeable lazy chunk. Load it from the local daemon while the
+    // workbench is idle, and detect stale chunk hashes immediately after a
+    // daemon upgrade instead of leaving the user on an endless fallback.
+    const timer = window.setTimeout(() => { void loadChatTab(); }, 300);
+    return () => window.clearTimeout(timer);
+  }, []);
 
   useEffect(() => {
     sessionStorage.setItem('pwb_active_tab', activeTab);
@@ -276,7 +312,10 @@ function WorkbenchApp() {
           onTabChange={setActiveTab}
           theme={theme}
           onToggleMode={toggleMode}
-          onOpenSettings={() => setShowSettings(true)}
+          onOpenSettings={() => {
+            setSettingsInitialTab('ai');
+            setShowSettings(true);
+          }}
           onOpenToolbox={() => setShowToolbox(true)}
         />
 
@@ -308,12 +347,17 @@ function WorkbenchApp() {
                     onOpenTodo={openTodo}
                     isDark={theme.mode === 'dark'}
                     runtimeTasks={taskRuntime.tasks}
+                    runtimeTaskEvents={taskRuntime.eventsByTaskId}
                     attentionCounts={sessionAttentionCounts}
                     onCancelRuntimeTask={taskRuntime.cancel}
                     onRetryRuntimeTask={taskRuntime.retry}
                     onResolveRuntimeTaskDecision={taskRuntime.resolveDecision}
                     onFollowUpRuntimeTask={taskRuntime.followUp}
                     onReviewRuntimeTask={taskRuntime.review}
+                    onOpenRuntimeSettings={tab => {
+                      setSettingsInitialTab(tab);
+                      setShowSettings(true);
+                    }}
                     runtimeNavigation={runtimeNavigation}
                     onRuntimeNavigationHandled={id => {
                       setRuntimeNavigation(current => current?.id === id ? undefined : current);
@@ -425,8 +469,15 @@ function WorkbenchApp() {
         />
       </div>
 
-      <SettingsModal open={showSettings} onClose={() => setShowSettings(false)} />
-      <ModelUpdateDialog onOpenSettings={() => setShowSettings(true)} />
+      <SettingsModal
+        open={showSettings}
+        initialTab={settingsInitialTab}
+        onClose={() => setShowSettings(false)}
+      />
+      <ModelUpdateDialog onOpenSettings={() => {
+        setSettingsInitialTab('ai');
+        setShowSettings(true);
+      }} />
       <ToolboxCenter
         open={showToolbox}
         onClose={() => setShowToolbox(false)}

@@ -71,6 +71,9 @@ export function buildAgentStreamCallbacks(params: AgentStreamCallbackParams) {
       if (current) commit({ ...current, thinkingLevel: update.thinkingLevel });
       onRuntimeUpdate?.(update);
     },
+    onThinkingStart: () => {
+      apply({ type: 'thinking_start' });
+    },
     onDelta: (delta: string) => {
       apply({ type: 'text_delta', delta, round: activeRound });
     },

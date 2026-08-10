@@ -87,6 +87,8 @@ pub struct AuthStatus {
     pub status: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub account_label: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub credential_hint: Option<String>,
 }
 
 #[derive(Clone)]
@@ -153,10 +155,11 @@ impl AuthManager {
         let reference = Self::credential_reference(provider);
         let credential = self.store.read(&reference)?;
         Ok(match credential {
-            Some(Credential::ApiKey { .. }) => AuthStatus {
+            Some(Credential::ApiKey { key }) => AuthStatus {
                 method: "api_key".into(),
                 status: "connected".into(),
                 account_label: None,
+                credential_hint: Some(masked_key_hint(&key)),
             },
             Some(Credential::OAuth(value)) => AuthStatus {
                 method: "oauth".into(),
@@ -166,6 +169,7 @@ impl AuthManager {
                     "connected".into()
                 },
                 account_label: value.account_label,
+                credential_hint: None,
             },
             None => AuthStatus {
                 method: if matches!(
@@ -178,6 +182,7 @@ impl AuthManager {
                 },
                 status: "disconnected".into(),
                 account_label: None,
+                credential_hint: None,
             },
         })
     }
@@ -1000,6 +1005,18 @@ impl AuthManager {
     }
 }
 
+fn masked_key_hint(key: &str) -> String {
+    let suffix: String = key
+        .chars()
+        .rev()
+        .take(4)
+        .collect::<String>()
+        .chars()
+        .rev()
+        .collect();
+    format!("••••{suffix}")
+}
+
 pub fn antigravity_oauth_configured() -> bool {
     antigravity_oauth_config().is_ok()
 }
@@ -1178,6 +1195,12 @@ fn validate_http_url(value: &str) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn api_key_hint_reveals_only_the_suffix() {
+        assert_eq!(masked_key_hint("sk-secret-1234"), "••••1234");
+        assert_eq!(masked_key_hint("abc"), "••••abc");
+    }
 
     #[test]
     fn parses_manual_codex_inputs() {

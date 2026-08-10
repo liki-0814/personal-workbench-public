@@ -54,6 +54,8 @@ export function normalizeProviderProtocol(protocol: string | undefined | null): 
     case 'openai_compatible':
       return 'openai_chat';
     case 'openai_responses':
+    case 'openai_codex_responses':
+    case 'openai_codex':
     case 'responses':
       return 'openai_responses';
     case 'anthropic':
@@ -398,8 +400,42 @@ export function isImageModel(modelId: string): boolean {
  */
 function findModel(modelIdOrName: string): AiModelInfo | undefined {
   if (!modelIdOrName) return undefined;
+  const scoped = parseModelSelectionKey(modelIdOrName);
+  if (scoped) {
+    return _models.find(model => model.providerId === scoped.providerId && model.id === scoped.modelId);
+  }
   // 用全集查找（包含 enabled === false 的），让已选但被隐藏的模型仍能被 LLM 客户端解析。
-  return _models.find(m => m.id === modelIdOrName || m.name === modelIdOrName);
+  const matches = _models.filter(m => m.id === modelIdOrName || m.name === modelIdOrName);
+  // 旧会话只保存模型 ID：唯一时自动兼容，重名时禁止静默命中第一个 Provider。
+  return matches.length === 1 ? matches[0] : undefined;
+}
+
+const MODEL_SELECTION_PREFIX = 'provider:';
+
+export function modelSelectionKey(model: Pick<AiModelInfo, 'id' | 'providerId'>): string {
+  return model.providerId
+    ? `${MODEL_SELECTION_PREFIX}${encodeURIComponent(model.providerId)}/${encodeURIComponent(model.id)}`
+    : model.id;
+}
+
+function parseModelSelectionKey(value: string): { providerId: string; modelId: string } | undefined {
+  if (!value.startsWith(MODEL_SELECTION_PREFIX)) return undefined;
+  const separator = value.indexOf('/', MODEL_SELECTION_PREFIX.length);
+  if (separator < 0) return undefined;
+  try {
+    return {
+      providerId: decodeURIComponent(value.slice(MODEL_SELECTION_PREFIX.length, separator)),
+      modelId: decodeURIComponent(value.slice(separator + 1)),
+    };
+  } catch {
+    return undefined;
+  }
+}
+
+export function resolveModelSelection(value: string): string {
+  if (!value) return '';
+  const model = findModel(value);
+  return model ? modelSelectionKey(model) : value;
 }
 
 export function isThinkingCapableModel(modelId: string): boolean {
@@ -410,6 +446,15 @@ export function isThinkingCapableModel(modelId: string): boolean {
 
 export const THINKING_LEVEL_ORDER = ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'] as const;
 export type ThinkingLevel = typeof THINKING_LEVEL_ORDER[number];
+
+export const RESPONSE_VERBOSITY_ORDER = ['low', 'medium', 'high'] as const;
+export type ResponseVerbosity = typeof RESPONSE_VERBOSITY_ORDER[number];
+
+export const RESPONSE_VERBOSITY_LABELS: Record<ResponseVerbosity, string> = {
+  low: '简洁',
+  medium: '适中',
+  high: '详细',
+};
 
 export const THINKING_LEVEL_LABELS: Record<ThinkingLevel, string> = {
   off: '关闭',
@@ -465,11 +510,11 @@ export function supportsKimiDeferredTools(provider: AiProvider): boolean {
 
 export function resolveModelId(value: string): string {
   if (!value) return '';
+  const scoped = parseModelSelectionKey(value);
+  if (scoped) return scoped.modelId;
   // 用全集解析：disabled 模型仍能正确识别 ID 用于 LLM 客户端。
-  const byId = _models.find(m => m.id === value);
-  if (byId) return byId.id;
-  const byName = _models.find(m => m.name === value);
-  if (byName) return byName.id;
+  const model = findModel(value);
+  if (model) return model.id;
   return value;
 }
 
@@ -479,12 +524,15 @@ export function buildAiRequest(info: AiModelInfo): {
   url: string;
   headers: Record<string, string>;
 } {
+  const providerHeader: Record<string, string> = info.providerId
+    ? { 'X-Provider-Id': info.providerId }
+    : { 'X-Provider-Index': String(info.providerIndex) };
   if (normalizeProviderProtocol(info.provider) === 'anthropic_messages') {
     return {
       url: '/api/proxy/anthropic',
       headers: {
         'Content-Type': 'application/json',
-        'X-Provider-Index': String(info.providerIndex),
+        ...providerHeader,
       },
     };
   }
@@ -493,7 +541,7 @@ export function buildAiRequest(info: AiModelInfo): {
     url: '/api/proxy/openai',
     headers: {
       'Content-Type': 'application/json',
-      'X-Provider-Index': String(info.providerIndex),
+      ...providerHeader,
     },
   };
 }
@@ -505,7 +553,7 @@ const DEFAULT_FEATURE_MODEL = 'qwen3.7-max';
 function getDefaultFeatureModel(): string {
   const models = getModels();
   const found = models.find(m => m.id === DEFAULT_FEATURE_MODEL);
-  return found?.id ?? (models[0]?.id ?? '');
+  return found ? modelSelectionKey(found) : (models[0] ? modelSelectionKey(models[0]) : '');
 }
 
 export type FeatureModelKey = 'task';
@@ -535,8 +583,9 @@ function readStoredModel(storageKey: string): string | null {
     const raw = localStorage.getItem(STORAGE_PREFIX + storageKey);
     if (!raw) return null;
     const value = JSON.parse(raw);
-    if (typeof value === 'string' && getModels().find(m => m.id === value || m.name === value)) {
-      return value;
+    if (typeof value === 'string') {
+      const resolved = resolveModelSelection(value);
+      if (findModel(resolved)) return resolved;
     }
   } catch {
     /* ignore */
@@ -568,10 +617,18 @@ export function setFeatureModel(key: FeatureModelKey, modelId: string): void {
 
 export function getModelInfo(id: string): AiModelInfo {
   // 用全集解析（已选模型若被 disabled 仍能拿到完整 info）；fallback 时用 enabled 视图的第一个。
-  const byId = _models.find(m => m.id === id);
-  if (byId) return byId;
-  const byName = _models.find(m => m.name === id);
-  if (byName) return byName;
+  const selected = findModel(id);
+  if (selected) return selected;
+  if (id) {
+    return {
+      id: '',
+      name: '请选择具体服务商',
+      provider: 'openai_chat',
+      baseUrl: '',
+      apiKey: '',
+      providerIndex: -1,
+    };
+  }
   const enabled = getModels();
   if (enabled.length > 0) return enabled[0];
   if (_models.length > 0) return _models[0];

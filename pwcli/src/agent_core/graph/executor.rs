@@ -1572,7 +1572,9 @@ impl AgentGraph {
         let mut doom_retry_attempt: u32 = 0;
         let mut request_messages = state.messages.clone();
         'retry: loop {
-            ctx.sink.on_thinking_start();
+            if thinking_level.is_enabled() {
+                ctx.sink.on_thinking_start();
+            }
             let mut stream = ctx.llm.chat_stream_with_options(
                 &request_messages,
                 Some(ctx.system_prompt),
@@ -1615,7 +1617,7 @@ impl AgentGraph {
                 };
                 let Some(ev) = maybe_ev else { break };
                 match ev {
-                    StreamEvent::FirstToken => {}
+                    StreamEvent::FirstToken | StreamEvent::ThinkingStart => {}
                     StreamEvent::ThinkingDelta(t) => {
                         ctx.sink.on_thinking_delta(&t);
                     }

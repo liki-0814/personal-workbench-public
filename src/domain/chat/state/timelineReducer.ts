@@ -13,6 +13,7 @@ export const TIMELINE_RESULT_LIMIT = 1000;
 export const TIMELINE_PROGRESS_LIMIT = 200;
 
 export type TimelineEvent =
+  | { type: 'thinking_start' }
   | { type: 'segment_start'; round: number }
   | { type: 'segment_end'; round: number; hasToolCalls: boolean }
   | { type: 'segment_classified'; round: number; kind: 'narration' | 'candidate' | 'final' }
@@ -113,6 +114,19 @@ function appendThinking(
   ];
 }
 
+function startThinking(
+  list: TimelineItem[] | TimelineToolGroupItem['children'],
+  now: number,
+): TimelineItem[] {
+  const arr = list as TimelineItem[];
+  const last = arr[arr.length - 1];
+  if (last && last.kind === 'thinking' && isThinkingOpen(last)) return arr;
+  return [
+    ...arr,
+    { kind: 'thinking' as const, id: nextId('th'), text: '', status: 'running' as const, startedAt: now },
+  ];
+}
+
 function appendText(items: TimelineItem[], delta: string, now: number, round?: number): TimelineItem[] {
   const last = items[items.length - 1];
   if (last && last.kind === 'text' && isTextOpen(last)) {
@@ -194,6 +208,19 @@ export function reduceTimeline(msg: ChatMessage, ev: TimelineEvent): ChatMessage
   let items = msg.timeline ?? [];
 
   switch (ev.type) {
+    case 'thinking_start': {
+      items = closeOpenText(items, now);
+      const found = findOpenGroup(items);
+      if (found) {
+        items = replaceAt(items, found.index, {
+          ...found.group,
+          children: startThinking(found.group.children, now) as TimelineToolGroupItem['children'],
+        });
+      } else {
+        items = startThinking(items, now);
+      }
+      break;
+    }
     case 'segment_start':
       items = closeOpenText(items, now);
       break;

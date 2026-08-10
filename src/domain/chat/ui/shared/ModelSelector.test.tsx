@@ -5,8 +5,8 @@ import ModelSelector from './ModelSelector';
 
 vi.mock('@/core/config/hooks', () => ({
   useChatModels: () => [
-    { id: 'gpt-5', name: 'GPT 5', providerName: 'OpenAI' },
-    { id: 'claude-4', name: 'Claude 4', providerName: 'Anthropic' },
+    { id: 'gpt-5', name: 'GPT 5', providerId: 'openai', providerName: 'OpenAI' },
+    { id: 'claude-4', name: 'Claude 4', providerId: 'anthropic', providerName: 'Anthropic' },
   ],
 }));
 
@@ -42,7 +42,7 @@ describe('ModelSelector', () => {
     await act(async () => listbox.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true })));
     expect(document.activeElement).toBe(options[1]);
     await act(async () => options[1].click());
-    expect(onChange).toHaveBeenCalledWith('claude-4');
+    expect(onChange).toHaveBeenCalledWith('provider:anthropic/claude-4');
     expect(document.querySelector('[role="listbox"]')).toBeNull();
     await act(async () => root.unmount());
   });

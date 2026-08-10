@@ -1,13 +1,13 @@
 import { useState, useEffect, useCallback, useMemo } from 'react';
 import { X, Plus, Trash2, Settings, Server, CheckCircle, AlertCircle, Sparkles, Plug, RotateCcw, MonitorSmartphone, Eye, EyeOff, FolderOpen } from 'lucide-react';
 import { MemorySettingsPanel } from '@/features/memory';
-import type { FeatureModelKey, AppConfig, LocalConfig, LocalConfigSshServer, ResponseLanguage } from '@/core/config';
+import type { FeatureModelKey, AppConfig, LocalConfig, LocalConfigSshServer, ResponseLanguage, ResponseVerbosity } from '@/core/config';
 import {
   useAiModels, FEATURE_MODELS, getFeatureModel, setFeatureModel,
   useAppConfig, setAppConfig,
   useLocalConfig, saveLocalConfig, LOCAL_CONFIG_TOKEN_MASK, normalizeFsBase,
   useMoaConfig, saveMoaConfig, getMoaConfig, getProviderModelOptions, validateMoaConfig,
-  useProviderStore,
+  useProviderStore, modelSelectionKey, resolveModelSelection,
 } from '@/core/config';
 import HarnessMoaSettingsPanel from './HarnessMoaSettingsPanel';
 import ProviderSettingsPanel from './ProviderSettingsPanel';
@@ -21,6 +21,7 @@ import { apiFetch } from '@/core/utils';
 interface Props {
   open: boolean;
   onClose: () => void;
+  initialTab?: 'ai' | 'integrations';
 }
 
 interface DaemonStatus {
@@ -69,7 +70,7 @@ const CODE_AGENT_LABELS: Record<string, string> = {
   kimi: 'Kimi Code',
 };
 
-export default function SettingsModal({ open, onClose }: Props) {
+export default function SettingsModal({ open, onClose, initialTab = 'ai' }: Props) {
   const [tab, setTab] = useState<Tab>('ai');
   const aiModels = useAiModels();
   const providerModelOptions = getProviderModelOptions();
@@ -88,6 +89,7 @@ export default function SettingsModal({ open, onClose }: Props) {
   const [mermaidEnabled, setMermaidEnabledState] = useState<boolean>(getMermaidEnabled);
   const [autoSaving, setAutoSaving] = useState(false);
   const [responseLanguageSaving, setResponseLanguageSaving] = useState(false);
+  const [responseVerbositySaving, setResponseVerbositySaving] = useState(false);
 
   const localConfig = useLocalConfig();
 
@@ -138,13 +140,13 @@ export default function SettingsModal({ open, onClose }: Props) {
   const lcAi = localConfig.ai;
   const delegationEnabledClis = lcTools?.delegation?.enabledExecutors
     ?.filter((executor): executor is 'codex' | 'qoder' | 'kimi' => executor !== 'pwcli');
+  const delegationManagedExplicitly = lcTools?.delegation?.manageExecutorsExplicitly === true;
   const delegationPwcliEnabled = lcTools?.delegation?.enabledExecutors?.includes('pwcli') ?? true;
   const delegationCliPriority = lcTools?.delegation?.cliPriority ?? [];
   const orderedDelegationClis = delegationEnabledClis && [
     ...delegationCliPriority.filter(executor => delegationEnabledClis.includes(executor)),
     ...delegationEnabledClis.filter(executor => !delegationCliPriority.includes(executor)),
   ];
-  const legacyEnabledClis = lcTools?.codeAgent?.enabledBackends;
   const mergedAppConfig: AppConfig & FormFields = {
     // config.json → SQLite cache 来源
     showHiddenFiles: appConfig.showHiddenFiles ?? '',
@@ -152,9 +154,10 @@ export default function SettingsModal({ open, onClose }: Props) {
     codeAgentFast: appConfig.codeAgentFast ?? '',
     // local_config (~/.pwcli/config.json) 唯一真值
     fsBase: normalizeFsBase(lcTools?.fsBase),
-    codeAgentEnabledBackends: orderedDelegationClis ?? (
-      legacyEnabledClis && legacyEnabledClis.length > 0 ? legacyEnabledClis : undefined
-    ),
+    // Legacy configs mirrored an old CLI list into delegation without the
+    // user explicitly disabling newly detected executors. Treat all detected
+    // CLIs as enabled until the current UI records an explicit choice.
+    codeAgentEnabledBackends: delegationManagedExplicitly ? orderedDelegationClis : undefined,
     mineruToken: lcAi?.mineruToken ?? '',
     anySearchApiKey: lcTools?.anySearch?.apiKey ?? '',
     genImageEnabled: lcTools?.genImage?.enabled ?? false,
@@ -213,6 +216,22 @@ export default function SettingsModal({ open, onClose }: Props) {
     }
   };
 
+  const handleResponseVerbosityChange = async (responseVerbosity: ResponseVerbosity) => {
+    if (responseVerbositySaving || responseVerbosity === localConfig.ai?.responseVerbosity) return;
+    setResponseVerbositySaving(true);
+    try {
+      await saveLocalConfig({ ai: { responseVerbosity } });
+      showToast({ message: '默认回答详略已更新', type: 'success' });
+    } catch (error) {
+      showToast({
+        message: error instanceof Error ? `保存失败：${error.message}` : '保存失败',
+        type: 'error',
+      });
+    } finally {
+      setResponseVerbositySaving(false);
+    }
+  };
+
   const checkDaemon = useCallback(async () => {
     try {
       setDaemonCheckFailed(false);
@@ -225,6 +244,7 @@ export default function SettingsModal({ open, onClose }: Props) {
 
   useEffect(() => {
     if (open) {
+      setTab(initialTab);
       setFeatureModelMap(
         Object.fromEntries(FEATURE_MODELS.map(f => [f.key, getFeatureModel(f.key)])) as Record<FeatureModelKey, string>
       );
@@ -235,7 +255,7 @@ export default function SettingsModal({ open, onClose }: Props) {
     // appConfig/localConfig intentionally excluded — we only re-seed on open, not on every SSE push,
     // so user edits aren't trampled mid-flight.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open, checkDaemon]);
+  }, [open, checkDaemon, initialTab]);
 
   // When SSE pushes new app_config / local-config and the user hasn't touched the form, refresh local view.
   useEffect(() => {
@@ -316,6 +336,7 @@ export default function SettingsModal({ open, onClose }: Props) {
           enabledBackends: localAppConfig.codeAgentEnabledBackends ?? [],
         },
         delegation: {
+          manageExecutorsExplicitly: true,
           enabledExecutors: [...(delegationPwcliEnabled ? ['pwcli' as const] : []), ...enabledDelegationClis],
           cliPriority: enabledDelegationClis,
         },
@@ -490,6 +511,32 @@ export default function SettingsModal({ open, onClose }: Props) {
                 </div>
               </div>
 
+              <div className="rounded-xl border border-gray-200 dark:border-white/10 p-4 bg-white dark:bg-white/[0.02]">
+                <div className="flex items-start justify-between gap-4">
+                  <div className="min-w-0 flex-1">
+                    <div className="flex items-center gap-2">
+                      <Sparkles size={14} className="text-purple-500 shrink-0" />
+                      <span className="text-sm font-medium text-gray-900 dark:text-white">默认回答详略</span>
+                    </div>
+                    <p className="text-xs text-gray-400 dark:text-gray-500 mt-1 leading-relaxed">
+                      控制最终回答展开到什么程度，不改变模型的思考强度；当前适用于 OpenAI Responses 与 Codex。
+                    </p>
+                  </div>
+                  <SelectField
+                    value={localConfig.ai?.responseVerbosity ?? 'medium'}
+                    onValueChange={value => void handleResponseVerbosityChange(value as ResponseVerbosity)}
+                    options={[
+                      { value: 'low', label: '简洁' },
+                      { value: 'medium', label: '适中' },
+                      { value: 'high', label: '详细' },
+                    ]}
+                    disabled={responseVerbositySaving}
+                    className="text-xs shrink-0 min-w-[140px]"
+                    ariaLabel="选择默认回答详略"
+                  />
+                </div>
+              </div>
+
               {aiModels.length === 0 ? (
                 <div className="text-center py-10 text-amber-600 dark:text-amber-400 bg-amber-50 dark:bg-amber-500/10 rounded-xl border border-amber-200 dark:border-amber-500/20">
                   <p className="text-sm">尚未配置 AI Provider</p>
@@ -511,9 +558,9 @@ export default function SettingsModal({ open, onClose }: Props) {
                           <p className="text-xs text-gray-400 dark:text-gray-500 mt-1 leading-relaxed">{f.description}</p>
                         </div>
                         <SelectField
-                          value={featureModelMap[f.key]}
+                          value={resolveModelSelection(featureModelMap[f.key])}
                           onValueChange={value => handleFeatureModelChange(f.key, value)}
-                          options={aiModels.map(model => ({ value: model.id, label: model.name }))}
+                          options={aiModels.map(model => ({ value: modelSelectionKey(model), label: model.name, group: model.providerName ?? 'Models' }))}
                           className="text-xs shrink-0 min-w-[180px]"
                           ariaLabel={`为${f.label}选择模型`}
                         />

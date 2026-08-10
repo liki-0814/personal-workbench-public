@@ -32,9 +32,11 @@ impl OpenAiResponsesAdapter {
         let mut headers = reqwest::header::HeaderMap::new();
         headers.insert("Content-Type", "application/json".parse()?);
         if self.provider.uses_proxy() {
-            let url = format!("{}/api/proxy/openai", self.backend_url);
-            headers.insert("X-Base-Url", self.provider.base_url.parse()?);
-            headers.insert("X-Api-Key", self.provider.api_key.parse()?);
+            let url = format!("{}/api/proxy/responses", self.backend_url);
+            headers.insert(
+                "X-Provider-Id",
+                crate::ai::provider::provider_id(&self.provider).parse()?,
+            );
             Ok((url, headers))
         } else {
             let base = self.provider.base_url.trim_end_matches('/');

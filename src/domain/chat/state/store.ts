@@ -1,5 +1,5 @@
 import { useState, useCallback, useRef, useEffect } from 'react';
-import { getModels, type ThinkingLevel } from '@/core/config';
+import { getModels, modelSelectionKey, useLocalConfig, type ThinkingLevel } from '@/core/config';
 import { load, save } from '@/core/storage';
 import { streamLlm } from '@/core/llm';
 import { generateId } from '@/core/utils/id';
@@ -8,7 +8,7 @@ import { startStream, endStream, abortStream, setStreamError, useStreamState } f
 import { uploadImages } from './imageUpload';
 import { buildAgentStreamCallbacks } from './agentCallbacks';
 import { reduceTimeline, backgroundOpenTools } from './timelineReducer';
-import { AgentSessionCoordinator } from './agentSessionCoordinator';
+import { AgentSessionCoordinator, formatAgentSessionCreationError } from './agentSessionCoordinator';
 
 export { getModels, getModelInfo } from '@/core/config';
 
@@ -169,13 +169,18 @@ export function useAiChat({
     if (v) sessionStorage.setItem(draftKey, v);
     else sessionStorage.removeItem(draftKey);
   }, [draftKey]);
-  const [model, setModel] = useState<AiModel>(getModels()[0]?.name ?? '');
+  const [model, setModel] = useState<AiModel>(() => {
+    const first = getModels()[0];
+    return first ? modelSelectionKey(first) : '';
+  });
   const [thinkingLevel, setThinkingLevelState] = useState<ThinkingLevel>(() => {
     const saved = load<string>('thinking_level', 'high');
     return ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'].includes(saved)
       ? saved as ThinkingLevel
       : 'high';
   });
+  const localConfig = useLocalConfig();
+  const responseVerbosity = localConfig.ai?.responseVerbosity ?? 'medium';
   const thinkingLevelRef = useRef(thinkingLevel);
   thinkingLevelRef.current = thinkingLevel;
   const [effectiveThinkingLevel, setEffectiveThinkingLevel] = useState<ThinkingLevel>(thinkingLevel);
@@ -426,10 +431,12 @@ export function useAiChat({
       // Agent service path (supports text + images; image generation models fall back to legacy)
       if (useAgent) {
         let sessionId = agentSessionsRef.current.get(target) ?? null;
+        let sessionCreationError: unknown;
         if (!sessionId) {
           try {
             sessionId = await ensureAgentSession(target, cwdRef.current);
           } catch (e) {
+            sessionCreationError = e;
             console.error('Failed to create agent session:', e);
           }
         }
@@ -465,6 +472,7 @@ export function useAiChat({
               model,
               thinking,
               thinkingLevel,
+              responseVerbosity,
               cwd: cwdRef.current || undefined,
               requirePermissionApproval,
               signal,
@@ -510,8 +518,9 @@ export function useAiChat({
           }
           return;
         }
-        // pwcli session creation failed — report error instead of silent fallback
-        const errMsg = 'Daemon 未启动，请运行 pwcli daemon start';
+        // Session creation can fail even while the daemon is healthy (for example,
+        // an invalid workspace or an incompatible stale daemon after an upgrade).
+        const errMsg = formatAgentSessionCreationError(sessionCreationError);
         setStreamError(target, errMsg);
         const assistantMsg: ChatMessage = { id: generateId(), role: 'assistant', content: '', error: errMsg };
         currentMessages = [...currentMessages, assistantMsg];
@@ -593,7 +602,7 @@ export function useAiChat({
         endStream(target);
       }
     },
-    [messages, model, updateMessages, flushMessagesPersist, useAgent, agentChat, thinking, thinkingLevel, serverManagedPrompt, setInput, requirePermissionApproval, ensureAgentSession, handleRuntimeUpdate]
+    [messages, model, updateMessages, flushMessagesPersist, useAgent, agentChat, thinking, thinkingLevel, responseVerbosity, serverManagedPrompt, setInput, requirePermissionApproval, ensureAgentSession, handleRuntimeUpdate]
   );
 
   const retry = useCallback(async () => {
@@ -646,6 +655,7 @@ export function useAiChat({
           model,
           thinking,
           thinkingLevel,
+          responseVerbosity,
           cwd: cwdRef.current || undefined,
           requirePermissionApproval,
           signal,
@@ -725,7 +735,7 @@ export function useAiChat({
       streamingRef.current = false;
       endStream(target);
     }
-  }, [messages, model, updateMessages, flushMessagesPersist, useAgent, agentSessionId, agentChat, thinking, thinkingLevel, serverManagedPrompt, requirePermissionApproval, handleRuntimeUpdate]);
+  }, [messages, model, updateMessages, flushMessagesPersist, useAgent, agentSessionId, agentChat, thinking, thinkingLevel, responseVerbosity, serverManagedPrompt, requirePermissionApproval, handleRuntimeUpdate]);
 
   const clearChat = useCallback(async () => {
     const target = sessionKeyRef.current || '_anon';
@@ -817,6 +827,7 @@ export function useAiChat({
           model,
           thinking,
           thinkingLevel,
+          responseVerbosity,
           cwd: cwdRef.current || undefined,
           requirePermissionApproval,
           signal,
@@ -910,7 +921,7 @@ export function useAiChat({
       streamingRef.current = false;
       endStream(target);
     }
-  }, [messages, model, updateMessages, flushMessagesPersist, useAgent, agentSessionId, agentChat, thinking, thinkingLevel, serverManagedPrompt, requirePermissionApproval, handleRuntimeUpdate]);
+  }, [messages, model, updateMessages, flushMessagesPersist, useAgent, agentSessionId, agentChat, thinking, thinkingLevel, responseVerbosity, serverManagedPrompt, requirePermissionApproval, handleRuntimeUpdate]);
 
   // Switch between versions of a message
   const switchVersion = useCallback((msgIndex: number, versionIndex: number) => {
@@ -936,6 +947,7 @@ export function useAiChat({
     setModel,
     thinking,
     thinkingLevel,
+    responseVerbosity,
     effectiveThinkingLevel,
     pendingThinkingLevel,
     setThinking,

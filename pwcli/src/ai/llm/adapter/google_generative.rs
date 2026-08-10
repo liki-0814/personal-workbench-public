@@ -166,9 +166,13 @@ impl GoogleGenerativeAdapter {
             return Ok((url, headers));
         }
         if self.provider.uses_proxy() {
-            let url = format!("{}/api/proxy/openai", self.backend_url);
-            headers.insert("X-Base-Url", self.model_path(action).parse()?);
-            headers.insert("X-Api-Key", self.provider.api_key.parse()?);
+            let url = format!("{}/api/proxy/google", self.backend_url);
+            headers.insert(
+                "X-Provider-Id",
+                crate::ai::provider::provider_id(&self.provider).parse()?,
+            );
+            headers.insert("X-Model-Id", self.provider.model.parse()?);
+            headers.insert("X-Google-Action", action.parse()?);
             Ok((url, headers))
         } else {
             let mut url = self.model_path(action);

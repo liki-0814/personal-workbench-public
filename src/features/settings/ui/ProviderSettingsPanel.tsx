@@ -89,6 +89,7 @@ export default function ProviderSettingsPanel({ onManageModels }: { onManageMode
   const [authMethod, setAuthMethod] = useState<'device' | 'browser'>('device');
   const [manualCode, setManualCode] = useState('');
   const [busy, setBusy] = useState(false);
+  const [customSaving, setCustomSaving] = useState(false);
 
   const connectedKinds = useMemo(() => new Set(providers.filter(p => p.builtin).map(p => p.kind)), [providers]);
   const builtinOptions = useMemo(() => catalog.map(entry => {
@@ -177,13 +178,27 @@ export default function ProviderSettingsPanel({ onManageModels }: { onManageMode
     if (!customId && !custom.apiKey?.trim()) {
       showToast({ message: '请输入 API Key', type: 'error' }); return;
     }
+    const previousModels = new Map((custom.models ?? []).map(model => [model.id, model]));
     const models = modelsDraft.split('\n').map(line => line.trim()).filter(Boolean).map(line => {
       const [id, name] = line.split('|').map(part => part.trim());
-      return { id, name: name || id, enabled: true };
+      return { ...previousModels.get(id), id, name: name || id, enabled: previousModels.get(id)?.enabled ?? true };
     });
     const defaultModel = custom.defaultModel.trim() || models[0]?.id || '';
     if (defaultModel && !models.some(model => model.id === defaultModel)) models.unshift({ id: defaultModel, name: defaultModel, enabled: true });
-    await perform(async () => { await saveCustomProvider({ ...custom, defaultModel, models }, customId); setCustom(null); }, customId ? '自定义服务已更新' : '自定义服务已添加');
+    const keyChanged = Boolean(custom.apiKey?.trim());
+    setCustomSaving(true);
+    try {
+      await saveCustomProvider({ ...custom, defaultModel, models }, customId);
+      setCustom(null);
+      showToast({
+        message: keyChanged ? '自定义服务和新 API Key 已保存并立即生效' : customId ? '自定义服务已更新' : '自定义服务已添加',
+        type: 'success',
+      });
+    } catch (cause) {
+      showToast({ message: cause instanceof Error ? cause.message : '保存失败', type: 'error' });
+    } finally {
+      setCustomSaving(false);
+    }
   };
 
   const move = (index: number, direction: -1 | 1) => {
@@ -193,6 +208,12 @@ export default function ProviderSettingsPanel({ onManageModels }: { onManageMode
     [next[index], next[target]] = [next[target], next[index]];
     void perform(() => reorderProviderIds(next.map(item => item.id)), '优先级已更新');
   };
+
+  const customKeyStored = Boolean(customId
+    && providers.find(provider => provider.id === customId)?.auth.status === 'connected');
+  const customKeyHint = customId
+    ? providers.find(provider => provider.id === customId)?.auth.credentialHint
+    : undefined;
 
   return <div className="space-y-4">
     <div className="flex items-start justify-between gap-4">
@@ -274,7 +295,7 @@ export default function ProviderSettingsPanel({ onManageModels }: { onManageMode
         </div>
       </div>
       <label className="block text-xs text-gray-600 dark:text-gray-300">API 地址<input value={custom.baseUrl} onChange={e => setCustom({ ...custom, baseUrl: e.target.value })} className="input-field mt-1.5 w-full dark:bg-white/5 dark:border-white/10 dark:text-white" placeholder="https://api.example.com/v1" /></label>
-      <div className="grid gap-3 sm:grid-cols-2"><label className="text-xs text-gray-600 dark:text-gray-300">API Key<input type="password" autoComplete="new-password" value={custom.apiKey ?? ''} onChange={e => setCustom({ ...custom, apiKey: e.target.value })} className="input-field mt-1.5 w-full dark:bg-white/5 dark:border-white/10 dark:text-white" placeholder={customId ? '留空表示不修改' : 'sk-...'} /></label><label className="text-xs text-gray-600 dark:text-gray-300">默认模型（可稍后设置）<input value={custom.defaultModel} onChange={e => setCustom({ ...custom, defaultModel: e.target.value })} className="input-field mt-1.5 w-full dark:bg-white/5 dark:border-white/10 dark:text-white" placeholder="模型 ID" /></label></div>
+      <div className="grid gap-3 sm:grid-cols-2"><label className="text-xs text-gray-600 dark:text-gray-300"><span className="flex items-center justify-between gap-2"><span>API Key</span>{customKeyStored && <span className="rounded-md bg-emerald-500/10 px-2 py-0.5 text-[10px] text-emerald-600 dark:text-emerald-300">已安全保存{customKeyHint ? ` · ${customKeyHint}` : ''}</span>}</span><input type="password" autoComplete="new-password" value={custom.apiKey ?? ''} onChange={e => setCustom({ ...custom, apiKey: e.target.value })} className="input-field mt-1.5 w-full dark:bg-white/5 dark:border-white/10 dark:text-white" placeholder={customKeyStored ? '••••••••（输入新 Key 可替换）' : customId ? '尚未保存 API Key' : 'sk-...'} />{customKeyStored && <span className="mt-1.5 block text-[11px] leading-5 text-gray-400">为保护密钥不会回显；留空保存会继续使用原 Key。输入新 Key 保存后，上方尾号会立即更新。</span>}</label><label className="text-xs text-gray-600 dark:text-gray-300">默认模型（手动填写）<input value={custom.defaultModel} onChange={e => setCustom({ ...custom, defaultModel: e.target.value })} className="input-field mt-1.5 w-full dark:bg-white/5 dark:border-white/10 dark:text-white" placeholder="模型 ID" /><span className="mt-1.5 block text-[11px] leading-5 text-gray-400">自定义 Provider 不自动探测模型，请在高级设置中维护模型列表。</span></label></div>
       <section className="space-y-3 rounded-xl border border-gray-200 p-4 dark:border-white/10">
         <div className="flex items-center justify-between gap-3">
           <div>
@@ -287,12 +308,12 @@ export default function ProviderSettingsPanel({ onManageModels }: { onManageMode
           <input value={custom.userAgent ?? ''} onChange={e => setCustom({ ...custom, userAgent: e.target.value })} className="input-field w-full font-mono text-xs dark:border-white/10 dark:bg-white/5 dark:text-white" placeholder="Mozilla/5.0 ..." aria-label="自定义 User-Agent" />
           <SelectField value={USER_AGENT_PRESETS.some(option => option.value === custom.userAgent) ? custom.userAgent ?? '' : ''} options={USER_AGENT_PRESETS} onValueChange={value => setCustom({ ...custom, userAgent: value })} placeholder="选择预设" ariaLabel="User-Agent 预设" className="w-full dark:border-white/10 dark:bg-white/5 dark:text-white" />
         </div>
-        <label className="flex min-h-11 cursor-pointer items-center gap-2 text-xs text-gray-600 dark:text-gray-300"><input type="checkbox" checked={!!custom.useProxy} onChange={e => setCustom({ ...custom, useProxy: e.target.checked || undefined })} />通过本地代理访问并替换 User-Agent</label>
+        <label className="flex min-h-11 cursor-pointer items-center gap-2 text-xs text-gray-600 dark:text-gray-300"><input type="checkbox" checked={!!custom.useProxy} onChange={e => setCustom({ ...custom, useProxy: e.target.checked })} />通过本地代理访问并替换 User-Agent</label>
         <p className="text-[11px] leading-5 text-gray-400">{custom.useProxy ? '已生效：本地代理会替换转发到供应商 API 的 User-Agent。' : 'User-Agent 会随 Provider 保存；开启本地代理后才会应用到上游请求。'}</p>
       </section>
       <button onClick={() => setAdvanced(value => !value)} className="flex items-center gap-1 text-xs font-medium text-purple-600 dark:text-purple-300">{advanced ? <ChevronDown size={14} /> : <ChevronRight size={14} />}高级设置</button>
       {advanced && <div className="space-y-4 rounded-xl bg-gray-50 p-4 dark:bg-white/[0.03]"><label className="block text-xs text-gray-600 dark:text-gray-300">模型列表（每行 ID|显示名称）<textarea value={modelsDraft} onChange={e => setModelsDraft(e.target.value)} rows={5} className="input-field mt-1.5 w-full font-mono text-xs dark:bg-white/5 dark:border-white/10 dark:text-white" placeholder={'gpt-4.1|GPT-4.1\ngpt-4.1-mini|GPT-4.1 Mini'} /></label><p className="text-[11px] text-gray-400">模型能力、上下文窗口和请求参数可在保存后由服务端模型配置继续维护。</p></div>}
-      <div className="flex justify-end gap-2 border-t border-gray-100 pt-4 dark:border-white/5"><button onClick={() => setCustom(null)} className="rounded-lg border px-4 py-2 text-sm dark:border-white/10">取消</button><button onClick={() => void saveCustom()} disabled={busy} className="rounded-lg bg-purple-500 px-4 py-2 text-sm text-white disabled:opacity-50">保存</button></div>
+      <div className="flex justify-end gap-2 border-t border-gray-100 pt-4 dark:border-white/5"><button onClick={() => setCustom(null)} className="rounded-lg border px-4 py-2 text-sm dark:border-white/10">取消</button><button onClick={() => void saveCustom()} disabled={customSaving} className="min-w-20 rounded-lg bg-purple-500 px-4 py-2 text-sm text-white disabled:opacity-50">{customSaving ? <><Loader2 size={13} className="mr-1 inline animate-spin" />保存中</> : '保存'}</button></div>
     </div></Modal>}
 
     {authProvider && <Modal title={`登录 ${authProvider.name}`} onClose={() => void closeAuth()}><div className="space-y-4 p-5">

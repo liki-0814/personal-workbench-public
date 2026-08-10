@@ -93,7 +93,6 @@ impl OpenAiCodexResponsesAdapter {
             "stream": true,
             "instructions": if instructions.is_empty() { "You are a helpful assistant." } else { &instructions },
             "input": input,
-            "text": {"verbosity": "low"},
             "include": ["reasoning.encrypted_content"],
             "tool_choice": parse_tool_choice(request.tool_choice.as_deref()),
             "parallel_tool_calls": true,
@@ -454,8 +453,37 @@ mod tests {
         assert_eq!(payload["store"], false);
         assert_eq!(payload["stream"], true);
         assert_eq!(payload["instructions"], "system");
+        assert!(payload.get("text").is_none());
         assert_eq!(payload["prompt_cache_key"], "session-1");
         assert_eq!(payload["include"][0], "reasoning.encrypted_content");
+    }
+
+    #[test]
+    fn applies_frontend_response_verbosity_from_request_params() {
+        let mut configured = provider("https://chatgpt.com/backend-api");
+        configured.models = vec![crate::ai::config::ModelEntry {
+            id: "gpt-5.4".into(),
+            name: "GPT-5.4".into(),
+            request_params: Some(serde_json::Map::from_iter([(
+                "text".into(),
+                serde_json::json!({ "verbosity": "high" }),
+            )])),
+            ..Default::default()
+        }];
+        let adapter = OpenAiCodexResponsesAdapter::new(configured, None);
+
+        let payload = adapter.build_payload(&LlmRequest {
+            messages: vec![],
+            system_prompt: None,
+            tools: None,
+            stream: true,
+            tool_choice: None,
+            thinking: false,
+            max_tokens: None,
+            temperature: None,
+        });
+
+        assert_eq!(payload["text"]["verbosity"], "high");
     }
 
     #[test]

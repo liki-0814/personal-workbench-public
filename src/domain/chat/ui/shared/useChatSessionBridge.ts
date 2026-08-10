@@ -1,5 +1,5 @@
 import { useEffect, useRef } from 'react';
-import { getModels } from '@/core/config';
+import { resolveModelSelection } from '@/core/config';
 import type { ChatSession, ChatMessage, AiModel } from '../../types';
 
 interface AiBinding {
@@ -49,10 +49,7 @@ export function useChatSessionBridge({
   // Pull from session on switch
   useEffect(() => {
     if (activeSession) {
-      const modelName =
-        getModels().find(
-          m => m.id === activeSession.model || m.name === activeSession.model
-        )?.id || activeSession.model;
+      const modelName = resolveModelSelection(activeSession.model);
       // 研究模式不再强制切模型——pwcli 直接用 chat 选的模型
       if (aiRef.current.model !== modelName) {
         suppressNextPushRef.current = true;

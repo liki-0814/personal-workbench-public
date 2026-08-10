@@ -25,7 +25,7 @@ describe('providerStore', () => {
     apiFetch.mockImplementation(async (path: string) => {
       if (path === '/api/providers') return { success: true, data: [{
         id: 'custom-1', kind: 'custom', name: 'Gateway',
-        auth: { method: 'api_key', status: 'connected' },
+        auth: { method: 'api_key', status: 'connected', credentialHint: '••••1234' },
         models: [{ id: 'model-a', name: 'Model A' }], defaultModel: 'model-a',
         enabled: true, priority: 0, builtin: false,
         customEndpoint: { baseUrl: 'https://example.test/v1', protocol: 'openai_responses', useProxy: true },
@@ -43,6 +43,7 @@ describe('providerStore', () => {
     const provider = getProviderSnapshot().providers[0];
     expect(provider).toMatchObject({
       id: 'custom-1', baseUrl: 'https://example.test/v1', protocol: 'openai_responses', useProxy: true,
+      auth: { credentialHint: '••••1234' },
     });
     expect(getModels().map(model => model.id)).toContain('model-a');
     expect(getProviderSnapshot().catalog.find(entry => entry.kind === 'google-antigravity')).toMatchObject({

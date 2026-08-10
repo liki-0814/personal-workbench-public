@@ -19,6 +19,7 @@
 import { apiFetch } from '@/core/utils/apiFetch';
 import { STORAGE_SYNC_EVENT } from '@/core/storage/syncEngine';
 import type { MoaConfig } from './moa';
+import type { ResponseVerbosity } from './aiProviders';
 
 export const LOCAL_CONFIG_MASK = '******';
 export const DEFAULT_FS_BASE = '~/';
@@ -56,6 +57,7 @@ export interface LocalConfigExecutorDefault {
 }
 
 export interface LocalConfigDelegation {
+  manageExecutorsExplicitly?: boolean;
   enabledExecutors?: DelegationExecutor[];
   cliPriority?: Exclude<DelegationExecutor, 'pwcli'>[];
   roles?: Partial<Record<DelegationRole, LocalConfigDelegationRole>>;
@@ -126,6 +128,7 @@ export interface LocalConfigAi {
   /** Masked as '******' on GET when configured; send same string on PUT to keep. */
   mineruToken?: string;
   responseLanguage?: ResponseLanguage;
+  responseVerbosity?: ResponseVerbosity;
 }
 
 export type ResponseLanguage = 'zh-CN' | 'en' | 'auto';

@@ -166,13 +166,20 @@ describe('DelegationCard', () => {
 
   it('offers retry when an explicit executor needs configuration', async () => {
     const onRetry = vi.fn().mockResolvedValue(undefined);
+    const onOpenSettings = vi.fn();
     await act(async () => root.render(
       <DelegationCard
-        tasks={[{ ...completedTask, status: 'waiting_configuration', outputStatus: 'pending' }]}
+        tasks={[{
+          ...completedTask,
+          status: 'waiting_configuration',
+          outputStatus: 'pending',
+          error: 'Codex CLI login required',
+        }]}
         onCancel={vi.fn()}
         onRetry={onRetry}
         onFollowUp={vi.fn()}
         onOpenFile={vi.fn()}
+        onOpenSettings={onOpenSettings}
       />,
     ));
     await act(async () => {
@@ -182,6 +189,43 @@ describe('DelegationCard', () => {
       (container.querySelector('[title="配置完成后重试"]') as HTMLButtonElement).click();
     });
     expect(onRetry).toHaveBeenCalledWith('task-1');
+    expect(container.textContent).toContain('Codex 尚未安装、登录或启用');
+    expect(container.textContent).toContain('Codex CLI login required');
+    await act(async () => {
+      Array.from(container.querySelectorAll<HTMLButtonElement>('button'))
+        .find(button => button.textContent === '打开对应设置')?.click();
+    });
+    expect(onOpenSettings).toHaveBeenCalledWith('integrations');
+  });
+
+  it('shows readable progress events behind a labeled action', async () => {
+    await act(async () => root.render(
+      <DelegationCard
+        tasks={[completedTask]}
+        taskEvents={{
+          'task-1': [{
+            sequence: 1,
+            eventId: 'event-1',
+            taskId: 'task-1',
+            kind: 'task_started',
+            createdAt: '2026-07-30T01:00:10.000Z',
+          }],
+        }}
+        onCancel={vi.fn()}
+        onFollowUp={vi.fn()}
+        onOpenFile={vi.fn()}
+      />,
+    ));
+    await act(async () => {
+      (container.querySelector('.delegation-card-summary') as HTMLButtonElement).click();
+    });
+    const progress = Array.from(container.querySelectorAll<HTMLButtonElement>('button'))
+      .find(button => button.textContent === '查看进度');
+    expect(progress).toBeTruthy();
+    await act(async () => progress?.click());
+    expect(container.textContent).toContain('正在做什么');
+    expect(container.textContent).toContain('开始执行');
+    expect(container.textContent).toContain('继续对话');
   });
 
   it('confirms a read-only deliverable before projecting Todo and Memory updates', async () => {

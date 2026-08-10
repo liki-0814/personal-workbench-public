@@ -29,7 +29,7 @@ export default function ThinkingItemView({ item }: { item: TimelineThinkingItem 
       </button>
       {expanded && (
         <div className="precision-thinking-copy px-3 pb-2 text-[12px] leading-relaxed whitespace-pre-wrap font-mono max-h-[300px] overflow-y-auto">
-          {item.text}
+          {item.text || (running ? '模型正在进行内部推理…' : '模型未返回可展示的推理摘要。')}
         </div>
       )}
     </div>

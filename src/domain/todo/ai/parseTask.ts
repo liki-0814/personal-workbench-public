@@ -1,5 +1,5 @@
 import { callLlm } from '@/core/llm';
-import { getModels, getFeatureModel } from '@/core/config';
+import { getModels, getFeatureModel, modelSelectionKey } from '@/core/config';
 
 export const TASK_PARSE_SYSTEM_PROMPT = `你是一个智能任务拆解助手。用户会用自然语言描述一件事，你需要将其拆解成结构化的任务数据。
 
@@ -42,7 +42,8 @@ export interface TaskParseContext {
 }
 
 export async function parseTaskWithAI(description: string, context: TaskParseContext = {}): Promise<ParsedTask> {
-  const model = getFeatureModel('task') || getModels()[0]?.id;
+  const fallback = getModels()[0];
+  const model = getFeatureModel('task') || (fallback ? modelSelectionKey(fallback) : '');
   if (!model) throw new Error('未配置 AI 模型');
 
   const today = new Date();

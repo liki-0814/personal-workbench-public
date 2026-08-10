@@ -61,6 +61,8 @@ pub struct ProviderOverride {
     #[serde(default)]
     pub thinking_level: Option<String>,
     #[serde(default)]
+    pub response_verbosity: Option<String>,
+    #[serde(default)]
     pub deferred_tools_mode: Option<String>,
     #[serde(default)]
     pub context_window: Option<u64>,
@@ -114,8 +116,40 @@ impl ProviderOverride {
             }
         };
         apply_provider_thinking_level(&mut provider, self.thinking_level.as_deref())?;
+        apply_provider_response_verbosity(&mut provider, self.response_verbosity.as_deref())?;
         Ok(provider)
     }
+}
+
+fn apply_provider_response_verbosity(
+    provider: &mut ProviderConfig,
+    verbosity: Option<&str>,
+) -> anyhow::Result<()> {
+    let Some(verbosity) = verbosity else {
+        return Ok(());
+    };
+    anyhow::ensure!(
+        matches!(verbosity, "low" | "medium" | "high"),
+        "unsupported response verbosity: {verbosity}"
+    );
+    let protocol = provider
+        .protocol
+        .trim()
+        .to_ascii_lowercase()
+        .replace('-', "_");
+    if protocol != "openai_codex_responses" && protocol != "openai_responses" {
+        return Ok(());
+    }
+    let model = provider
+        .models
+        .iter_mut()
+        .find(|model| model.id == provider.model || model.name == provider.model)
+        .context("active model configuration is missing")?;
+    model
+        .request_params
+        .get_or_insert_with(serde_json::Map::new)
+        .insert("text".into(), serde_json::json!({ "verbosity": verbosity }));
+    Ok(())
 }
 
 fn apply_provider_thinking_level(
@@ -1466,6 +1500,7 @@ async fn execute_turn(
         .run_turn(messages, session, usage, sink, audit_sink)
         .await;
     while result.is_ok() {
+        let mut claimed_checkpoint: Option<(String, usize, usize)> = None;
         let legacy_guidance = harness
             .drain_pending_guidance(|remaining_queue_item_ids| {
                 session_manager.reconcile_guidance(session_id, remaining_queue_item_ids)
@@ -1481,7 +1516,8 @@ async fn execute_turn(
             session_manager.mark_turn_settled(session_id, false)?;
             break;
         }
-        if let Some(item) = session_manager.take_next_queued_input(session_id)? {
+        if let Some(item) = session_manager.claim_next_queued_input(session_id)? {
+            claimed_checkpoint = Some((item.id.clone(), session.messages.len(), messages.len()));
             let conversation_message = match item.source {
                 crate::runtime::session::QueuedInputSource::User => {
                     crate::runtime::session::ConversationMessage::new_user(&item.message.content)
@@ -1497,7 +1533,9 @@ async fn execute_turn(
             .await?
             .is_none()
         {
-            if let Some(item) = session_manager.take_next_queued_input_or_settle(session_id)? {
+            if let Some(item) = session_manager.claim_next_queued_input_or_settle(session_id)? {
+                claimed_checkpoint =
+                    Some((item.id.clone(), session.messages.len(), messages.len()));
                 let conversation_message = match item.source {
                     crate::runtime::session::QueuedInputSource::User => {
                         crate::runtime::session::ConversationMessage::new_user(
@@ -1519,6 +1557,17 @@ async fn execute_turn(
         result = runtime
             .run_turn(messages, session, usage, sink, audit_sink)
             .await;
+        if let Some((item_id, session_len, messages_len)) = claimed_checkpoint {
+            if result.is_ok() {
+                session_manager.consume_queued_input_by_id(session_id, &item_id)?;
+            } else {
+                // The input was only reserved, not consumed. Remove partial
+                // journal state and keep the queue item visible for retry.
+                session.messages.truncate(session_len);
+                messages.truncate(messages_len);
+                session_manager.mark_claimed_input_failed(session_id, &item_id)?;
+            }
+        }
     }
     result
 }
@@ -1574,6 +1623,9 @@ impl crate::agent_core::runner::ToolEventSink for ChannelSink {
     // ToolCallStart/Delta；此回调（run_turn 即将执行 tool 时调用）不重发，避免
     // 前端 trace chip 出现两次。
     fn on_tool_call(&self, _id: &str, _name: &str, _args: &str) {}
+    fn on_thinking_start(&self) {
+        let _ = self.tx.send(StreamEvent::ThinkingStart);
+    }
     fn on_assistant_segment_start(&self, round: u32) {
         let _ = self.tx.send(StreamEvent::AssistantSegmentStart { round });
     }
@@ -2542,5 +2594,31 @@ mod tests {
             "high"
         );
         assert!(apply_provider_thinking_level(&mut provider, Some("xhigh")).is_err());
+    }
+
+    #[test]
+    fn response_verbosity_is_applied_to_responses_models() {
+        let mut provider = ProviderConfig {
+            name: "Codex".into(),
+            base_url: "https://example.com".into(),
+            api_key: "secret".into(),
+            protocol: "openai_codex_responses".into(),
+            model: "reasoner".into(),
+            models: vec![crate::ai::config::ModelEntry {
+                id: "reasoner".into(),
+                name: "Reasoner".into(),
+                ..Default::default()
+            }],
+            use_proxy: None,
+            compat_profile: None,
+        };
+
+        apply_provider_response_verbosity(&mut provider, Some("high")).unwrap();
+
+        assert_eq!(
+            provider.models[0].request_params.as_ref().unwrap()["text"]["verbosity"],
+            "high"
+        );
+        assert!(apply_provider_response_verbosity(&mut provider, Some("verbose")).is_err());
     }
 }

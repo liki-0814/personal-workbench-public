@@ -198,6 +198,9 @@ impl StopReason {
 pub enum StreamEvent {
     /// 首 token 到达（用于 TTFT 计算）
     FirstToken,
+    /// Agent-core has started a model call with reasoning enabled. Unlike a
+    /// reasoning summary delta, this event includes the provider wait time.
+    ThinkingStart,
     /// 文本增量
     TextDelta(String),
     /// One model call within a larger agent turn has started producing

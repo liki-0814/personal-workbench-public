@@ -1,5 +1,5 @@
 import { callLlm } from '@/core/llm';
-import { getModels, getFeatureModel } from '@/core/config';
+import { getModels, getFeatureModel, modelSelectionKey } from '@/core/config';
 import type { HabitFrequency } from '../types';
 
 export interface ParsedHabit {
@@ -62,7 +62,8 @@ export async function parseHabitWithAI(goal: string): Promise<ParsedHabit[]> {
 
 只返回 JSON 数组，不要其他文字。`;
 
-  const model = getFeatureModel('task') || getModels()[0]?.id;
+  const fallback = getModels()[0];
+  const model = getFeatureModel('task') || (fallback ? modelSelectionKey(fallback) : '');
   if (!model) throw new Error('未配置 AI 模型');
 
   const response = await callLlm({

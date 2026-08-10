@@ -113,6 +113,16 @@ export interface RuntimeTask {
   metadata?: unknown;
 }
 
+export interface RuntimeTaskEvent {
+  sequence: number;
+  eventId: string;
+  taskId: string;
+  attemptId?: string;
+  kind: string;
+  payload?: unknown;
+  createdAt: string;
+}
+
 export function selectRuntimeTasks(tasks: RuntimeTask[], rootSessionId?: string): RuntimeTask[] {
   return tasks.filter(task => (
     (!rootSessionId || task.rootSessionId === rootSessionId)
@@ -123,6 +133,7 @@ export function selectRuntimeTasks(tasks: RuntimeTask[], rootSessionId?: string)
 export function useTaskRuntime(rootSessionId?: string) {
   const [tasks, setTasks] = useState<RuntimeTask[]>([]);
   const [attention, setAttention] = useState<RuntimeAttention[]>([]);
+  const [eventsByTaskId, setEventsByTaskId] = useState<Record<string, RuntimeTaskEvent[]>>({});
   const [loaded, setLoaded] = useState(false);
   const cursorRef = useRef(0);
 
@@ -158,12 +169,30 @@ export function useTaskRuntime(rootSessionId?: string) {
       const onEvent = (event: Event) => {
         const sequence = Number((event as MessageEvent).lastEventId);
         if (Number.isFinite(sequence)) cursorRef.current = Math.max(cursorRef.current, sequence);
+        try {
+          const taskEvent = JSON.parse((event as MessageEvent).data) as RuntimeTaskEvent;
+          if (taskEvent.taskId) {
+            setEventsByTaskId(current => {
+              const existing = current[taskEvent.taskId] ?? [];
+              if (existing.some(item => item.eventId === taskEvent.eventId)) return current;
+              return {
+                ...current,
+                [taskEvent.taskId]: [...existing, taskEvent].slice(-20),
+              };
+            });
+          }
+        } catch {
+          // Snapshot refresh still keeps task state correct when an older daemon emits a non-JSON event.
+        }
         scheduleRefresh();
       };
       [
         'task_published', 'task_leased', 'task_started', 'task_completed',
         'task_failed', 'task_cancelled', 'task_waiting_children',
         'task_waiting_configuration', 'task_waiting_user', 'task_decision_resolved',
+        'task_native_session_started', 'task_follow_up_queued',
+        'task_child_result_buffered', 'task_child_results_queued', 'task_children_ready',
+        'task_recovery_required', 'task_start_failed',
         'task_output_materializing',
         'task_output_ready', 'task_output_failed', 'task_review_updated',
         'attention_created', 'attention_updated', 'attention_deleted', 'legacy_dispatch_migrated',
@@ -281,6 +310,7 @@ export function useTaskRuntime(rootSessionId?: string) {
 
   return {
     tasks: sessionTasks,
+    eventsByTaskId,
     attention,
     loaded,
     cancel,

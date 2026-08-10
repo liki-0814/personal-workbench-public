@@ -524,6 +524,82 @@ impl SessionManager {
         Ok(Some(taken))
     }
 
+    /// Reserve the next durable input without removing it. The caller must
+    /// acknowledge it with `consume_queued_input_by_id` after a successful
+    /// turn, or mark it failed so it remains visible and retryable.
+    pub fn claim_next_queued_input(&self, session_id: &str) -> anyhow::Result<Option<QueuedInput>> {
+        self.claim_next_queued_input_inner(session_id, false)
+    }
+
+    /// Final-boundary variant of `claim_next_queued_input`. When no input is
+    /// available it atomically settles the session, closing the race where an
+    /// item arrives between the last queue check and the idle transition.
+    pub fn claim_next_queued_input_or_settle(
+        &self,
+        session_id: &str,
+    ) -> anyhow::Result<Option<QueuedInput>> {
+        self.claim_next_queued_input_inner(session_id, true)
+    }
+
+    fn claim_next_queued_input_inner(
+        &self,
+        session_id: &str,
+        settle_when_empty: bool,
+    ) -> anyhow::Result<Option<QueuedInput>> {
+        let (claimed, snapshot) = {
+            let mut runtimes = self.runtimes.write().unwrap();
+            let runtime = runtimes
+                .get_mut(session_id)
+                .ok_or_else(|| anyhow::anyhow!("session runtime not found"))?;
+            let claimed = if runtime.paused {
+                None
+            } else {
+                runtime.queue.iter_mut().find_map(|item| {
+                    (item.delivery == QueuedInputDelivery::NextTurn
+                        && item.status == QueuedInputStatus::Queued)
+                        .then(|| {
+                            item.status = QueuedInputStatus::Claimed;
+                            item.claimed_by_turn_id = runtime.active_turn_id.clone();
+                            item.clone()
+                        })
+                })
+            };
+            if claimed.is_none() && !settle_when_empty {
+                return Ok(None);
+            }
+            if claimed.is_none() && settle_when_empty {
+                runtime.active_turn_id = None;
+                runtime.phase = if runtime.paused { "paused" } else { "idle" }.to_string();
+            }
+            runtime.last_event_sequence += 1;
+            (claimed, runtime.clone())
+        };
+        self.persist_runtime(&snapshot)?;
+        Ok(claimed)
+    }
+
+    pub fn mark_claimed_input_failed(&self, session_id: &str, item_id: &str) -> anyhow::Result<()> {
+        let snapshot = {
+            let mut runtimes = self.runtimes.write().unwrap();
+            let runtime = runtimes
+                .get_mut(session_id)
+                .ok_or_else(|| anyhow::anyhow!("session runtime not found"))?;
+            let item = runtime
+                .queue
+                .iter_mut()
+                .find(|item| item.id == item_id)
+                .ok_or_else(|| anyhow::anyhow!("queue item not found"))?;
+            if item.status != QueuedInputStatus::Claimed {
+                anyhow::bail!("queue item is not claimed");
+            }
+            item.status = QueuedInputStatus::Failed;
+            item.claimed_by_turn_id = None;
+            runtime.last_event_sequence += 1;
+            runtime.clone()
+        };
+        self.persist_runtime(&snapshot)
+    }
+
     /// Atomically re-check the durable queue at the final turn boundary. If a
     /// message arrived after the runner's previous empty check, keep the turn
     /// alive and return it. Otherwise release the session to `idle` (or
@@ -1406,9 +1482,12 @@ impl SessionManager {
                 runtime.active_turn_id = None;
                 runtime.paused = true;
                 for item in &mut runtime.queue {
-                    if item.status != QueuedInputStatus::Claimed {
-                        item.status = QueuedInputStatus::Paused;
-                    }
+                    item.status = if item.status == QueuedInputStatus::Claimed {
+                        QueuedInputStatus::Failed
+                    } else {
+                        QueuedInputStatus::Paused
+                    };
+                    item.claimed_by_turn_id = None;
                 }
             }
             restored_runtimes.insert(id.clone(), runtime);
@@ -2061,6 +2140,71 @@ mod tests {
         assert_eq!(taken.id, item.id);
         assert_eq!(taken.message.content, "new text");
         assert!(manager.take_next_queued_input(&id).unwrap().is_none());
+    }
+
+    #[test]
+    fn claimed_queue_input_is_only_removed_after_success_acknowledgement() {
+        let (dir, manager) = test_manager();
+        let id = manager.create("queue-claim-ack");
+        manager.mark_turn_started(&id).unwrap();
+        let item = manager
+            .enqueue_input(
+                &id,
+                "claim-client".into(),
+                crate::runtime::session::QueuedInputDelivery::NextTurn,
+                queued_user("do not lose me"),
+                Vec::new(),
+                Vec::new(),
+            )
+            .unwrap();
+
+        let claimed = manager.claim_next_queued_input(&id).unwrap().unwrap();
+        assert_eq!(claimed.id, item.id);
+        assert_eq!(manager.runtime(&id).unwrap().queue.len(), 1);
+        assert_eq!(
+            manager.runtime(&id).unwrap().queue[0].status,
+            crate::runtime::session::QueuedInputStatus::Claimed
+        );
+
+        manager.mark_claimed_input_failed(&id, &item.id).unwrap();
+        assert_eq!(
+            manager.runtime(&id).unwrap().queue[0].status,
+            crate::runtime::session::QueuedInputStatus::Failed
+        );
+
+        let restored = SessionManager::new_in(dir.path());
+        assert_eq!(restored.runtime(&id).unwrap().queue.len(), 1);
+        assert_eq!(
+            restored.runtime(&id).unwrap().queue[0].message.content,
+            "do not lose me"
+        );
+    }
+
+    #[test]
+    fn successful_claim_acknowledgement_consumes_exactly_one_input() {
+        let (_dir, manager) = test_manager();
+        let id = manager.create("queue-claim-success");
+        let item = manager
+            .enqueue_input(
+                &id,
+                "success-client".into(),
+                crate::runtime::session::QueuedInputDelivery::NextTurn,
+                queued_user("execute once"),
+                Vec::new(),
+                Vec::new(),
+            )
+            .unwrap();
+
+        manager.claim_next_queued_input(&id).unwrap().unwrap();
+        assert_eq!(
+            manager
+                .consume_queued_input_by_id(&id, &item.id)
+                .unwrap()
+                .unwrap()
+                .id,
+            item.id
+        );
+        assert!(manager.runtime(&id).unwrap().queue.is_empty());
     }
 
     #[test]

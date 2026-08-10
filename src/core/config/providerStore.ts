@@ -17,6 +17,7 @@ export interface ProviderAuthView {
   method: ProviderAuthMethod;
   status: ProviderAuthStatus;
   accountLabel?: string;
+  credentialHint?: string;
   error?: string;
 }
 
@@ -100,6 +101,7 @@ const BUILTIN_CATALOG: ProviderCatalogEntry[] = [
 let snapshot: ProviderSnapshot = { providers: [], catalog: BUILTIN_CATALOG, loading: false, loaded: false };
 const listeners = new Set<() => void>();
 let refreshPromise: Promise<void> | undefined;
+let providerMutationRevision = 0;
 
 function read<T>(value: Record<string, unknown>, camel: string, snake: string): T | undefined {
   return (value[camel] ?? value[snake]) as T | undefined;
@@ -111,6 +113,7 @@ function normalizeAuth(raw: unknown, fallback: ProviderAuthMethod): ProviderAuth
     method: (value.method as ProviderAuthMethod | undefined) ?? fallback,
     status: (value.status as ProviderAuthStatus | undefined) ?? 'disconnected',
     accountLabel: read<string>(value, 'accountLabel', 'account_label'),
+    credentialHint: read<string>(value, 'credentialHint', 'credential_hint'),
     error: typeof value.error === 'string' ? value.error : undefined,
   };
 }
@@ -227,6 +230,7 @@ export function subscribeProviders(listener: () => void): () => void {
 
 export async function refreshProviders(fullDiff = false): Promise<void> {
   if (refreshPromise && !fullDiff) return refreshPromise;
+  const revision = providerMutationRevision;
   emit({ ...snapshot, loading: true, error: undefined });
   refreshPromise = (async () => {
     try {
@@ -238,6 +242,7 @@ export async function refreshProviders(fullDiff = false): Promise<void> {
         fullDiff ? Promise.resolve(undefined) : apiFetch('/api/providers/catalog').catch(() => undefined),
       ]);
       const providers = unwrapList(providersRaw).map(normalizeProvider).sort((a, b) => a.priority - b.priority);
+      if (revision !== providerMutationRevision) return;
       emit({ providers, catalog: fullDiff ? snapshot.catalog : normalizeCatalog(catalogRaw), loading: false, loaded: true, ...(fullDiff ? { fullDiffAt: Date.now() } : {}) });
     } catch (error) {
       emit({ ...snapshot, loading: false, loaded: true, error: error instanceof Error ? error.message : 'AI 服务加载失败' });
@@ -247,6 +252,24 @@ export async function refreshProviders(fullDiff = false): Promise<void> {
     }
   })();
   return refreshPromise;
+}
+
+function applyProviderMutation(raw: unknown): ProviderView {
+  providerMutationRevision += 1;
+  const value = unwrapData(raw);
+  const existingIndex = snapshot.providers.findIndex(provider => provider.id === (value as { id?: unknown } | undefined)?.id);
+  const updated = normalizeProvider(value, existingIndex >= 0 ? existingIndex : snapshot.providers.length);
+  const providers = existingIndex >= 0
+    ? snapshot.providers.map(provider => provider.id === updated.id ? updated : provider)
+    : [...snapshot.providers, updated];
+  emit({ ...snapshot, providers: providers.sort((a, b) => a.priority - b.priority), loading: false, loaded: true, error: undefined });
+  return updated;
+}
+
+async function refreshAfterMutation(): Promise<void> {
+  const pending = refreshPromise;
+  if (pending) await pending.catch(() => undefined);
+  await refreshProviders();
 }
 
 /** Explicit user-triggered full diff (includes previously dismissed models). */
@@ -279,7 +302,7 @@ export async function createBuiltinProvider(kind: Exclude<ProviderKind, 'custom'
   await refreshProviders();
 }
 
-export async function saveCustomProvider(input: CustomProviderInput, id?: string): Promise<void> {
+export async function saveCustomProvider(input: CustomProviderInput, id?: string): Promise<ProviderView> {
   const body = {
     kind: 'custom',
     name: input.name,
@@ -291,11 +314,13 @@ export async function saveCustomProvider(input: CustomProviderInput, id?: string
     useProxy: input.useProxy,
     userAgent: input.userAgent?.trim() || undefined,
   };
-  await apiFetch(id ? `/api/providers/${encodeURIComponent(id)}` : '/api/providers', {
+  const raw = await apiFetch(id ? `/api/providers/${encodeURIComponent(id)}` : '/api/providers', {
     method: id ? 'PATCH' : 'POST',
     body: JSON.stringify(body),
   });
-  await refreshProviders();
+  const updated = applyProviderMutation(raw);
+  await refreshAfterMutation();
+  return updated;
 }
 
 export async function updateProviderModels(
@@ -304,11 +329,12 @@ export async function updateProviderModels(
   imageModels: ModelEntry[],
   defaultModel: string,
 ): Promise<void> {
-  await apiFetch(`/api/providers/${encodeURIComponent(id)}`, {
+  const raw = await apiFetch(`/api/providers/${encodeURIComponent(id)}`, {
     method: 'PATCH',
     body: JSON.stringify({ models, imageModels, defaultModel }),
   });
-  await refreshProviders();
+  applyProviderMutation(raw);
+  await refreshAfterMutation();
 }
 
 async function postModelChanges(id: string, action: 'adopt' | 'prune' | 'dismiss', body?: Record<string, unknown>): Promise<void> {

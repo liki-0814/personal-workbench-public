@@ -1,5 +1,5 @@
 import { callLlm } from '@/core/llm';
-import { getModels, getFeatureModel } from '@/core/config';
+import { getModels, getFeatureModel, modelSelectionKey } from '@/core/config';
 
 export interface GeneratedJobSpec {
   name: string;
@@ -63,7 +63,8 @@ export async function generateJobWithAI(description: string): Promise<GeneratedJ
 
 只返回 JSON 对象。`;
 
-  const model = getFeatureModel('task') || getModels()[0]?.id;
+  const fallback = getModels()[0];
+  const model = getFeatureModel('task') || (fallback ? modelSelectionKey(fallback) : '');
   if (!model) throw new Error('未配置 AI 模型');
 
   const response = await callLlm({
