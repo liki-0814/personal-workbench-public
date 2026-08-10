@@ -127,16 +127,17 @@ describe('normalizeProviderConfig', () => {
 
 describe('templatesForProtocol', () => {
   it('returns protocol-specific templates only', () => {
-    expect(templatesForProtocol('anthropic_messages').some(t => t.id === 'anthropic_thinking_budget')).toBe(true);
+    expect(templatesForProtocol('anthropic_messages').some(t => t.id === 'anthropic_adaptive_thinking')).toBe(true);
     expect(templatesForProtocol('openai_chat').some(t => t.id === 'openai_top_p')).toBe(true);
-    expect(templatesForProtocol('openai_chat').some(t => t.id === 'anthropic_thinking_budget')).toBe(false);
+    expect(templatesForProtocol('openai_chat').some(t => t.id === 'anthropic_adaptive_thinking')).toBe(false);
   });
 
   it('applies template knobs without changing protocol code paths', () => {
-    const template = templatesForProtocol('anthropic_messages').find(t => t.id === 'anthropic_thinking_budget')!;
+    const template = templatesForProtocol('anthropic_messages').find(t => t.id === 'anthropic_adaptive_thinking')!;
     const model = template.apply({ id: 'claude', name: 'Claude' });
     expect(model.capabilities?.thinking).toBe(true);
-    expect(model.thinkingParams?.budget_tokens).toBe(2048);
+    expect(model.thinkingParams?.thinking).toEqual({ type: 'adaptive' });
+    expect(model.thinkingParams?.output_config).toEqual({ effort: 'medium' });
   });
 });
 

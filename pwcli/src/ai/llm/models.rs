@@ -314,7 +314,7 @@ pub struct LlmRequest {
     /// 强制工具调用: "auto" | "required" | "none" | {"type": "function", "function": {"name": "..."}}
     pub tool_choice: Option<String>,
     /// 启用扩展思考模式。各 provider 字段名不同，由具体客户端翻译：
-    /// - Anthropic: `thinking: { type:"enabled", budget_tokens:1024 }`
+    /// - Anthropic: adaptive by default; manual mode may use budget_tokens
     /// - OpenAI-compatible providers: `enable_thinking: true`
     pub thinking: bool,
     /// 覆盖默认 max_tokens（None 时由协议客户端用 DEFAULT_MAX_TOKENS）

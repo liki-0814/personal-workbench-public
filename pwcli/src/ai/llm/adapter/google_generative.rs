@@ -285,7 +285,10 @@ impl GoogleGenerativeAdapter {
                 "functionDeclarations": tools.iter().map(|tool| json!({
                     "name": tool.function.name,
                     "description": tool.function.description,
-                    "parameters": tool.function.parameters,
+                    "parameters": crate::ai::llm::tool_schema::normalize_root(
+                        &tool.function.parameters,
+                        crate::ai::llm::tool_schema::supports_root_combinators(&self.provider),
+                    ),
                 })).collect::<Vec<_>>()
             }]);
         }
@@ -587,6 +590,27 @@ impl LlmAdapter for GoogleGenerativeAdapter {
 mod tests {
     use super::*;
 
+    fn restricted_provider() -> ProviderConfig {
+        ProviderConfig {
+            name: "restricted-google".into(),
+            base_url: "https://generativelanguage.googleapis.com/v1beta".into(),
+            api_key: "secret".into(),
+            protocol: "google_generative".into(),
+            model: "gemini-test".into(),
+            models: vec![crate::ai::config::ModelEntry {
+                id: "gemini-test".into(),
+                name: "Gemini Test".into(),
+                capabilities: Some(crate::ai::config::ModelCapabilities {
+                    tool_schema_top_level_combinators: Some(false),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }],
+            use_proxy: None,
+            compat_profile: None,
+        }
+    }
+
     fn request() -> LlmRequest {
         LlmRequest {
             messages: vec![ChatMessage {
@@ -630,6 +654,31 @@ mod tests {
         assert_eq!(tools[0].function.name, "list_directory");
         assert!(tools[0].function.arguments.contains("path"));
         assert_eq!(response.usage.unwrap().total_tokens, 3);
+    }
+
+    #[test]
+    fn restricted_google_tools_remove_root_combinators() {
+        let adapter =
+            GoogleGenerativeAdapter::new(restricted_provider(), "http://127.0.0.1:9".into());
+        let mut request = request();
+        request.tools = Some(vec![ToolSchema {
+            kind: "function".into(),
+            function: FunctionSchema {
+                name: "lookup".into(),
+                description: "lookup".into(),
+                parameters: serde_json::json!({
+                    "type": "object",
+                    "properties": {"value": {"type": "string"}},
+                    "oneOf": [{"required": ["value"]}],
+                    "allOf": [{"required": ["value"]}]
+                }),
+            },
+        }]);
+
+        let payload = adapter.build_payload(&request).unwrap();
+        let schema = &payload["tools"][0]["functionDeclarations"][0]["parameters"];
+        assert!(schema.get("oneOf").is_none());
+        assert!(schema.get("allOf").is_none());
     }
 
     #[test]

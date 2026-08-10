@@ -79,7 +79,10 @@ impl OpenAiResponsesAdapter {
             payload["temperature"] = json!(temperature);
         }
         if let Some(tools) = &request.tools {
-            payload["tools"] = Value::Array(responses_wire::function_tools(tools));
+            payload["tools"] = Value::Array(responses_wire::function_tools(
+                tools,
+                crate::ai::llm::tool_schema::supports_root_combinators(&self.provider),
+            ));
         }
         if request.thinking {
             if let Some(params) = self

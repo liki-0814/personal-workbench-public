@@ -1,6 +1,7 @@
 import type { ToolCall, ToolSchema, AgentMessage } from './types';
 import { readSSE, type StreamDelta } from './openai';
 import { parseDataUrl } from './media';
+import { normalizeToolInputSchema } from './toolSchema';
 
 interface AnthropicContentBlock extends Record<string, unknown> {
   type: string;
@@ -121,24 +122,44 @@ export function parseAnthropicResponse(data: Record<string, unknown>): {
   };
 }
 
-export function normalizeAnthropicInputSchema(
-  schema: Record<string, unknown>,
-  supportsRootCombinators: boolean,
-): Record<string, unknown> {
-  if (supportsRootCombinators) return schema;
-  const normalized = { ...schema };
-  delete normalized.oneOf;
-  delete normalized.anyOf;
-  delete normalized.allOf;
-  if (!normalized.type) normalized.type = 'object';
-  return normalized;
-}
-
 export function isRestrictedAnthropicSchemaError(status: number, body: string): boolean {
   return status === 400
     && body.includes('input_schema')
     && body.includes('does not support')
     && ['oneOf', 'anyOf', 'allOf'].some(keyword => body.includes(keyword));
+}
+
+export function normalizeAnthropicEffort(value: string): 'low' | 'medium' | 'high' | 'xhigh' | 'max' {
+  if (value === 'minimal') return 'low';
+  if (value === 'ultra') return 'max';
+  if (value === 'low' || value === 'medium' || value === 'high' || value === 'xhigh' || value === 'max') {
+    return value;
+  }
+  return 'medium';
+}
+
+export function applyAnthropicThinking(
+  body: Record<string, unknown>,
+  params: Record<string, unknown>,
+  requestedEffort: string,
+): void {
+  const explicitThinking = params.thinking;
+  const budget = typeof params.budget_tokens === 'number' ? params.budget_tokens : undefined;
+  if (explicitThinking && typeof explicitThinking === 'object') {
+    body.thinking = explicitThinking;
+  } else if (budget !== undefined) {
+    body.thinking = { type: 'enabled', budget_tokens: budget };
+  } else {
+    body.thinking = { type: 'adaptive' };
+  }
+  body.output_config = {
+    ...(params.output_config && typeof params.output_config === 'object' ? params.output_config : {}),
+    effort: normalizeAnthropicEffort(requestedEffort),
+  };
+  const passthrough = Object.fromEntries(Object.entries(params).filter(([key]) => (
+    !['thinking', 'budget_tokens', 'reasoning_effort', 'output_config'].includes(key)
+  )));
+  Object.assign(body, passthrough);
 }
 
 export function buildAnthropicTools(
@@ -149,7 +170,7 @@ export function buildAnthropicTools(
   return tools.map(t => ({
     name: t.function.name,
     description: t.function.description,
-    input_schema: normalizeAnthropicInputSchema(
+    input_schema: normalizeToolInputSchema(
       t.function.parameters as Record<string, unknown>,
       supportsRootCombinators,
     ),

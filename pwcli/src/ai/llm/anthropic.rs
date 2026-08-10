@@ -83,29 +83,32 @@ fn apply_thinking(payload: &mut Value, provider: &ProviderConfig, enabled: bool)
                 );
             }
         }
-        // Allow full override via thinkingParams, but keep a sane default shape
-        // when only budget_tokens is provided.
-        if params.contains_key("thinking") {
-            if let Some(value) = params.get("thinking") {
-                payload["thinking"] = value.clone();
-            }
-        } else {
-            let budget = params
-                .get("budget_tokens")
-                .and_then(Value::as_u64)
-                .unwrap_or(2048);
+        // Explicit `thinking` wins. A configured budget opts into legacy
+        // manual thinking; otherwise modern Anthropic models use adaptive
+        // thinking and `output_config.effort`.
+        if let Some(value) = params.get("thinking") {
+            payload["thinking"] = value.clone();
+        } else if let Some(budget) = params.get("budget_tokens").and_then(Value::as_u64) {
             payload["thinking"] = serde_json::json!({
                 "type": "enabled",
                 "budget_tokens": budget
             });
-            for (key, value) in params {
-                if key != "budget_tokens" {
+        } else {
+            payload["thinking"] = serde_json::json!({ "type": "adaptive" });
+        }
+        for (key, value) in params {
+            match key.as_str() {
+                "thinking" | "budget_tokens" => {}
+                "reasoning_effort" => {
+                    payload["output_config"]["effort"] = value.clone();
+                }
+                _ => {
                     payload[key] = value.clone();
                 }
             }
         }
     } else {
-        payload["thinking"] = serde_json::json!({ "type": "enabled", "budget_tokens": 2048 });
+        payload["thinking"] = serde_json::json!({ "type": "adaptive" });
     }
     // Optional anthropic-version / user-agent overrides via requestParams happen
     // at request construction time.
@@ -123,39 +126,15 @@ fn effective_temperature(_provider: &ProviderConfig, requested: Option<f32>) -> 
 /// properties. The complete schema remains in `ToolRegistry` and is used for
 /// local argument validation, so this wire-only downgrade does not weaken the
 /// execution boundary.
-fn normalize_anthropic_input_schema(schema: &Value, supports_root_combinators: bool) -> Value {
-    if supports_root_combinators {
-        return schema.clone();
-    }
-    let mut normalized = schema.clone();
-    if let Some(root) = normalized.as_object_mut() {
-        root.remove("oneOf");
-        root.remove("anyOf");
-        root.remove("allOf");
-        if !root.contains_key("type") {
-            root.insert("type".into(), Value::String("object".into()));
-        }
-    }
-    normalized
-}
-
-fn supports_root_schema_combinators(provider: &ProviderConfig) -> bool {
-    provider
-        .current_model_entry()
-        .and_then(|model| model.capabilities.as_ref())
-        .and_then(|capabilities| capabilities.tool_schema_top_level_combinators)
-        .unwrap_or(true)
-}
-
 fn anthropic_tools(tools: &[ToolSchema], provider: &ProviderConfig) -> Vec<Value> {
-    let supports_root_combinators = supports_root_schema_combinators(provider);
+    let supports_root_combinators = super::tool_schema::supports_root_combinators(provider);
     tools
         .iter()
         .map(|tool| {
             serde_json::json!({
                 "name": tool.function.name,
                 "description": tool.function.description,
-                "input_schema": normalize_anthropic_input_schema(
+                "input_schema": super::tool_schema::normalize_root(
                     &tool.function.parameters,
                     supports_root_combinators,
                 ),
@@ -390,7 +369,7 @@ impl AnthropicClient {
         if let Some(tools) = &request.tools {
             payload["tools"] = serde_json::to_value(anthropic_tools(tools, &self.provider))?;
         }
-        if !supports_root_schema_combinators(&self.provider) {
+        if !super::tool_schema::supports_root_combinators(&self.provider) {
             strip_root_combinators_from_payload_tools(&mut payload);
         }
 
@@ -617,7 +596,7 @@ impl AnthropicClient {
             if let Some(tools) = &request.tools {
                 if let Ok(v) = serde_json::to_value(anthropic_tools(tools, &provider)) { payload["tools"] = v; }
             }
-            if !supports_root_schema_combinators(&provider) {
+            if !super::tool_schema::supports_root_combinators(&provider) {
                 strip_root_combinators_from_payload_tools(&mut payload);
             }
 
@@ -834,7 +813,7 @@ mod tests {
             "additionalProperties": false
         });
 
-        let normalized = normalize_anthropic_input_schema(&schema, false);
+        let normalized = crate::ai::llm::tool_schema::normalize_root(&schema, false);
 
         assert!(normalized.get("oneOf").is_none());
         assert!(normalized.get("anyOf").is_none());
@@ -855,7 +834,10 @@ mod tests {
             "oneOf": [{ "required": ["domain"] }]
         });
 
-        assert_eq!(normalize_anthropic_input_schema(&schema, true), schema);
+        assert_eq!(
+            crate::ai::llm::tool_schema::normalize_root(&schema, true),
+            schema
+        );
     }
 
     #[test]
@@ -995,7 +977,7 @@ mod tests {
     }
 
     #[test]
-    fn standard_anthropic_keeps_budgeted_thinking() {
+    fn standard_anthropic_defaults_to_adaptive_thinking() {
         let provider = ProviderConfig {
             name: "Anthropic".into(),
             base_url: "https://api.anthropic.com".into(),
@@ -1012,8 +994,37 @@ mod tests {
 
         assert_eq!(
             payload["thinking"],
-            serde_json::json!({ "type": "enabled", "budget_tokens": 2048 })
+            serde_json::json!({ "type": "adaptive" })
         );
+    }
+
+    #[test]
+    fn anthropic_maps_legacy_reasoning_effort_to_output_config() {
+        let provider = ProviderConfig {
+            name: "Anthropic".into(),
+            base_url: "https://api.anthropic.com".into(),
+            api_key: "secret".into(),
+            protocol: "anthropic_messages".into(),
+            model: "claude-opus-5".into(),
+            models: vec![crate::ai::config::ModelEntry {
+                id: "claude-opus-5".into(),
+                name: "Claude Opus 5".into(),
+                thinking_params: Some(serde_json::Map::from_iter([(
+                    "reasoning_effort".into(),
+                    Value::String("high".into()),
+                )])),
+                ..Default::default()
+            }],
+            use_proxy: None,
+            compat_profile: None,
+        };
+        let mut payload = serde_json::json!({});
+
+        apply_thinking(&mut payload, &provider, true);
+
+        assert_eq!(payload["thinking"], serde_json::json!({"type": "adaptive"}));
+        assert_eq!(payload["output_config"]["effort"], "high");
+        assert!(payload.get("reasoning_effort").is_none());
     }
 
     #[test]

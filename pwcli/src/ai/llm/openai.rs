@@ -211,9 +211,13 @@ impl OpenAiClient {
             );
             (url, headers)
         };
+        let normalized_tools = request
+            .tools
+            .as_deref()
+            .map(|tools| super::tool_schema::normalize_tools(tools, &self.provider));
         let (messages_json, request_tools) = build_openai_request_parts(
             &request.messages,
-            request.tools.as_deref(),
+            normalized_tools.as_deref(),
             self.provider.deferred_tools_mode().is_some(),
         );
 
@@ -437,9 +441,13 @@ impl OpenAiClient {
                 }
                 (url, h)
             };
+            let normalized_tools = request
+                .tools
+                .as_deref()
+                .map(|tools| super::tool_schema::normalize_tools(tools, &provider));
             let (messages_json, request_tools) = build_openai_request_parts(
                 &request.messages,
-                request.tools.as_deref(),
+                normalized_tools.as_deref(),
                 provider.deferred_tools_mode().is_some(),
             );
 

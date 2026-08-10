@@ -1,10 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import type { ToolSchema } from './types';
 import {
+  applyAnthropicThinking,
   buildAnthropicTools,
   isRestrictedAnthropicSchemaError,
-  normalizeAnthropicInputSchema,
 } from './anthropic';
+import { normalizeToolInputSchema } from './toolSchema';
 
 const schemaWithRootUnion = {
   type: 'object',
@@ -19,13 +20,13 @@ const schemaWithRootUnion = {
   allOf: [{ required: ['domain'] }],
 };
 
-describe('normalizeAnthropicInputSchema', () => {
+describe('normalizeToolInputSchema', () => {
   it('preserves the complete schema by default', () => {
-    expect(normalizeAnthropicInputSchema(schemaWithRootUnion, true)).toBe(schemaWithRootUnion);
+    expect(normalizeToolInputSchema(schemaWithRootUnion, true)).toBe(schemaWithRootUnion);
   });
 
   it('removes only root combinators for restricted providers', () => {
-    const normalized = normalizeAnthropicInputSchema(schemaWithRootUnion, false);
+    const normalized = normalizeToolInputSchema(schemaWithRootUnion, false);
 
     expect(normalized).not.toHaveProperty('oneOf');
     expect(normalized).not.toHaveProperty('anyOf');
@@ -65,5 +66,28 @@ describe('isRestrictedAnthropicSchemaError', () => {
     )).toBe(true);
     expect(isRestrictedAnthropicSchemaError(500, 'input_schema does not support oneOf')).toBe(false);
     expect(isRestrictedAnthropicSchemaError(400, 'unrelated bad request')).toBe(false);
+  });
+});
+
+describe('applyAnthropicThinking', () => {
+  it('uses adaptive thinking and output_config effort by default', () => {
+    const body: Record<string, unknown> = {};
+    applyAnthropicThinking(body, {}, 'xhigh');
+    expect(body.thinking).toEqual({ type: 'adaptive' });
+    expect(body.output_config).toEqual({ effort: 'xhigh' });
+  });
+
+  it('keeps explicitly configured legacy manual thinking', () => {
+    const body: Record<string, unknown> = {};
+    applyAnthropicThinking(body, { budget_tokens: 4096 }, 'minimal');
+    expect(body.thinking).toEqual({ type: 'enabled', budget_tokens: 4096 });
+    expect(body.output_config).toEqual({ effort: 'low' });
+  });
+
+  it('maps ultra to the valid max effort and never emits reasoning_effort', () => {
+    const body: Record<string, unknown> = {};
+    applyAnthropicThinking(body, { reasoning_effort: 'ultra' }, 'ultra');
+    expect(body.output_config).toEqual({ effort: 'max' });
+    expect(body).not.toHaveProperty('reasoning_effort');
   });
 });

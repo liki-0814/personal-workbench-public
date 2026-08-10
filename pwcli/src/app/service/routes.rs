@@ -205,15 +205,42 @@ fn apply_provider_thinking_level(
             );
         }
         "anthropic" | "anthropic_messages" => {
-            params.insert("reasoning_effort".into(), mapped);
-            let budget = match level {
-                "minimal" => 1_024,
-                "low" => 4_096,
-                "medium" => 10_240,
-                "high" => 32_768,
-                _ => 65_536,
-            };
-            params.insert("budget_tokens".into(), serde_json::json!(budget));
+            let manual = params.contains_key("budget_tokens")
+                || params
+                    .get("thinking")
+                    .and_then(serde_json::Value::as_object)
+                    .and_then(|thinking| thinking.get("type"))
+                    .and_then(serde_json::Value::as_str)
+                    == Some("enabled");
+            if manual {
+                let budget = match level {
+                    "minimal" => 1_024,
+                    "low" => 4_096,
+                    "medium" => 10_240,
+                    "high" => 32_768,
+                    _ => 65_536,
+                };
+                params.insert(
+                    "thinking".into(),
+                    serde_json::json!({"type": "enabled", "budget_tokens": budget}),
+                );
+                params.insert("budget_tokens".into(), serde_json::json!(budget));
+            } else {
+                let effort = mapped.as_str().unwrap_or(level);
+                let effort = match effort {
+                    "minimal" => "low",
+                    "ultra" => "max",
+                    "low" | "medium" | "high" | "xhigh" | "max" => effort,
+                    _ => "medium",
+                };
+                params.remove("budget_tokens");
+                params.remove("reasoning_effort");
+                params.insert("thinking".into(), serde_json::json!({"type": "adaptive"}));
+                params.insert(
+                    "output_config".into(),
+                    serde_json::json!({"effort": effort}),
+                );
+            }
         }
         _ => {
             params.insert("enable_thinking".into(), serde_json::Value::Bool(true));
@@ -300,7 +327,7 @@ pub struct ChatRequest {
     #[serde(default)]
     pub provider_override: Option<ProviderOverride>,
     /// 启用扩展思考 / extended thinking。
-    /// - Anthropic: 顶层 `thinking: { type:"enabled", budget_tokens:1024 }`
+    /// - Anthropic: 默认 `thinking: {type:"adaptive"}` + `output_config.effort`
     /// - OpenAI-compatible providers: 顶层 `enable_thinking: true`
     ///
     /// 不支持的模型协议会忽略此字段。

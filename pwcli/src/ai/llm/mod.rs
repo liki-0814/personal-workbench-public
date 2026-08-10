@@ -9,6 +9,7 @@ pub mod openai;
 pub mod retry;
 pub mod streaming;
 pub mod summarize;
+pub mod tool_schema;
 
 pub use adapter::{create_adapter, LlmAdapter};
 pub use client::{LlmClient, LlmStreamOptions};

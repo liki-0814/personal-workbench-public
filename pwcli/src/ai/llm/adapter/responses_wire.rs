@@ -97,7 +97,7 @@ fn assistant_items(message: &ChatMessage, replay_reasoning: bool) -> Vec<Value> 
 
 /// Serialize function tool definitions, normalizing each parameter schema
 /// to the strict subset accepted by Responses gateways.
-pub fn function_tools(tools: &[ToolSchema]) -> Vec<Value> {
+pub fn function_tools(tools: &[ToolSchema], supports_root_combinators: bool) -> Vec<Value> {
     tools
         .iter()
         .map(|tool| {
@@ -105,7 +105,11 @@ pub fn function_tools(tools: &[ToolSchema]) -> Vec<Value> {
                 "type": "function",
                 "name": tool.function.name,
                 "description": tool.function.description,
-                "parameters": normalize_function_schema(&tool.function.parameters),
+                "parameters": if supports_root_combinators {
+                    normalize_function_schema(&tool.function.parameters)
+                } else {
+                    crate::ai::llm::tool_schema::normalize_root(&tool.function.parameters, false)
+                },
             })
         })
         .collect()
@@ -269,10 +273,33 @@ mod tests {
                 parameters: json!({ "oneOf": [ {"required": ["a"]} ] }),
             },
         }];
-        let serialized = function_tools(&tools);
+        let serialized = function_tools(&tools, true);
         assert_eq!(serialized[0]["type"], "function");
         assert_eq!(serialized[0]["parameters"]["type"], "object");
         assert_eq!(serialized[0]["parameters"]["oneOf"][0]["type"], "object");
+    }
+
+    #[test]
+    fn restricted_function_tools_remove_all_root_combinators() {
+        let tools = vec![ToolSchema {
+            kind: "function".into(),
+            function: FunctionSchema {
+                name: "t".into(),
+                description: "d".into(),
+                parameters: json!({
+                    "type": "object",
+                    "properties": {"value": {"type": "string"}},
+                    "oneOf": [{"required": ["value"]}],
+                    "anyOf": [{"required": ["value"]}],
+                    "allOf": [{"required": ["value"]}]
+                }),
+            },
+        }];
+        let serialized = function_tools(&tools, false);
+        let schema = &serialized[0]["parameters"];
+        assert!(schema.get("oneOf").is_none());
+        assert!(schema.get("anyOf").is_none());
+        assert!(schema.get("allOf").is_none());
     }
 
     #[tokio::test]
@@ -283,7 +310,7 @@ mod tests {
         let schemas = registry.to_schemas();
         assert!(schemas.len() >= 30, "unexpectedly small tool registry");
 
-        let serialized = function_tools(&schemas);
+        let serialized = function_tools(&schemas, true);
         assert_eq!(serialized.len(), schemas.len());
         let mut names = HashSet::new();
         for tool in serialized {

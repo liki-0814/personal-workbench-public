@@ -10,9 +10,11 @@ import {
   streamAnthropic,
   toAnthropicMessages,
   buildAnthropicTools,
+  applyAnthropicThinking,
   isRestrictedAnthropicSchemaError,
   parseAnthropicResponse,
 } from './anthropic';
+import { normalizeToolSchemas } from './toolSchema';
 export { parseOpenAIMultimodalContent } from './openai';
 export { parseAnthropicResponse } from './anthropic';
 export { parseDataUrl } from './media';
@@ -94,14 +96,10 @@ export async function* streamLlm(
       }
       mergeModelRequestParams(body, info.requestParams);
       if (thinking) {
-        if (info.thinkingParams && Object.keys(info.thinkingParams).length > 0) {
-          mergeModelRequestParams(body, info.thinkingParams);
-        } else {
-          const budgets: Record<string, number> = { minimal: 1024, low: 4096, medium: 10240, high: 32768, xhigh: 65536, max: 65536, ultra: 65536 };
-          body.thinking = { type: 'enabled', budget_tokens: budgets[thinkingLevel] ?? 10240 };
-        }
+        const params = info.thinkingParams || {};
         const mapped = info.thinkingLevelMap?.[thinkingLevel];
-        if (typeof mapped === 'string') body.reasoning_effort = mapped;
+        const requestedEffort = typeof mapped === 'string' ? mapped : thinkingLevel;
+        applyAnthropicThinking(body, params, requestedEffort);
       }
       res = await fetch(url, { method: 'POST', signal, headers, body: JSON.stringify(body) });
       if (!res.ok && tools?.length) {
@@ -118,7 +116,12 @@ export async function* streamLlm(
         temperature,
         stream,
       };
-      if (tools?.length) body.tools = tools;
+      if (tools?.length) {
+        body.tools = normalizeToolSchemas(
+          tools,
+          info.capabilities?.toolSchemaTopLevelCombinators !== false,
+        );
+      }
       if (effectiveMaxTokens) body.max_tokens = effectiveMaxTokens;
       mergeModelRequestParams(body, info.requestParams);
       if (thinking) {

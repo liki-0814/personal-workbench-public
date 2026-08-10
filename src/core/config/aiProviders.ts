@@ -144,16 +144,17 @@ export const MODEL_PARAM_TEMPLATES: ModelParamTemplate[] = [
     }),
   },
   {
-    id: 'anthropic_thinking_budget',
-    label: 'Claude thinking budget',
-    description: 'thinkingParams.budget_tokens=2048',
+    id: 'anthropic_adaptive_thinking',
+    label: 'Claude adaptive thinking',
+    description: 'thinking.type=adaptive + output_config.effort',
     protocols: ['anthropic_messages'],
     apply: model => ({
       ...model,
       capabilities: { ...(model.capabilities || {}), thinking: true },
       thinkingParams: {
         ...(model.thinkingParams || {}),
-        budget_tokens: 2048,
+        thinking: { type: 'adaptive' },
+        output_config: { effort: 'medium' },
       },
     }),
   },
@@ -210,7 +211,7 @@ export function validateProviderConfig(provider: AiProvider): string[] {
     }
     if (protocol === 'anthropic_messages') {
       if (thinkKeys.includes('enable_thinking') || thinkKeys.includes('reasoning_effort') || thinkKeys.includes('reasoning')) {
-        warnings.push(`模型 ${model.id || model.name || '?'}: 含 OpenAI 思考字段，Anthropic 更常用 budget_tokens`);
+        warnings.push(`模型 ${model.id || model.name || '?'}: 含 OpenAI 思考字段，Anthropic 应使用 thinking + output_config.effort`);
       }
     }
     if (protocol === 'google_generative') {
