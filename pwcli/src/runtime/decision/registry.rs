@@ -135,6 +135,9 @@ fn parse_providers_json(value: &serde_json::Value) -> Vec<ProviderConfig> {
                             vision: c.get("vision").and_then(|v| v.as_bool()),
                             thinking: c.get("thinking").and_then(|v| v.as_bool()),
                             image: c.get("image").and_then(|v| v.as_bool()),
+                            tool_schema_top_level_combinators: c
+                                .get("toolSchemaTopLevelCombinators")
+                                .and_then(|v| v.as_bool()),
                         });
                         let request_params = m
                             .get("requestParams")

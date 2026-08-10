@@ -7,6 +7,8 @@ export interface ModelCapabilities {
   thinking?: boolean;
   /** 生图模型：用于图像生成而非聊天，不出现在聊天模型选择器。 */
   image?: boolean;
+  /** Provider 是否接受工具 input_schema 顶层的 oneOf/anyOf/allOf；缺省为支持。 */
+  toolSchemaTopLevelCombinators?: boolean;
 }
 
 export interface ModelEntry {

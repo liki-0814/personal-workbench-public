@@ -12,6 +12,11 @@ pub struct ModelCapabilities {
     /// 聊天侧模型选择器应将其过滤，生图工具自动联动使用。
     #[serde(default)]
     pub image: Option<bool>,
+    /// Whether the provider accepts oneOf/anyOf/allOf at a tool schema root.
+    /// Defaults to true. Set false only for provider/model routes that expose a
+    /// narrower JSON Schema dialect.
+    #[serde(default, rename = "toolSchemaTopLevelCombinators")]
+    pub tool_schema_top_level_combinators: Option<bool>,
 }
 
 /// 生图模型的命名启发式：主流厂商的生图模型 id 一般包含 `image`

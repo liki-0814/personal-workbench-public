@@ -377,6 +377,9 @@ fn parse_backend_providers(value: &serde_json::Value) -> anyhow::Result<Vec<Prov
                                     vision: c.get("vision").and_then(|v| v.as_bool()),
                                     thinking: c.get("thinking").and_then(|v| v.as_bool()),
                                     image: c.get("image").and_then(|v| v.as_bool()),
+                                    tool_schema_top_level_combinators: c
+                                        .get("toolSchemaTopLevelCombinators")
+                                        .and_then(|v| v.as_bool()),
                                 });
                         let request_params = m
                             .get("requestParams")

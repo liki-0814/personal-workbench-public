@@ -113,6 +113,7 @@ mod tests {
                     vision: Some(true),
                     thinking: None,
                     image: None,
+                    tool_schema_top_level_combinators: None,
                 }),
                 request_params: None,
                 thinking_params: None,

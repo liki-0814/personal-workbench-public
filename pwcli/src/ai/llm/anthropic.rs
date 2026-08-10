@@ -115,6 +115,55 @@ fn effective_temperature(_provider: &ProviderConfig, requested: Option<f32>) -> 
     requested
 }
 
+/// Convert the internal tool schema to the common subset accepted by
+/// Anthropic-compatible gateways.
+///
+/// Some gateways reject `oneOf`, `anyOf`, or `allOf` when they appear at the
+/// input schema root, even though they accept those keywords for nested
+/// properties. The complete schema remains in `ToolRegistry` and is used for
+/// local argument validation, so this wire-only downgrade does not weaken the
+/// execution boundary.
+fn normalize_anthropic_input_schema(schema: &Value, supports_root_combinators: bool) -> Value {
+    if supports_root_combinators {
+        return schema.clone();
+    }
+    let mut normalized = schema.clone();
+    if let Some(root) = normalized.as_object_mut() {
+        root.remove("oneOf");
+        root.remove("anyOf");
+        root.remove("allOf");
+        if !root.contains_key("type") {
+            root.insert("type".into(), Value::String("object".into()));
+        }
+    }
+    normalized
+}
+
+fn supports_root_schema_combinators(provider: &ProviderConfig) -> bool {
+    provider
+        .current_model_entry()
+        .and_then(|model| model.capabilities.as_ref())
+        .and_then(|capabilities| capabilities.tool_schema_top_level_combinators)
+        .unwrap_or(true)
+}
+
+fn anthropic_tools(tools: &[ToolSchema], provider: &ProviderConfig) -> Vec<Value> {
+    let supports_root_combinators = supports_root_schema_combinators(provider);
+    tools
+        .iter()
+        .map(|tool| {
+            serde_json::json!({
+                "name": tool.function.name,
+                "description": tool.function.description,
+                "input_schema": normalize_anthropic_input_schema(
+                    &tool.function.parameters,
+                    supports_root_combinators,
+                ),
+            })
+        })
+        .collect()
+}
+
 fn provider_request_param(provider: &ProviderConfig, key: &str) -> Option<String> {
     provider
         .current_model_entry()
@@ -310,17 +359,7 @@ impl AnthropicClient {
         }
 
         if let Some(tools) = &request.tools {
-            let anthropic_tools: Vec<Value> = tools
-                .iter()
-                .map(|t| {
-                    serde_json::json!({
-                        "name": t.function.name,
-                        "description": t.function.description,
-                        "input_schema": t.function.parameters,
-                    })
-                })
-                .collect();
-            payload["tools"] = serde_json::to_value(anthropic_tools)?;
+            payload["tools"] = serde_json::to_value(anthropic_tools(tools, &self.provider))?;
         }
 
         apply_thinking(&mut payload, &self.provider, request.thinking);
@@ -535,12 +574,7 @@ impl AnthropicClient {
             }
 
             if let Some(tools) = &request.tools {
-                let anthropic_tools: Vec<Value> = tools.iter().map(|t| serde_json::json!({
-                    "name": t.function.name,
-                    "description": t.function.description,
-                    "input_schema": t.function.parameters,
-                })).collect();
-                if let Ok(v) = serde_json::to_value(anthropic_tools) { payload["tools"] = v; }
+                if let Ok(v) = serde_json::to_value(anthropic_tools(tools, &provider)) { payload["tools"] = v; }
             }
 
             apply_thinking(&mut payload, &provider, request.thinking);
@@ -723,6 +757,98 @@ impl AnthropicClient {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn anthropic_tool_schema_removes_only_root_combinators() {
+        let schema = serde_json::json!({
+            "type": "object",
+            "properties": {
+                "domain": { "type": "string" },
+                "value": {
+                    "oneOf": [
+                        { "type": "string" },
+                        { "type": "array" }
+                    ]
+                }
+            },
+            "required": ["domain"],
+            "oneOf": [
+                { "required": ["domain"] },
+                { "required": ["domains"] }
+            ],
+            "anyOf": [{ "required": ["domain"] }],
+            "allOf": [{ "required": ["domain"] }],
+            "additionalProperties": false
+        });
+
+        let normalized = normalize_anthropic_input_schema(&schema, false);
+
+        assert!(normalized.get("oneOf").is_none());
+        assert!(normalized.get("anyOf").is_none());
+        assert!(normalized.get("allOf").is_none());
+        assert_eq!(normalized["type"], "object");
+        assert_eq!(normalized["required"], serde_json::json!(["domain"]));
+        assert!(normalized["properties"]["value"].get("oneOf").is_some());
+        assert!(
+            schema.get("oneOf").is_some(),
+            "source schema must stay intact"
+        );
+    }
+
+    #[test]
+    fn anthropic_tool_schema_is_unchanged_by_default() {
+        let schema = serde_json::json!({
+            "type": "object",
+            "oneOf": [{ "required": ["domain"] }]
+        });
+
+        assert_eq!(normalize_anthropic_input_schema(&schema, true), schema);
+    }
+
+    #[test]
+    fn anthropic_tools_apply_configured_wire_schema_normalization() {
+        let tools = vec![ToolSchema {
+            kind: "function".into(),
+            function: FunctionSchema {
+                name: "web_search_domains".into(),
+                description: "discover domains".into(),
+                parameters: serde_json::json!({
+                    "properties": {
+                        "domain": { "type": "string" },
+                        "domains": { "type": "array", "items": { "type": "string" } }
+                    },
+                    "oneOf": [
+                        { "required": ["domain"] },
+                        { "required": ["domains"] }
+                    ]
+                }),
+            },
+        }];
+        let provider = ProviderConfig {
+            name: "restricted-gateway".into(),
+            base_url: "https://example.test".into(),
+            api_key: "secret".into(),
+            protocol: "anthropic_messages".into(),
+            model: "claude-opus-5".into(),
+            models: vec![crate::ai::config::ModelEntry {
+                id: "claude-opus-5".into(),
+                name: "Claude Opus 5".into(),
+                capabilities: Some(crate::ai::config::ModelCapabilities {
+                    tool_schema_top_level_combinators: Some(false),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }],
+            use_proxy: Some(true),
+            compat_profile: None,
+        };
+
+        let serialized = anthropic_tools(&tools, &provider);
+
+        assert_eq!(serialized[0]["input_schema"]["type"], "object");
+        assert!(serialized[0]["input_schema"].get("oneOf").is_none());
+        assert!(tools[0].function.parameters.get("oneOf").is_some());
+    }
 
     #[test]
     fn cached_tokens_count_toward_active_context() {
