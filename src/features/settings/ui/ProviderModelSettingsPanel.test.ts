@@ -1,5 +1,11 @@
 import { describe, expect, it } from 'vitest';
-import { applyModelTokenLimits, applyModelVisionCapability, applyThinkingLevelsToModels } from './providerModelThinking';
+import type { ModelEntry } from '@/core/config';
+import {
+  applyModelTokenLimits,
+  applyModelVisionCapability,
+  applyRestrictedToolSchemaCompatibility,
+  applyThinkingLevelsToModels,
+} from './providerModelThinking';
 
 describe('applyThinkingLevelsToModels', () => {
   it('batch configures only selected models and preserves unrelated metadata', () => {
@@ -51,5 +57,28 @@ describe('applyModelVisionCapability', () => {
       { id: 'a', name: 'A', capabilities: { thinking: true, vision: true } },
       { id: 'b', name: 'B' },
     ]);
+  });
+});
+
+describe('applyRestrictedToolSchemaCompatibility', () => {
+  const models: ModelEntry[] = [
+    { id: 'a', name: 'A', capabilities: { vision: true } },
+    { id: 'b', name: 'B' },
+  ];
+
+  it('writes the restricted dialect capability only to selected models', () => {
+    expect(applyRestrictedToolSchemaCompatibility(models, new Set(['a']), true)).toEqual([
+      {
+        id: 'a',
+        name: 'A',
+        capabilities: { vision: true, toolSchemaTopLevelCombinators: false },
+      },
+      models[1],
+    ]);
+  });
+
+  it('restores full schema support explicitly', () => {
+    expect(applyRestrictedToolSchemaCompatibility(models, new Set(['b']), false)[1].capabilities)
+      .toEqual({ toolSchemaTopLevelCombinators: true });
   });
 });

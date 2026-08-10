@@ -41,3 +41,17 @@ export function applyModelVisionCapability(
     capabilities: { ...(model.capabilities || {}), vision: supported },
   } : model);
 }
+
+export function applyRestrictedToolSchemaCompatibility(
+  models: ModelEntry[],
+  modelIds: ReadonlySet<string>,
+  enabled: boolean,
+): ModelEntry[] {
+  return models.map(model => modelIds.has(model.id) ? {
+    ...model,
+    capabilities: {
+      ...(model.capabilities || {}),
+      toolSchemaTopLevelCombinators: !enabled,
+    },
+  } : model);
+}
